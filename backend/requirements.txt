@@ -1,0 +1,6 @@
+fastapi==0.116.0
+uvicorn[standard]==0.34.0
+pydantic==2.10.0
+SQLAlchemy==2.0.38
+azure-storage-blob==12.25.0
+pyodbc==5.2.0
