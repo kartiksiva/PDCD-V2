@@ -30,7 +30,7 @@ OPENAI_SKU_CAPACITY="${OPENAI_SKU_CAPACITY:-1}"
 OPENAI_SKU_NAME="${OPENAI_SKU_NAME:-GlobalStandard}"
 
 SQL_ADMIN_USER="${SQL_ADMIN_USER:-pfcd_admin}"
-SQL_ADMIN_PASSWORD="${SQL_ADMIN_PASSWORD:-$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9!@#%^&*()_+-=' | head -c 24)}"
+SQL_ADMIN_PASSWORD="${SQL_ADMIN_PASSWORD:-$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24)}"
 
 readonly COMMON_TAGS="Environment=$ENVIRONMENT Project=$PROJECT CostProfile=development"
 
@@ -125,6 +125,7 @@ ensure_key_vault() {
       --resource-group "$RESOURCE_GROUP" \
       --location "$LOCATION" \
       --sku standard \
+      --enable-rbac-authorization true \
       --tags $COMMON_TAGS \
       --output none
   fi
@@ -185,7 +186,7 @@ ensure_sql() {
   az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "sql-admin-password" --value "$SQL_ADMIN_PASSWORD" --output none
 
   local sql_conn
-  sql_conn="mssql+pyodbc://${SQL_ADMIN_USER}:${SQL_ADMIN_PASSWORD}@${SQL_SERVER_NAME}.database.windows.net:1433/${SQL_DATABASE_NAME}?driver=ODBC+Driver+18+for+SQL+Server"
+  sql_conn="mssql+pyodbc://${SQL_ADMIN_USER}:${SQL_ADMIN_PASSWORD}@${SQL_SERVER_NAME}.database.windows.net:1433/${SQL_DATABASE_NAME}?driver=ODBC+Driver+18+for+SQL+Server&Encrypt=yes&TrustServerCertificate=yes"
   az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "sql-connection-string" --value "$sql_conn" --output none
 
   info "SQL admin password is stored in Key Vault as 'sql-admin-password'"
@@ -332,3 +333,12 @@ ensure_budget
 info "Bootstrap complete for environment '$ENVIRONMENT' in $RESOURCE_GROUP"
 az resource show --ids "/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.Web/sites/$WEBAPP_NAME" --query "defaultHostName" -o tsv | sed 's|^|API host: https://|' | sed 's|$|/|' | tr -d '\n'
 echo
+  if ! az sql server firewall-rule show --resource-group "$RESOURCE_GROUP" --server "$SQL_SERVER_NAME" --name "AllowAzureServices" >/dev/null 2>&1; then
+    az sql server firewall-rule create \
+      --resource-group "$RESOURCE_GROUP" \
+      --server "$SQL_SERVER_NAME" \
+      --name "AllowAzureServices" \
+      --start-ip-address "0.0.0.0" \
+      --end-ip-address "0.0.0.0" \
+      --output none
+  fi
