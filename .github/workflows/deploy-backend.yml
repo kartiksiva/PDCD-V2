@@ -27,8 +27,11 @@ jobs:
 
       - name: Deploy to Azure App Service
         run: |
+          cd backend
+          zip -r ../backend.zip .
+          cd ..
           az webapp deploy \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WEBAPP_NAME }} \
-            --src-path backend \
+            --src-path ./backend.zip \
             --type zip
