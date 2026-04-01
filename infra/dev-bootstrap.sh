@@ -165,6 +165,13 @@ ensure_sql() {
       --output none
   fi
 
+  az sql server update \
+    --name "$SQL_SERVER_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --admin-password "$SQL_ADMIN_PASSWORD" \
+    --output none \
+    || true
+
   if ! az sql db show --name "$SQL_DATABASE_NAME" --server "$SQL_SERVER_NAME" --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
     az sql db create \
       --name "$SQL_DATABASE_NAME" \
@@ -217,6 +224,7 @@ ensure_app_service() {
     --name "$WEBAPP_NAME" \
     --resource-group "$RESOURCE_GROUP" \
     --settings \
+      SCM_DO_BUILD_DURING_DEPLOYMENT=true \
       ENVIRONMENT_NAME="$ENVIRONMENT" \
       AZURE_STORAGE_ACCOUNT_NAME="$STORAGE_ACCOUNT" \
       AZURE_SERVICE_BUS_NAMESPACE="$SERVICE_BUS_NAMESPACE" \

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -19,13 +20,6 @@ from fpdf import FPDF
 
 from app.repository import JobRepository
 from app.storage import ExportStorage
-
-app = FastAPI(
-    title="PFCD Video-First API",
-    version="0.1.0",
-    description="Skeleton implementation for job lifecycle and review/finalize flow.",
-)
-
 
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 ALLOWED_FORMATS = {"json", "markdown", "pdf", "docx"}
@@ -90,9 +84,18 @@ JOB_REPO = JobRepository.from_env()
 EXPORT_STORAGE = ExportStorage.from_env()
 
 
-@app.on_event("startup")
-def _startup() -> None:
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
     JOB_REPO.init_db()
+    yield
+
+
+app = FastAPI(
+    title="PFCD Video-First API",
+    version="0.1.0",
+    description="Skeleton implementation for job lifecycle and review/finalize flow.",
+    lifespan=_lifespan,
+)
 
 
 def _utc_now() -> str:
@@ -213,6 +216,7 @@ async def _run_pipeline(job_id: str) -> None:
     job = await _repo_get_job(job_id)
     if not job:
         return
+    # TODO: Reload from DB between phases once multi-worker concurrency is enabled.
     profile = job["profile_requested"]
     profile_conf = _profile_config(Profile(profile))
     try:
@@ -593,6 +597,8 @@ async def delete_job(job_id: str) -> Dict[str, Any]:
     if task is not None and not task.done():
         task.cancel()
     job["status"] = JobStatus.DELETED.value
+    job["deleted_at"] = _utc_now()
+    job["cleanup_pending"] = True
     job["updated_at"] = _utc_now()
     await _repo_upsert_job(job_id, job)
     return {"job_id": job_id, "status": job["status"], "detail": "Job deleted; cleanup marked."}
