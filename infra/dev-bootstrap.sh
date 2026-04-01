@@ -15,7 +15,10 @@ WEBAPP_NAME="${WEBAPP_NAME:-${PROJECT}-${ENVIRONMENT}-api}"
 STORAGE_ACCOUNT="${STORAGE_ACCOUNT:-${PROJECT}${ENVIRONMENT}storage}"
 SERVICE_BUS_NAMESPACE="${SERVICE_BUS_NAMESPACE:-${PROJECT}-${ENVIRONMENT}-bus}"
 SERVICE_BUS_QUEUE="${SERVICE_BUS_QUEUE:-jobs}"
-SERVICE_BUS_SKU="${SERVICE_BUS_SKU:-Basic}"
+SERVICE_BUS_QUEUE_EXTRACTING="${SERVICE_BUS_QUEUE_EXTRACTING:-extracting}"
+SERVICE_BUS_QUEUE_PROCESSING="${SERVICE_BUS_QUEUE_PROCESSING:-processing}"
+SERVICE_BUS_QUEUE_REVIEWING="${SERVICE_BUS_QUEUE_REVIEWING:-reviewing}"
+SERVICE_BUS_SKU="${SERVICE_BUS_SKU:-Standard}"
 SQL_SERVER_NAME="${SQL_SERVER_NAME:-${PROJECT}-${ENVIRONMENT}-sql}"
 SQL_DATABASE_NAME="${SQL_DATABASE_NAME:-${PROJECT}-${ENVIRONMENT}-jobs}"
 KEY_VAULT_NAME="${KEY_VAULT_NAME:-${PROJECT}-${ENVIRONMENT}-kv}"
@@ -116,6 +119,19 @@ ensure_servicebus() {
       --max-delivery-count 6 \
       --output none
   fi
+
+  for queue in "$SERVICE_BUS_QUEUE_EXTRACTING" "$SERVICE_BUS_QUEUE_PROCESSING" "$SERVICE_BUS_QUEUE_REVIEWING"; do
+    if ! az servicebus queue show --resource-group "$RESOURCE_GROUP" --namespace-name "$SERVICE_BUS_NAMESPACE" --name "$queue" >/dev/null 2>&1; then
+      az servicebus queue create \
+        --resource-group "$RESOURCE_GROUP" \
+        --namespace-name "$SERVICE_BUS_NAMESPACE" \
+        --name "$queue" \
+        --max-size 1024 \
+        --default-message-time-to-live "P7D" \
+        --max-delivery-count 6 \
+        --output none
+    fi
+  done
 }
 
 ensure_key_vault() {
@@ -143,6 +159,9 @@ ensure_key_vault() {
   az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "storage-account-name" --value "$STORAGE_ACCOUNT" --output none
   az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "service-bus-namespace" --value "$SERVICE_BUS_NAMESPACE" --output none
   az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "service-bus-queue" --value "$SERVICE_BUS_QUEUE" --output none
+  az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "service-bus-queue-extracting" --value "$SERVICE_BUS_QUEUE_EXTRACTING" --output none
+  az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "service-bus-queue-processing" --value "$SERVICE_BUS_QUEUE_PROCESSING" --output none
+  az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "service-bus-queue-reviewing" --value "$SERVICE_BUS_QUEUE_REVIEWING" --output none
   az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "sql-server-name" --value "$SQL_SERVER_NAME" --output none
   az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "sql-db-name" --value "$SQL_DATABASE_NAME" --output none
 
@@ -150,6 +169,16 @@ ensure_key_vault() {
   storage_conn="$(az storage account show-connection-string --resource-group "$RESOURCE_GROUP" --name "$STORAGE_ACCOUNT" --query connectionString -o tsv)"
   if [[ -n "$storage_conn" ]]; then
     az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "storage-connection-string" --value "$storage_conn" --output none
+  fi
+
+  local service_bus_conn
+  service_bus_conn="$(az servicebus namespace authorization-rule keys list \
+    --resource-group "$RESOURCE_GROUP" \
+    --namespace-name "$SERVICE_BUS_NAMESPACE" \
+    --name RootManageSharedAccessKey \
+    --query primaryConnectionString -o tsv)"
+  if [[ -n "$service_bus_conn" ]]; then
+    az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "service-bus-connection-string" --value "$service_bus_conn" --output none
   fi
 }
 
@@ -230,6 +259,9 @@ ensure_app_service() {
       AZURE_STORAGE_ACCOUNT_NAME="$STORAGE_ACCOUNT" \
       AZURE_SERVICE_BUS_NAMESPACE="$SERVICE_BUS_NAMESPACE" \
       AZURE_SERVICE_BUS_QUEUE="$SERVICE_BUS_QUEUE" \
+      AZURE_SERVICE_BUS_QUEUE_EXTRACTING="$SERVICE_BUS_QUEUE_EXTRACTING" \
+      AZURE_SERVICE_BUS_QUEUE_PROCESSING="$SERVICE_BUS_QUEUE_PROCESSING" \
+      AZURE_SERVICE_BUS_QUEUE_REVIEWING="$SERVICE_BUS_QUEUE_REVIEWING" \
       KEYVAULT_NAME="$KEY_VAULT_NAME" \
       AZURE_SQL_SERVER_NAME="$SQL_SERVER_NAME" \
       AZURE_SQL_DATABASE_NAME="$SQL_DATABASE_NAME" \
@@ -242,6 +274,7 @@ ensure_app_service() {
       APP_COST_PROFILE=development \
       DATABASE_URL="@Microsoft.KeyVault(SecretUri=https://${KEY_VAULT_NAME}.vault.azure.net/secrets/sql-connection-string)" \
       AZURE_STORAGE_CONNECTION_STRING="@Microsoft.KeyVault(SecretUri=https://${KEY_VAULT_NAME}.vault.azure.net/secrets/storage-connection-string)" \
+      AZURE_SERVICE_BUS_CONNECTION_STRING="@Microsoft.KeyVault(SecretUri=https://${KEY_VAULT_NAME}.vault.azure.net/secrets/service-bus-connection-string)" \
       AZURE_STORAGE_CONTAINER_EXPORTS="exports" \
     --output none
 

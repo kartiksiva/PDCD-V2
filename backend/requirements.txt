@@ -2,8 +2,11 @@ fastapi==0.116.0
 uvicorn[standard]==0.34.0
 pydantic==2.10.0
 SQLAlchemy==2.0.38
+alembic==1.13.3
 azure-storage-blob==12.25.0
+azure-servicebus==7.12.1
 pyodbc==5.2.0
 anyio==4.9.0
 azure-identity==1.19.0
 fpdf2==2.8.1
+pytest==8.3.1
