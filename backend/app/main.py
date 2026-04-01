@@ -15,6 +15,7 @@ import anyio
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field
+from fpdf import FPDF
 
 from app.repository import JobRepository
 from app.storage import ExportStorage
@@ -235,7 +236,7 @@ async def _run_pipeline(job_id: str) -> None:
 
         if job["status"] != JobStatus.DELETED.value:
             blocker = any(flag["severity"] == ReviewSeverity.BLOCKER.value for flag in job["review_notes"]["flags"])
-            job["status"] = JobStatus.NEEDS_REVIEW.value if blocker else JobStatus.NEEDS_REVIEW.value
+            job["status"] = JobStatus.NEEDS_REVIEW.value
             job["agent_review"]["decision"] = "blocked" if blocker else "needs_review"
             job["agent_review"]["decision_at"] = _utc_now()
             job["updated_at"] = _utc_now()
@@ -245,6 +246,8 @@ async def _run_pipeline(job_id: str) -> None:
         job["updated_at"] = _utc_now()
         job["error"] = {"message": str(exc)}
         await _repo_upsert_job(job_id, job)
+    finally:
+        PIPELINE_TASKS.pop(job_id, None)
 
 
 def _build_draft(job: Dict[str, Any]) -> None:
@@ -360,6 +363,25 @@ def _build_export_markdown(draft: Dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def _build_export_pdf(draft: Dict[str, Any]) -> bytes:
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=12)
+    pdf.cell(0, 10, "Process Definition Document", ln=True)
+    pdf.ln(2)
+    pdf.multi_cell(0, 8, f"Purpose: {draft.get('pdd', {}).get('purpose', '')}")
+    pdf.multi_cell(0, 8, f"Scope: {draft.get('pdd', {}).get('scope', '')}")
+    pdf.ln(2)
+    pdf.cell(0, 8, "Steps:", ln=True)
+    for step in draft.get("pdd", {}).get("steps", []):
+        pdf.multi_cell(0, 8, f"- {step.get('id')}: {step.get('summary')}")
+    pdf.ln(2)
+    pdf.cell(0, 8, "SIPOC:", ln=True)
+    for idx, row in enumerate(draft.get("sipoc", []), start=1):
+        pdf.multi_cell(0, 8, f"{idx}. {row.get('process_step')} — anchor: {row.get('source_anchor')}")
+    return pdf.output(dest="S").encode("latin-1")
+
+
 async def _job_or_404(job_id: str) -> Dict[str, Any]:
     job = await _repo_get_job(job_id)
     if not job:
@@ -381,12 +403,13 @@ def health() -> Dict[str, Any]:
     ]
     checks = {name: bool(os.environ.get(name)) for name in required_env}
     degraded = [name for name, present in checks.items() if not present]
-    return {
+    status_code = 200 if not degraded else 503
+    return JSONResponse(content={
         "status": "ok" if not degraded else "degraded",
         "timestamp": _utc_now(),
         "environment_checks": checks,
         "missing_environment": degraded,
-    }
+    }, status_code=status_code)
 
 
 @app.post("/api/jobs", status_code=201)
@@ -491,13 +514,13 @@ async def finalize_job(job_id: str) -> Dict[str, Any]:
     }
     json_bytes = json.dumps(exports_payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
     markdown_bytes = _build_export_markdown(job["finalized_draft"]).encode("utf-8")
-    pdf_bytes = f"PFCD PDF placeholder for {job_id}\n".encode("utf-8")
+    pdf_bytes = _build_export_pdf(job["finalized_draft"])
     docx_bytes = f"PFCD DOCX placeholder for {job_id}\n".encode("utf-8")
 
     json_meta = EXPORT_STORAGE.save_bytes(job_id, "json", json_bytes, "application/json")
     md_meta = EXPORT_STORAGE.save_bytes(job_id, "markdown", markdown_bytes, "text/markdown; charset=utf-8")
     pdf_meta = EXPORT_STORAGE.save_bytes(job_id, "pdf", pdf_bytes, "application/pdf", download_name=f"pdd-{job_id}.pdf")
-    docx_meta = EXPORT_STORAGE.save_bytes(job_id, "docx", docx_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", download_name=f"pdd-{job_id}.docx")
+    docx_meta = EXPORT_STORAGE.save_bytes(job_id, "docx", docx_bytes, "text/plain; charset=utf-8", download_name=f"pdd-{job_id}.docx")
 
     job["exports"] = {
         "json": json_meta.__dict__,
@@ -550,13 +573,13 @@ async def get_export(job_id: str, fmt: str):
         return PlainTextResponse(_build_export_markdown(draft))
     if fmt == "pdf":
         return Response(
-            content=f"PFCD PDF placeholder for {job_id}\n".encode("utf-8"),
+            content=_build_export_pdf(draft),
             media_type="application/pdf",
             headers={"Content-Disposition": f'attachment; filename="pdd-{job_id}.pdf"'},
         )
     return Response(
         content=f"PFCD DOCX placeholder for {job_id}\n".encode("utf-8"),
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        media_type="text/plain; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="pdd-{job_id}.docx"'},
     )
 
