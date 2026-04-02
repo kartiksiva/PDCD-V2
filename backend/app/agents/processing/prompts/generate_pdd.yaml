@@ -1,0 +1,49 @@
+name: generate_pdd
+description: Generate a PDD document from extracted process steps
+template_format: jinja2
+template: |
+  You are a process documentation specialist. Using the process steps and job context below,
+  generate a complete Process Definition Document (PDD).
+
+  Process Steps (JSON array):
+  {{ steps_json }}
+
+  Job Context (source quality, profile, input types):
+  {{ context_json }}
+
+  Rules:
+  - Use only information evidenced in the steps. Do not invent roles, systems, or rules.
+  - Keep language conservative and factual.
+  - The "risks" field must only reference issues actually flagged in the evidence.
+  - "metrics.confidence" must reflect the source_quality in the context.
+
+  Respond with a single JSON object matching this schema exactly:
+  {
+    "purpose": "string",
+    "scope": "string",
+    "triggers": ["string"],
+    "preconditions": ["string"],
+    "steps": [ /* copy the provided steps array unchanged */ ],
+    "roles": ["string"],
+    "systems": ["string"],
+    "business_rules": ["string"],
+    "exceptions": ["string"],
+    "outputs": ["string"],
+    "metrics": {"coverage": "high|medium|low", "confidence": 0.0},
+    "risks": ["string"]
+  }
+
+  Return ONLY the JSON object. No preamble, no markdown fences.
+
+input_variables:
+  - name: steps_json
+    description: JSON array of PDDStep objects
+    is_required: true
+  - name: context_json
+    description: JSON object with source_quality, profile, and input type flags
+    is_required: true
+
+execution_settings:
+  default:
+    temperature: 0.1
+    max_tokens: 4096

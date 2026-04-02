@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from uuid import uuid4
 
 from azure.servicebus import ServiceBusMessage
@@ -81,6 +82,18 @@ class Worker:
             },
         )
 
+    @staticmethod
+    def _make_blob_client() -> Optional[Any]:
+        """Return a BlobServiceClient if Azure Storage is configured, else None."""
+        conn_str = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "")
+        if conn_str:
+            try:
+                from azure.storage.blob import BlobServiceClient
+                return BlobServiceClient.from_connection_string(conn_str)
+            except Exception as exc:  # pragma: no cover
+                logger.warning("Could not create BlobServiceClient: %s", exc)
+        return None
+
     def _run_phase(self, job: Dict[str, Any], message: Dict[str, Any]) -> None:
         job_id = job["job_id"]
 
@@ -107,27 +120,49 @@ class Worker:
             self._record_status_event(job_id, previous_status, job["status"], self.phase)
         logger.info("Started phase %s for job %s", self.phase, job_id)
 
-        if self.phase == "reviewing":
-            build_draft(job)
-            blocker = any(
-                flag["severity"] == "blocker" for flag in job["review_notes"]["flags"]
+        blob_client = self._make_blob_client()
+
+        if self.phase == "extracting":
+            from app.agents.extraction.agent import ExtractionAgent
+            agent = ExtractionAgent(
+                profile=job["profile_requested"],
+                job=job,
+                blob_client=blob_client,
             )
+            evidence_graph = asyncio.run(agent.run(job["input_manifest"]))
+            job["transcript_media_consistency"]["verdict"] = evidence_graph.alignment_verdict
+            job["transcript_media_consistency"]["similarity_score"] = evidence_graph.similarity_score
+
+        elif self.phase == "processing":
+            from app.agents.processing.agent import ProcessingAgent
+            agent = ProcessingAgent(
+                profile=job["profile_requested"],
+                job=job,
+                blob_client=blob_client,
+            )
+            draft = asyncio.run(agent.run(job_id))
+            job["draft"] = draft.model_dump()
+
+        elif self.phase == "reviewing":
+            from app.agents.reviewing.agent import ReviewingAgent
+            agent = ReviewingAgent(
+                profile=job["profile_requested"],
+                job=job,
+                blob_client=blob_client,
+            )
+            review = asyncio.run(agent.run(job_id))
+            job["review_notes"]["flags"] = [f.model_dump() for f in review.flags]
+            job["agent_review"]["decision"] = review.decision
+            job["agent_signals"]["evidence_strength"] = review.evidence_strength
+            build_draft(job)
+
             previous_review_status = job["status"]
             job["status"] = JobStatus.NEEDS_REVIEW.value
-            job["agent_review"]["decision"] = "blocked" if blocker else "needs_review"
             job["agent_review"]["decision_at"] = _utc_now()
             if previous_review_status != job["status"]:
                 self._record_status_event(job_id, previous_review_status, job["status"], self.phase)
+
         job["updated_at"] = _utc_now()
-        add_agent_run(
-            job,
-            agent_name,
-            profile_conf["profile"],
-            "success",
-            model=profile_conf["model"],
-            duration_ms=120,
-            cost=0.4,
-        )
         job["last_completed_phase"] = self.phase
         job["payload_hash"] = message["payload_hash"]
         job["phase_attempt"] = message["attempt"]

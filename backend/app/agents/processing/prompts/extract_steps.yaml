@@ -1,0 +1,44 @@
+name: extract_steps
+description: Extract structured process steps from evidence objects
+template_format: jinja2
+template: |
+  You are a process analyst specialising in extracting business process steps from recorded evidence.
+
+  Your task is to analyse the evidence objects below and extract a list of discrete process steps.
+
+  Rules:
+  - Each step must represent a single verifiable operator action, not a transcript fragment.
+  - Remove facilitator questions, cue numbers, and VTT noise.
+  - Collapse near-duplicate adjacent steps with the same actor and action context.
+  - Every step must cite at least one source anchor from the evidence.
+  - Preserve evidence-first ordering: video/audio sequence takes precedence over transcript order.
+  - Use "Unknown Speaker" for any unresolved actor.
+
+  Evidence (JSON array):
+  {{ evidence_json }}
+
+  Respond with a JSON array of step objects. Each object must have:
+  {
+    "id": "step-01",
+    "summary": "concise action description",
+    "actor": "role or name",
+    "system": "application or system used (or null)",
+    "input": "what triggers or feeds this step (or null)",
+    "output": "what this step produces (or null)",
+    "exception": "known error condition (or null)",
+    "source_anchors": [
+      {"source": "speech|frame|transcript|ocr", "anchor": "HH:MM:SS-HH:MM:SS", "confidence": 0.0}
+    ]
+  }
+
+  Return ONLY the JSON array. No preamble, no markdown fences.
+
+input_variables:
+  - name: evidence_json
+    description: JSON-serialised list of EvidenceObject dicts
+    is_required: true
+
+execution_settings:
+  default:
+    temperature: 0.2
+    max_tokens: 4096

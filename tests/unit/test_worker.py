@@ -74,8 +74,14 @@ def test_worker_extracting_phase(tmp_path, monkeypatch):
     worker.orchestrator = MagicMock()
     worker.orchestrator.enqueue.side_effect = lambda phase, msg, **kw: enqueued.append((phase, msg))
 
+    # Mock the agent so no Azure credentials are needed
+    mock_graph = MagicMock()
+    mock_graph.alignment_verdict = "inconclusive"
+    mock_graph.similarity_score = 0.0
+
     message = _make_message(job_id, "extracting")
-    worker._run_phase(job, message)
+    with patch("app.workers.runner.asyncio.run", return_value=mock_graph):
+        worker._run_phase(job, message)
 
     updated = repository.get_job(job_id)
     assert updated["last_completed_phase"] == "extracting"
@@ -103,8 +109,15 @@ def test_worker_reviewing_phase_builds_draft(tmp_path, monkeypatch):
     worker.repo = repository
     worker.orchestrator = MagicMock()
 
+    # Mock the ReviewingAgent result
+    mock_review = MagicMock()
+    mock_review.flags = []
+    mock_review.decision = "needs_review"
+    mock_review.evidence_strength = "medium"
+
     message = _make_message(job_id, "reviewing")
-    worker._run_phase(job, message)
+    with patch("app.workers.runner.asyncio.run", return_value=mock_review):
+        worker._run_phase(job, message)
 
     updated = repository.get_job(job_id)
     assert updated["status"] == "needs_review"

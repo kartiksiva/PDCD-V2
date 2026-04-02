@@ -1,0 +1,45 @@
+name: generate_sipoc
+description: Generate a SIPOC map from process steps and evidence
+template_format: jinja2
+template: |
+  You are a process documentation specialist. Generate a single consolidated SIPOC map
+  from the process steps and evidence provided.
+
+  Process Steps (JSON array):
+  {{ steps_json }}
+
+  Evidence (JSON array, for source anchors):
+  {{ evidence_json }}
+
+  Rules:
+  - Each SIPOC row must correspond to one or more process steps.
+  - Every row must include step_anchor (list of step ids) and source_anchor (timestamp/frame).
+  - If a source_anchor cannot be determined, set anchor_missing_reason.
+  - Do not duplicate rows for the same process step unless the supplier/customer differs.
+
+  Respond with a JSON array of SIPOC rows. Each row must match:
+  {
+    "supplier": "string",
+    "input": "string",
+    "process_step": "string",
+    "output": "string",
+    "customer": "string",
+    "step_anchor": ["step-01"],
+    "source_anchor": "HH:MM:SS-HH:MM:SS or null",
+    "anchor_missing_reason": "string or null"
+  }
+
+  Return ONLY the JSON array. No preamble, no markdown fences.
+
+input_variables:
+  - name: steps_json
+    description: JSON array of PDDStep objects
+    is_required: true
+  - name: evidence_json
+    description: JSON array of EvidenceObject dicts
+    is_required: true
+
+execution_settings:
+  default:
+    temperature: 0.1
+    max_tokens: 2048
