@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, Optional
 
-from azure.servicebus import ServiceBusClient, ServiceBusMessage
+from azure.servicebus import ServiceBusClient, ServiceBusMessage, ServiceBusReceiver
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_RETRIES = 3
 
@@ -65,6 +69,7 @@ class ServiceBusOrchestrator:
 
     def enqueue(self, phase: str, message: Dict[str, Any], *, delay_seconds: int = 0) -> None:
         if not self.connection_string:
+            logger.debug("Service Bus not configured; skipping enqueue for phase %s", phase)
             return
         queue_name = getattr(self.queue_config, phase)
         bus_message = ServiceBusMessage(json.dumps(message, separators=(",", ":")))
@@ -74,15 +79,22 @@ class ServiceBusOrchestrator:
                 if delay_seconds > 0:
                     schedule_time = _utc_now() + timedelta(seconds=delay_seconds)
                     sender.schedule_messages(bus_message, schedule_time)
+                    logger.info("Scheduled message for phase %s in %ds", phase, delay_seconds)
                 else:
                     sender.send_messages(bus_message)
+                    logger.info("Enqueued message for phase %s job_id=%s", phase, message.get("job_id"))
 
-    def receive(self, phase: str, *, max_wait_time: int = 5):
+    @contextmanager
+    def receive(self, phase: str, *, max_wait_time: int = 5) -> Iterator[Optional[ServiceBusReceiver]]:
         if not self.connection_string:
-            return None
+            yield None
+            return
         queue_name = getattr(self.queue_config, phase)
-        client = ServiceBusClient.from_connection_string(self.connection_string)
-        return client.get_queue_receiver(queue_name, max_wait_time=max_wait_time)
+        with ServiceBusClient.from_connection_string(self.connection_string) as client:
+            with client.get_queue_receiver(queue_name, max_wait_time=max_wait_time) as receiver:
+                logger.debug("Opened Service Bus receiver for queue %s", queue_name)
+                yield receiver
+        logger.debug("Closed Service Bus receiver for queue %s", queue_name)
 
 
 def max_retries() -> int:
