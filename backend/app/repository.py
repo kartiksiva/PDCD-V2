@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy import delete, select
 
@@ -117,6 +120,7 @@ class JobRepository:
             return self._job_to_payload(job, input_manifest, review_notes, drafts, agent_runs, exports)
 
     def upsert_job(self, job_id: str, payload: Dict[str, Any]) -> None:
+        logger.debug("Upserting job %s status=%s", job_id, payload.get("status"))
         with session_scope() as session:
             job = session.get(Job, job_id)
             if not job:

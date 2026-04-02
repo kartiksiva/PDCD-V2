@@ -54,7 +54,15 @@ class ExportStorage:
             # Best-effort: container may already exist or permissions may be constrained.
             pass
 
+    @staticmethod
+    def _validate_path_components(job_id: str, fmt: str) -> None:
+        if not job_id or "/" in job_id or "\\" in job_id or ".." in job_id:
+            raise ValueError(f"Invalid job_id: {job_id!r}")
+        if not fmt.isalnum():
+            raise ValueError(f"Invalid export format: {fmt!r}")
+
     def save_bytes(self, job_id: str, fmt: str, content: bytes, content_type: str, *, download_name: Optional[str] = None) -> ExportMeta:
+        self._validate_path_components(job_id, fmt)
         if self._client:
             blob_name = f"{job_id}/pdd.{fmt}"
             blob_client = self._client.get_blob_client(self.container, blob_name)

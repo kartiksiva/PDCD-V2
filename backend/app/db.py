@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from typing import Iterator
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 DEFAULT_DATABASE_URL = "sqlite:///./pfcd.db"
 
@@ -31,7 +31,7 @@ SessionLocal = sessionmaker(bind=ENGINE, autoflush=False, autocommit=False, futu
 
 
 @contextmanager
-def session_scope() -> Iterator[sessionmaker]:
+def session_scope() -> Iterator[Session]:
     session = SessionLocal()
     try:
         yield session

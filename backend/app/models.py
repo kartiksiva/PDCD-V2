@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Column, Float, Integer, String, Text
+from sqlalchemy import Boolean, Column, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -67,9 +67,10 @@ class Draft(Base):
 
 class AgentRun(Base):
     __tablename__ = "agent_runs"
+    __table_args__ = (Index("ix_agent_runs_job_id", "job_id"),)
 
     agent_run_id = Column(String(64), primary_key=True)
-    job_id = Column(String(64), nullable=False)
+    job_id = Column(String(64), ForeignKey("jobs.job_id"), nullable=False)
     agent = Column(String(64), nullable=False)
     model = Column(String(64), nullable=False)
     profile = Column(String(32), nullable=False)
@@ -91,9 +92,10 @@ class ExportPayload(Base):
 
 class JobEvent(Base):
     __tablename__ = "job_events"
+    __table_args__ = (Index("ix_job_events_job_id", "job_id"),)
 
     event_id = Column(String(64), primary_key=True)
-    job_id = Column(String(64), nullable=False)
+    job_id = Column(String(64), ForeignKey("jobs.job_id"), nullable=False)
     event_type = Column(String(64), nullable=False)
     payload = Column(Text, nullable=False)
     created_at = Column(String(64), nullable=False)

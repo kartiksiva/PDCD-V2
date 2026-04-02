@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
@@ -13,6 +14,8 @@ import anyio
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fpdf import FPDF
+
+logger = logging.getLogger(__name__)
 
 from app.job_logic import (
     DraftUpdateRequest,
@@ -36,7 +39,8 @@ ORCHESTRATOR = ServiceBusOrchestrator()
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    JOB_REPO.init_db()
+    await anyio.to_thread.run_sync(JOB_REPO.init_db)
+    logger.info("Database initialised")
     yield
 
 
@@ -75,22 +79,32 @@ def _build_export_markdown(draft: Dict[str, Any]) -> str:
 
 
 def _build_export_pdf(draft: Dict[str, Any]) -> bytes:
+    from fpdf.enums import XPos, YPos
+
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Helvetica", size=12)
-    pdf.cell(0, 10, "Process Definition Document", ln=True)
+    page_width = pdf.w - pdf.l_margin - pdf.r_margin
+
+    def _row(text: str) -> None:
+        pdf.set_x(pdf.l_margin)
+        pdf.multi_cell(page_width, 8, text)
+
+    pdf.cell(page_width, 10, "Process Definition Document", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.ln(2)
-    pdf.multi_cell(0, 8, f"Purpose: {draft.get('pdd', {}).get('purpose', '')}")
-    pdf.multi_cell(0, 8, f"Scope: {draft.get('pdd', {}).get('scope', '')}")
+    _row(f"Purpose: {draft.get('pdd', {}).get('purpose', '')}")
+    _row(f"Scope: {draft.get('pdd', {}).get('scope', '')}")
     pdf.ln(2)
-    pdf.cell(0, 8, "Steps:", ln=True)
+    pdf.set_x(pdf.l_margin)
+    pdf.cell(page_width, 8, "Steps:", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     for step in draft.get("pdd", {}).get("steps", []):
-        pdf.multi_cell(0, 8, f"- {step.get('id')}: {step.get('summary')}")
+        _row(f"- {step.get('id')}: {step.get('summary')}")
     pdf.ln(2)
-    pdf.cell(0, 8, "SIPOC:", ln=True)
+    pdf.set_x(pdf.l_margin)
+    pdf.cell(page_width, 8, "SIPOC:", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     for idx, row in enumerate(draft.get("sipoc", []), start=1):
-        pdf.multi_cell(0, 8, f"{idx}. {row.get('process_step')} — anchor: {row.get('source_anchor')}")
-    return pdf.output(dest="S").encode("latin-1")
+        _row(f"{idx}. {row.get('process_step')} - anchor: {row.get('source_anchor')}")
+    return bytes(pdf.output())
 
 
 async def _job_or_404(job_id: str) -> Dict[str, Any]:
@@ -170,7 +184,8 @@ async def create_job(payload: JobCreateRequest) -> Dict[str, Any]:
         requested_by="api",
         trace_id=trace_id,
     )
-    ORCHESTRATOR.enqueue("extracting", message)
+    await anyio.to_thread.run_sync(ORCHESTRATOR.enqueue, "extracting", message)
+    logger.info("Job created: job_id=%s profile=%s", job_id, job["profile_requested"])
     return {"job_id": job_id, **job}
 
 
@@ -233,6 +248,9 @@ async def finalize_job(job_id: str) -> Dict[str, Any]:
     job = await _job_or_404(job_id)
     if job["status"] == JobStatus.DELETED.value:
         raise HTTPException(status_code=410, detail="Deleted jobs cannot be finalized.")
+    # Idempotent: already completed or currently finalizing — return current state.
+    if job["status"] in {JobStatus.COMPLETED.value, JobStatus.FINALIZING.value}:
+        return {"job_id": job_id, "status": job["status"], "exports": job["exports"]}
     if job["draft"] is None:
         raise HTTPException(status_code=409, detail="No draft available.")
     if not job["user_saved_draft"]:
@@ -240,8 +258,6 @@ async def finalize_job(job_id: str) -> Dict[str, Any]:
     blockers = [f for f in job["review_notes"]["flags"] if f["severity"] == ReviewSeverity.BLOCKER.value]
     if blockers:
         raise HTTPException(status_code=409, detail="Blocker flags must be resolved before finalize.")
-    if job["status"] == JobStatus.COMPLETED.value:
-        return {"job_id": job_id, "status": job["status"], "exports": job["exports"]}
 
     job["status"] = JobStatus.FINALIZING.value
     job["updated_at"] = _utc_now()
@@ -294,6 +310,7 @@ async def finalize_job(job_id: str) -> Dict[str, Any]:
         "finalize_completed",
         {"job_id": job_id, "at": _utc_now()},
     )
+    logger.info("Job finalized: job_id=%s", job_id)
     return {"job_id": job_id, "status": job["status"], "exports": job["exports"]}
 
 
@@ -313,7 +330,9 @@ async def get_export(job_id: str, fmt: str):
             headers["Content-Disposition"] = f'attachment; filename="{meta["download_name"]}"'
         return Response(content=content, media_type=meta.get("content_type", "application/octet-stream"), headers=headers)
 
-    draft = job["finalized_draft"] or {}
+    if not job.get("finalized_draft"):
+        raise HTTPException(status_code=409, detail="Finalized draft not available; re-run finalize.")
+    draft = job["finalized_draft"]
     if fmt == "json":
         return JSONResponse(
             {
