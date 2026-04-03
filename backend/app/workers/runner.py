@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from azure.servicebus import ServiceBusMessage
 
+from app.agents import run_extraction, run_processing, run_reviewing
 from app.job_logic import JobStatus, Profile, add_agent_run, build_draft, profile_config
 from app.repository import JobRepository
 from app.servicebus import ServiceBusOrchestrator, build_message, max_retries
@@ -107,17 +108,28 @@ class Worker:
             self._record_status_event(job_id, previous_status, job["status"], self.phase)
         logger.info("Started phase %s for job %s", self.phase, job_id)
 
-        if self.phase == "reviewing":
-            build_draft(job)
-            blocker = any(
-                flag["severity"] == "blocker" for flag in job["review_notes"]["flags"]
-            )
-            previous_review_status = job["status"]
-            job["status"] = JobStatus.NEEDS_REVIEW.value
-            job["agent_review"]["decision"] = "blocked" if blocker else "needs_review"
+        start = time.monotonic()
+        if self.phase == "extracting":
+            cost = run_extraction(job, profile_conf)
+        elif self.phase == "processing":
+            cost = run_processing(job, profile_conf)
+        elif self.phase == "reviewing":
+            # Ensure draft exists (fallback stub if processing was skipped)
+            if not job.get("draft"):
+                build_draft(job)
+            cost = run_reviewing(job, profile_conf)
             job["agent_review"]["decision_at"] = _utc_now()
+            blocker = any(f["severity"] == "blocker" for f in job["review_notes"]["flags"])
+            previous_review_status = job["status"]
+            if blocker or job["agent_review"]["decision"] != "approve_for_draft":
+                job["status"] = JobStatus.NEEDS_REVIEW.value
+            else:
+                job["status"] = JobStatus.NEEDS_REVIEW.value  # always goes to review; UI decides
             if previous_review_status != job["status"]:
                 self._record_status_event(job_id, previous_review_status, job["status"], self.phase)
+        else:
+            cost = 0.0
+        duration_ms = int((time.monotonic() - start) * 1000)
         job["updated_at"] = _utc_now()
         add_agent_run(
             job,
@@ -125,8 +137,8 @@ class Worker:
             profile_conf["profile"],
             "success",
             model=profile_conf["model"],
-            duration_ms=120,
-            cost=0.4,
+            duration_ms=duration_ms,
+            cost=cost,
         )
         job["last_completed_phase"] = self.phase
         job["payload_hash"] = message["payload_hash"]

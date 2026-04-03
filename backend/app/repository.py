@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -12,7 +13,7 @@ logger = logging.getLogger(__name__)
 from sqlalchemy import delete, select
 
 from app.db import ENGINE, session_scope
-from app.job_logic import _utc_now
+from app.job_logic import JobStatus, _utc_now
 from app.models import AgentRun, Draft, ExportPayload, InputManifest, Job, JobEvent, ReviewNotes
 
 
@@ -238,3 +239,39 @@ class JobRepository:
                     created_at=_utc_now(),
                 )
             )
+
+    def find_expired_jobs(self, now_iso: str) -> list[str]:
+        """Return job_ids where ttl_expires_at < now and status not already terminal."""
+        _terminal = {
+            JobStatus.EXPIRED.value,
+            JobStatus.DELETED.value,
+            JobStatus.COMPLETED.value,
+            JobStatus.FAILED.value,
+        }
+        with session_scope() as session:
+            rows = session.execute(
+                select(Job.job_id).where(
+                    Job.ttl_expires_at != None,  # noqa: E711
+                    Job.ttl_expires_at < now_iso,
+                    Job.status.notin_(list(_terminal)),
+                )
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    def find_cleanup_pending_jobs(self) -> list[str]:
+        """Return job_ids where cleanup_pending=True."""
+        with session_scope() as session:
+            rows = session.execute(
+                select(Job.job_id).where(Job.cleanup_pending == True)  # noqa: E712
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    def purge_job_data(self, job_id: str) -> None:
+        """Delete all related rows for a job; set cleanup_pending=False on the Job row."""
+        with session_scope() as session:
+            for model in (InputManifest, ReviewNotes, Draft, AgentRun, ExportPayload, JobEvent):
+                session.execute(delete(model).where(model.job_id == job_id))
+            job = session.get(Job, job_id)
+            if job:
+                job.cleanup_pending = False
+                job.updated_at = datetime.now(timezone.utc).isoformat()

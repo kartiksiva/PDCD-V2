@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass
 from typing import Dict, Optional
 
@@ -90,3 +91,15 @@ class ExportStorage:
             raise FileNotFoundError("Export location missing")
         with open(location, "rb") as handle:
             return handle.read()
+
+    def delete_job_exports(self, job_id: str) -> None:
+        """Delete all export files for a job (blob folder or local directory)."""
+        if self._client:
+            container = self._client.get_container_client(self.container)
+            blobs = container.list_blobs(name_starts_with=f"{job_id}/")
+            for blob in blobs:
+                container.delete_blob(blob.name)
+        else:
+            job_dir = os.path.join(self.base_path, job_id)
+            if os.path.isdir(job_dir):
+                shutil.rmtree(job_dir)

@@ -200,6 +200,22 @@ def add_agent_run(
     return run_id
 
 
+def load_transcript_text(job: Dict[str, Any], storage: Any) -> Optional[str]:
+    """Load transcript text from storage. Returns None if no transcript input."""
+    for inp in job.get("input_manifest", {}).get("inputs", []):
+        if inp.get("source_type") == "transcript" and inp.get("file_name"):
+            meta = {
+                "location": f"{job['job_id']}/inputs/{inp['file_name']}",
+                "content_type": "text/plain",
+            }
+            try:
+                return storage.load_bytes(meta).decode("utf-8")
+            except Exception:
+                return None
+    # Fallback: inline transcript_text injected for testing
+    return job.get("_transcript_text_inline")
+
+
 def build_draft(job: Dict[str, Any]) -> None:
     source_quality = "high"
     if not job["has_video"]:
