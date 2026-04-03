@@ -43,7 +43,8 @@ export async function uploadFile(file) {
 }
 
 export async function devSimulate(jobId) {
-  const res = await fetch(`/dev/jobs/${jobId}/simulate`, { method: 'POST' })
+  const base = (import.meta.env.VITE_API_BASE ?? '')
+  const res = await fetch(`${base}/dev/jobs/${jobId}/simulate`, { method: 'POST' })
   if (!res.ok) throw new Error('Simulate failed')
   return res.json()
 }
