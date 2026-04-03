@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react'
-import { createJob } from '../api'
+import { createJob, uploadFile } from '../api'
 
 const SOURCE_TYPES = ['video', 'audio', 'transcript', 'document']
 
@@ -19,16 +19,6 @@ function guessSourceType(file) {
   )
 }
 
-async function uploadFile(file) {
-  const form = new FormData()
-  form.append('file', file)
-  const res = await fetch('/api/upload', { method: 'POST', body: form })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail ?? `Upload failed: ${res.statusText}`)
-  }
-  return res.json()
-}
 
 export default function CreateJob({ onCreated }) {
   const [rows, setRows] = useState([])          // { file, sourceType, uploading, error, result }

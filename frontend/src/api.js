@@ -31,6 +31,17 @@ export function exportUrl(jobId, fmt) {
   return `${BASE}/jobs/${jobId}/exports/${fmt}`
 }
 
+export async function uploadFile(file) {
+  const form = new FormData()
+  form.append('file', file)
+  const res = await fetch(`${BASE}/upload`, { method: 'POST', body: form })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? `Upload failed: ${res.statusText}`)
+  }
+  return res.json()
+}
+
 export async function devSimulate(jobId) {
   const res = await fetch(`/dev/jobs/${jobId}/simulate`, { method: 'POST' })
   if (!res.ok) throw new Error('Simulate failed')
