@@ -11,12 +11,14 @@ from typing import Any, Dict, Optional
 from uuid import uuid4
 
 import anyio
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fpdf import FPDF
 
 logger = logging.getLogger(__name__)
 
+from app.auth import verify_api_key
 from app.job_logic import (
     DraftUpdateRequest,
     JobCreateRequest,
@@ -31,6 +33,7 @@ from app.storage import ExportStorage
 
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 ALLOWED_FORMATS = {"json", "markdown", "pdf", "docx"}
+UPLOADS_DIR = os.environ.get("UPLOADS_DIR", "./storage/uploads")
 
 JOB_REPO = JobRepository.from_env()
 EXPORT_STORAGE = ExportStorage.from_env()
@@ -49,6 +52,23 @@ app = FastAPI(
     version="0.2.0",
     description="Durable job lifecycle and orchestration flow.",
     lifespan=_lifespan,
+)
+
+def _cors_origins() -> list[str]:
+    raw = os.environ.get("PFCD_CORS_ORIGINS", "http://localhost:5173")
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins(),
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["*"],
+)
+
+api_router = APIRouter(
+    prefix="/api",
+    dependencies=[Depends(verify_api_key)],
 )
 
 
@@ -143,7 +163,45 @@ def health() -> Dict[str, Any]:
     )
 
 
-@app.post("/api/jobs", status_code=201)
+MIME_TO_SOURCE_TYPE: Dict[str, str] = {
+    "video/mp4": "video", "video/quicktime": "video", "video/x-msvideo": "video",
+    "video/webm": "video", "video/mkv": "video",
+    "audio/mpeg": "audio", "audio/mp4": "audio", "audio/wav": "audio",
+    "audio/ogg": "audio", "audio/webm": "audio",
+    "text/plain": "transcript", "text/vtt": "transcript", "application/x-subrip": "transcript",
+    "application/pdf": "document", "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "document",
+    "application/msword": "document", "application/vnd.ms-powerpoint": "document",
+}
+
+
+@api_router.post("/upload", status_code=201)
+async def upload_file(file: UploadFile = File(...)) -> Dict[str, Any]:
+    upload_id = str(uuid4())
+    content = await file.read()
+    size_bytes = len(content)
+    if size_bytes > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"File exceeds 500MB limit.")
+
+    dest_dir = os.path.join(UPLOADS_DIR, upload_id)
+    await anyio.to_thread.run_sync(lambda: os.makedirs(dest_dir, exist_ok=True))
+    dest_path = os.path.join(dest_dir, file.filename or "upload")
+    def _write():
+        with open(dest_path, "wb") as fh:
+            fh.write(content)
+    await anyio.to_thread.run_sync(_write)
+
+    source_type = MIME_TO_SOURCE_TYPE.get(file.content_type or "", "document")
+    return {
+        "upload_id": upload_id,
+        "file_name": file.filename,
+        "size_bytes": size_bytes,
+        "mime_type": file.content_type,
+        "source_type": source_type,
+        "location": dest_path,
+    }
+
+
+@api_router.post("/jobs", status_code=201)
 async def create_job(payload: JobCreateRequest) -> Dict[str, Any]:
     if not payload.input_files:
         raise HTTPException(status_code=400, detail="At least one input file is required.")
@@ -162,9 +220,6 @@ async def create_job(payload: JobCreateRequest) -> Dict[str, Any]:
                 "remediation": "Trim/re-encode source media or use segmented upload in a future release.",
             },
         )
-    if not ORCHESTRATOR.enabled:
-        raise HTTPException(status_code=503, detail="Service Bus is not configured.")
-
     job_id = str(uuid4())
     job = default_job_payload(payload)
     job["job_id"] = job_id
@@ -189,12 +244,12 @@ async def create_job(payload: JobCreateRequest) -> Dict[str, Any]:
     return {"job_id": job_id, **job}
 
 
-@app.get("/api/jobs/{job_id}")
+@api_router.get("/jobs/{job_id}")
 async def get_job(job_id: str) -> Dict[str, Any]:
     return await _job_or_404(job_id)
 
 
-@app.get("/api/jobs/{job_id}/draft")
+@api_router.get("/jobs/{job_id}/draft")
 async def get_draft(job_id: str) -> Dict[str, Any]:
     job = await _job_or_404(job_id)
     if job["draft"] is None:
@@ -210,7 +265,7 @@ async def get_draft(job_id: str) -> Dict[str, Any]:
     }
 
 
-@app.put("/api/jobs/{job_id}/draft")
+@api_router.put("/jobs/{job_id}/draft")
 async def update_draft(job_id: str, payload: DraftUpdateRequest) -> Dict[str, Any]:
     job = await _job_or_404(job_id)
     if job["draft"] is None:
@@ -243,7 +298,7 @@ async def update_draft(job_id: str, payload: DraftUpdateRequest) -> Dict[str, An
     }
 
 
-@app.post("/api/jobs/{job_id}/finalize")
+@api_router.post("/jobs/{job_id}/finalize")
 async def finalize_job(job_id: str) -> Dict[str, Any]:
     job = await _job_or_404(job_id)
     if job["status"] == JobStatus.DELETED.value:
@@ -314,7 +369,7 @@ async def finalize_job(job_id: str) -> Dict[str, Any]:
     return {"job_id": job_id, "status": job["status"], "exports": job["exports"]}
 
 
-@app.get("/api/jobs/{job_id}/exports/{fmt}")
+@api_router.get("/jobs/{job_id}/exports/{fmt}")
 async def get_export(job_id: str, fmt: str):
     job = await _job_or_404(job_id)
     if fmt.lower() not in ALLOWED_FORMATS:
@@ -362,7 +417,7 @@ async def get_export(job_id: str, fmt: str):
     )
 
 
-@app.delete("/api/jobs/{job_id}")
+@api_router.delete("/jobs/{job_id}")
 async def delete_job(job_id: str) -> Dict[str, Any]:
     job = await _job_or_404(job_id)
     if job["status"] == JobStatus.DELETED.value:
@@ -380,3 +435,114 @@ async def delete_job(job_id: str) -> Dict[str, Any]:
         {"job_id": job_id, "from": previous_status, "to": JobStatus.DELETED.value, "at": _utc_now()},
     )
     return {"job_id": job_id, "status": job["status"], "detail": "Job deleted; cleanup marked."}
+
+
+app.include_router(api_router)
+
+
+# ---------------------------------------------------------------------------
+# Dev-only endpoint — NOT for production use
+# ---------------------------------------------------------------------------
+@app.post("/dev/jobs/{job_id}/simulate", tags=["dev"])
+async def dev_simulate(job_id: str) -> Dict[str, Any]:
+    """Advance a queued/processing job to needs_review with a mock draft.
+    Only useful for local development without Service Bus workers."""
+    job = await _repo_get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    mock_draft = {
+        "pdd": {
+            "purpose": "Demonstrate the PFCD review workflow end-to-end.",
+            "scope": "Single process from intake to approval.",
+            "roles": ["Analyst", "Reviewer", "Approver"],
+            "systems": ["CRM", "Document Store"],
+            "steps": [
+                {
+                    "id": "step-1",
+                    "summary": "Analyst receives and logs intake request",
+                    "actor": "Analyst",
+                    "system": "CRM",
+                    "input": "Email request",
+                    "output": "Logged ticket",
+                    "source_anchor": "00:00:30",
+                },
+                {
+                    "id": "step-2",
+                    "summary": "Reviewer validates completeness",
+                    "actor": "Reviewer",
+                    "system": "Document Store",
+                    "input": "Logged ticket",
+                    "output": "Validated document",
+                    "source_anchor": "00:01:15",
+                },
+                {
+                    "id": "step-3",
+                    "summary": "Approver signs off and closes ticket",
+                    "actor": "Approver",
+                    "system": "CRM",
+                    "input": "Validated document",
+                    "output": "Approved record",
+                    "source_anchor": "00:02:45",
+                },
+            ],
+        },
+        "sipoc": [
+            {
+                "supplier": "Client",
+                "input": "Email request",
+                "process_step": "Log intake",
+                "output": "Ticket",
+                "customer": "Analyst",
+                "source_anchor": "00:00:30",
+            },
+            {
+                "supplier": "Analyst",
+                "input": "Ticket",
+                "process_step": "Validate completeness",
+                "output": "Validated doc",
+                "customer": "Reviewer",
+                "source_anchor": "00:01:15",
+            },
+            {
+                "supplier": "Reviewer",
+                "input": "Validated doc",
+                "process_step": "Approve and close",
+                "output": "Approved record",
+                "customer": "Approver",
+                "source_anchor": "00:02:45",
+            },
+        ],
+        "confidence_summary": {
+            "overall": 0.82,
+            "evidence_strength": "medium",
+            "source_quality": "good",
+        },
+        "assumptions": [],
+        "generated_at": _utc_now(),
+    }
+
+    job["status"] = JobStatus.NEEDS_REVIEW.value
+    job["current_phase"] = "reviewing"
+    job["draft"] = mock_draft
+    job["review_notes"] = {
+        "flags": [
+            {
+                "severity": "warning",
+                "code": "low_confidence_step",
+                "message": "Step 3 confidence below threshold (0.65)",
+                "field": "pdd.steps[2]",
+            },
+            {
+                "severity": "info",
+                "code": "speaker_unresolved",
+                "message": "One speaker identity not confirmed",
+                "field": None,
+            },
+        ]
+    }
+    job["user_saved_draft"] = True
+    job["user_saved_at"] = _utc_now()
+    job["updated_at"] = _utc_now()
+    await _repo_upsert_job(job_id, job)
+    return {"job_id": job_id, "status": job["status"], "detail": "Simulated needs_review state."}

@@ -25,6 +25,13 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      - name: Set CORS origins on App Service
+        run: |
+          az webapp config appsettings set \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WEBAPP_NAME }} \
+            --settings PFCD_CORS_ORIGINS="${{ secrets.PFCD_CORS_ORIGINS }}"
+
       - name: Deploy to Azure App Service
         run: |
           cd backend
@@ -34,4 +41,7 @@ jobs:
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WEBAPP_NAME }} \
             --src-path ./backend.zip \
-            --type zip
+            --type zip \
+            --async
+          sleep 20
+          curl -f "https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net/health"

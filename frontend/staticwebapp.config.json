@@ -1,0 +1,17 @@
+{
+  "navigationFallback": {
+    "rewrite": "/index.html",
+    "exclude": ["/api/*", "/dev/*", "/*.{js,css,png,jpg,svg,ico,woff2}"]
+  },
+  "routes": [
+    {
+      "route": "/health",
+      "rewrite": "/health"
+    }
+  ],
+  "globalHeaders": {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://*.azurewebsites.net https://*.azurestaticapps.net"
+  }
+}
