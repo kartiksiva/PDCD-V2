@@ -4,11 +4,34 @@ This file provides context, conventions, and workflows for AI assistants working
 
 ---
 
+## Session Bootstrap Protocol (MANDATORY)
+
+**At the start of every task or session, before writing any code or making any changes:**
+
+1. Read `CLAUDE.md` (this file) — conventions, rules, status
+2. Read `IMPLEMENTATION_SUMMARY.md` — rolling log of what has been built and what remains
+3. Read `prd.md` — authoritative product requirements; never modify requirements, only the progress section
+4. Read `REFERENCE.md` only when navigating files, setting up the environment, writing infra/config code, or checking API/data model details
+
+These files are the persistent project memory. Context is cleared between sessions, so these files are the only source of truth for current project state.
+
+**After completing any meaningful work:**
+
+Update these files to reflect the new state:
+- `CLAUDE.md` → update Implementation Status section (date, Done/Not-yet lists)
+- `IMPLEMENTATION_SUMMARY.md` → append a new subsection or update the relevant section with what was built, bugs fixed, design decisions made
+- `prd.md` → update the Implementation Progress milestone table at the bottom only; never edit requirements
+- `REFERENCE.md` → update only when APIs, infra naming, file layout, or env vars actually change (it is stable reference, not a session log)
+
+Keep updates factual and concise. Future Claude sessions depend on these files being accurate.
+
+---
+
 ## Project Overview
 
 **PFCD Video-First v1** is an Azure-native process documentation system. It ingests video/audio/transcript evidence, runs agentic extraction and review pipelines, and produces structured process documentation (PDD + SIPOC) in multiple export formats.
 
-The system is currently in a **skeleton phase**: the API contract, state machine, SQL schema, and Azure orchestration are implemented; real agent logic (transcription, evidence extraction, review quality gates) is stubbed/simulated.
+The system has completed its skeleton phase. The API, state machine, SQL schema, Azure orchestration, and core agent layer (extraction, processing, reviewing, alignment, evidence strength) are all implemented. Real LLM calls use Semantic Kernel 1.x via `DefaultAzureCredential`.
 
 Reference documents:
 - `prd.md` — authoritative product requirements and evidence hierarchy rules
@@ -16,130 +39,24 @@ Reference documents:
 - `GEMINI.md` — architecture overview and planning context
 - `REVIEW_CLOSURE_2026-03-21.md` — skeleton approval status and conditions
 
----
-
-## Repository Layout
-
-```
-PDCD-V2/
-├── backend/               # FastAPI application (Python)
-│   ├── app/               # Core application modules
-│   │   ├── main.py        # FastAPI app, HTTP endpoints, app lifecycle
-│   │   ├── models.py      # SQLAlchemy ORM table definitions
-│   │   ├── job_logic.py   # Job state machine, enums, payload helpers
-│   │   ├── repository.py  # Persistence layer (JobRepository)
-│   │   ├── db.py          # DB engine setup, session_scope context manager
-│   │   ├── servicebus.py  # Azure Service Bus orchestration
-│   │   ├── storage.py     # Blob/local export storage abstraction
-│   │   └── workers/
-│   │       └── runner.py  # Service Bus worker (phase handler)
-│   ├── alembic/           # DB migrations
-│   │   └── versions/      # Migration scripts (20260401_0001_init.py)
-│   ├── requirements.txt   # Python dependencies (pinned)
-│   └── alembic.ini        # Alembic config
-├── frontend/              # Placeholder (not yet implemented)
-├── infra/
-│   ├── dev-bootstrap.sh   # Idempotent Azure resource provisioning script
-│   └── README.md          # Infra setup and verification guide
-├── tests/
-│   └── unit/
-│       └── test_repository.py  # pytest unit tests
-├── .github/
-│   └── workflows/
-│       └── deploy-backend.yml  # GitHub Actions CI/CD (zip deploy to App Service)
-├── prd.md
-├── AGENTS.md
-├── GEMINI.md
-└── IMPLEMENTATION_SUMMARY.md
-```
+For file layout, tech stack, env vars, API endpoints, data model, Azure infra, and CI/CD details → see `REFERENCE.md`
 
 ---
 
-## Tech Stack
+## Authentication
 
-| Layer | Technology | Version |
-|-------|------------|---------|
-| Language | Python | 3.11 |
-| Web framework | FastAPI | 0.116.0 |
-| ASGI server | Uvicorn | 0.34.0 |
-| Data validation | Pydantic | 2.10.0 |
-| ORM | SQLAlchemy | 2.0.38 |
-| DB migrations | Alembic | 1.13.3 |
-| DB (local) | SQLite | built-in |
-| DB (prod) | Azure SQL Server | via pyodbc 5.2.0 |
-| Async support | anyio | 4.9.0 |
-| Message queue | Azure Service Bus | 7.12.1 |
-| Blob storage | Azure Blob Storage | 12.25.0 |
-| Azure auth | azure-identity | 1.19.0 |
-| PDF export | fpdf2 | 2.8.1 |
-| Testing | pytest | 8.3.1 |
+All `/api/*` endpoints require the `X-API-Key` header when `PFCD_API_KEY` is set.
 
----
+| Scenario | Result |
+|----------|--------|
+| `PFCD_API_KEY` unset | Auth disabled — all requests pass (local dev) |
+| Header absent, auth enabled | `401 Unauthorized` |
+| Header present but wrong | `403 Forbidden` |
+| Header matches `PFCD_API_KEY` | Request proceeds normally |
 
-## Development Setup
+`/health` is always public regardless of `PFCD_API_KEY`.
 
-```bash
-# Install dependencies
-cd backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# Run DB migrations
-alembic upgrade head
-
-# Start API server (local dev)
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
-```
-
-### Required Environment Variables
-
-| Variable | Purpose | Default |
-|----------|---------|---------|
-| `DATABASE_URL` | SQLAlchemy connection string | `sqlite:///./pfcd.db` |
-| `AZURE_STORAGE_CONNECTION_STRING` | Blob storage | local fallback if unset |
-| `AZURE_SERVICE_BUS_CONNECTION_STRING` | Service Bus namespace | `""` (skips queue dispatch) |
-| `AZURE_SERVICE_BUS_QUEUE_EXTRACTING` | Queue name | `extracting` |
-| `AZURE_SERVICE_BUS_QUEUE_PROCESSING` | Queue name | `processing` |
-| `AZURE_SERVICE_BUS_QUEUE_REVIEWING` | Queue name | `reviewing` |
-| `PFCD_WORKER_ROLE` | Worker phase (`extracting`/`processing`/`reviewing`) | — |
-
-### Starting Workers (Service Bus Phases)
-
-```bash
-PFCD_WORKER_ROLE=extracting python -m app.workers.runner
-PFCD_WORKER_ROLE=processing python -m app.workers.runner
-PFCD_WORKER_ROLE=reviewing python -m app.workers.runner
-```
-
----
-
-## Running Tests
-
-```bash
-cd backend
-pytest tests/unit/test_repository.py
-```
-
-Tests use `tmp_path` fixture with an isolated SQLite database; no Azure credentials required. They monkeypatch `DATABASE_URL` and reload modules to pick up the change.
-
-**Test naming convention:** `tests/<layer>/<feature>_test.<ext>` with behavior-focused names (e.g., `test_video_without_audio_forces_review`).
-
----
-
-## API Endpoints
-
-Base path: `/api`
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/jobs` | Create a new job (accepts `JobCreateRequest`) |
-| GET | `/api/jobs/{job_id}` | Get job state and payload |
-| PUT | `/api/jobs/{job_id}/draft` | Update draft (reconcile review notes) |
-| POST | `/api/jobs/{job_id}/finalize` | Finalize draft (move to FINALIZING) |
-| GET | `/api/jobs/{job_id}/exports/{format}` | Export draft (`json`, `markdown`, `pdf`, `docx`) |
-| DELETE | `/api/jobs/{job_id}` | Soft-delete / mark job expired |
-| GET | `/health` | Health check (`{"status": "ok"}`) |
+Uses `secrets.compare_digest` to prevent timing attacks. Implemented in `backend/app/auth.py`.
 
 ---
 
@@ -154,22 +71,6 @@ QUEUED → PROCESSING → NEEDS_REVIEW → FINALIZING → COMPLETED
 - Transitions driven by Service Bus worker phases (extracting → processing → reviewing)
 - `phase_attempt` tracks retry count per phase
 - `error` field (JSON TEXT) stores exception details on failure
-
----
-
-## Data Model (Database Tables)
-
-| Table | Key Columns | Notes |
-|-------|-------------|-------|
-| `jobs` | `job_id` (PK), `status`, `current_phase`, `phase_attempt`, `ttl_expires_at`, `error` | Core state |
-| `input_manifests` | `job_id` (PK), `payload` (JSON TEXT) | Input file metadata |
-| `review_notes` | `job_id` (PK), `payload` (JSON TEXT) | Review flags (BLOCKER/WARNING/INFO) |
-| `drafts` | `job_id` + `draft_kind` (PK), `payload` (JSON TEXT), `version` | PDD and SIPOC drafts |
-| `agent_runs` | `agent_run_id` (PK), `job_id`, `agent`, `model`, `status`, `duration_ms`, `cost_estimate_usd` | Execution history |
-| `exports` | `job_id` (PK), `payload` (JSON TEXT) | Export metadata |
-| `job_events` | `event_id` (PK), `job_id`, `event_type`, `created_at` | Audit log |
-
-All JSON columns use deterministic serialization: `json.dumps(..., ensure_ascii=True, separators=(',', ':'))`.
 
 ---
 
@@ -253,45 +154,6 @@ Track per-run estimates in the `agent_runs.cost_estimate_usd` column. Respect pr
 
 ---
 
-## Azure Infrastructure
-
-All Azure resources are in resource group `app-pfcd-v2`.
-
-| Resource | Name Pattern |
-|----------|--------------|
-| Storage Account | `pfcd[env]storage` (containers: uploads, evidence, exports, scratch) |
-| Service Bus | `pfcd-[env]-bus` (queues: extracting, processing, reviewing) |
-| SQL Server | `pfcd-[env]-sql` |
-| SQL Database | `pfcd-[env]-jobs` |
-| Key Vault | `pfcd-[env]-kv` |
-| App Service Plan | `pfcd-[env]-asp` (Linux) |
-| Web App | `pfcd-[env]-api` (Python 3.11) |
-| Azure OpenAI | `pfcd-[env]-oai` (model: gpt-4o-mini) |
-| Azure Speech | `pfcd-[env]-speech` |
-
-**Provision dev environment:**
-```bash
-az login
-SPEECH_ACCOUNT_LOCATION=eastus bash infra/dev-bootstrap.sh
-```
-
-The script is idempotent — safe to re-run.
-
-**Authentication:** All Azure SDK clients use `DefaultAzureCredential` (supports Managed Identity, CLI login, and environment variables). Secrets are stored in Key Vault and injected at runtime.
-
----
-
-## CI/CD
-
-**File:** `.github/workflows/deploy-backend.yml`
-
-- Triggers on push to `main` with changes under `backend/**`
-- Deploys via `az webapp deploy` (zip upload)
-- Required secrets: `AZURE_CREDENTIALS`, `AZURE_RESOURCE_GROUP`, `AZURE_WEBAPP_NAME`
-- No automated tests run in CI yet — add pytest step when integration tests exist
-
----
-
 ## Commit Style
 
 Follow conventional commits:
@@ -326,7 +188,7 @@ chore: bump SQLAlchemy to 2.0.38
 
 ---
 
-## Current Implementation Status (as of 2026-04-02)
+## Current Implementation Status (as of 2026-04-05)
 
 **Done:**
 - FastAPI endpoints and job lifecycle API
@@ -336,35 +198,19 @@ chore: bump SQLAlchemy to 2.0.38
 - Blob/local export storage abstraction
 - PDF and Markdown export (basic)
 - Azure infrastructure bootstrap script
-- Unit tests (job roundtrip, event logging)
+- TTL/cleanup worker (`workers/cleanup.py` — expiry scan + data purge)
+- Static API key authentication (X-API-Key header, 401/403, timing-safe)
+- Real agent logic: extraction (SK + asyncio.run) and processing (SK + asyncio.run)
+- Semantic Kernel migration (replaces `openai` SDK, uses `DefaultAzureCredential`)
+- Transcript/video anchor alignment engine (`alignment.py` — VTT cue parsing, 2s tolerance, confidence penalty)
+- Evidence strength computation (`evidence.py` — PRD-compliant source hierarchy, confidence degradation)
+- Worker App Service deployment workflow (`deploy-workers.yml` — parallel extracting/processing/reviewing)
+- `IProcessEvidenceAdapter` contract + `TranscriptAdapter` (VTT/TXT) + `VideoAdapter` (metadata stub) + `AdapterRegistry`
+- Extraction agent uses adapter-normalized content (VTT cleaned, inline anchors, `document_type_manifests` stored)
+- SIPOC schema validation (`sipoc_validator.py` — per-row field check, step_anchor cross-ref, anchor classification, quality gate)
+- 118 unit tests passing (test_repository, test_worker, test_cleanup, test_auth, test_agents, test_adapters, test_sipoc_validator)
 
 **Not yet implemented (next phase):**
-- Real agent logic (extraction, processing, review quality gates)
-- Transcript/video alignment engine
-- Evidence strength computation
-- Adapter pattern for source types
-- SIPOC schema validation
-- Evidence-linked PDF/DOCX rendering
-- TTL/cleanup worker
-- Authentication/authorization layer
+- Evidence-linked PDF/DOCX rendering (frame captures, OCR snippets, evidence bundle manifest)
 - Integration and E2E tests
 - CI test step in GitHub Actions workflow
-
----
-
-## Key Files Quick Reference
-
-| File | What it does |
-|------|-------------|
-| `backend/app/main.py` | All HTTP endpoints, app startup |
-| `backend/app/job_logic.py` | `JobStatus`, `Profile`, `ReviewSeverity` enums; `default_job_payload()` |
-| `backend/app/repository.py` | `JobRepository` — all DB reads/writes |
-| `backend/app/db.py` | `session_scope`, DB engine, `DATABASE_URL` config |
-| `backend/app/servicebus.py` | `ServiceBusOrchestrator`, `build_message()` |
-| `backend/app/storage.py` | `ExportStorage`, save/load blob or local file |
-| `backend/app/workers/runner.py` | Service Bus worker loop, phase dispatch |
-| `backend/app/models.py` | SQLAlchemy ORM table classes |
-| `backend/alembic/versions/20260401_0001_init.py` | Single DB migration creating all tables |
-| `tests/unit/test_repository.py` | pytest unit tests |
-| `infra/dev-bootstrap.sh` | Idempotent Azure provisioning |
-| `prd.md` | Authoritative product requirements |

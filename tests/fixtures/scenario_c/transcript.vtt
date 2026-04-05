@@ -1,0 +1,33 @@
+WEBVTT
+
+NOTE: This transcript was auto-generated from silent screen recording. No audio track detected. Transcript derived from on-screen text captions only.
+
+00:00:00.000 --> 00:00:20.000
+[Screen: SAP Inbox — Finance Analyst logs in and navigates to Invoice Workflow]
+
+00:00:20.000 --> 00:00:40.000
+[Screen: Invoice INV-2024-0041 selected — amount $12,400, vendor Acme Corp, PO-8821 shown]
+
+00:00:40.000 --> 00:01:00.000
+[Screen: SAP MIGO — Goods receipt 5000012 dated 2024-03-15 visible]
+
+00:01:00.000 --> 00:01:20.000
+[Screen: Finance Analyst clicks 'Route for Approval' — Outlook notification sent to AP Manager]
+
+00:01:20.000 --> 00:01:40.000
+[Screen: AP Manager Outlook — approval email received, SAP link clicked]
+
+00:01:40.000 --> 00:02:00.000
+[Screen: SAP three-way match view — PO, GR, invoice all show green checkmarks]
+
+00:02:00.000 --> 00:02:20.000
+[Screen: AP Manager approves invoice — document posted, added to payment queue]
+
+00:02:20.000 --> 00:02:40.000
+[Screen: Payment run scheduled for Friday — ACH transfer to Acme Corp]
+
+00:02:40.000 --> 00:03:00.000
+[Screen: Audit trail spreadsheet updated with approval details]
+
+00:03:00.000 --> 00:03:20.000
+[Screen: SAP — invoice closed, AP aging report run shows zero pending invoices]

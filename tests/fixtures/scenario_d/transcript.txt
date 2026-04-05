@@ -1,0 +1,28 @@
+Contoso Invoice Approval Process — Transcript Only
+
+Section 1: Invoice Receipt and Initial Review
+The Finance Analyst opens the SAP inbox and filters the invoice workflow queue. The analyst selects the incoming invoice from vendor Acme Corp (INV-2024-0041) for $12,400 referencing purchase order PO-8821.
+
+Section 2: Three-Way Match Verification
+The Finance Analyst verifies the invoice against the purchase order amount and the goods receipt. SAP transaction MIGO confirms goods receipt number 5000012 was completed on 2024-03-15. All three documents match.
+
+Section 3: Approval Routing
+Because the invoice amount exceeds $10,000, the Finance Analyst routes the invoice to the AP Manager for approval. SAP automatically generates an Outlook notification to the AP Manager.
+
+Section 4: AP Manager Review
+The AP Manager opens the invoice from the Outlook notification link. The AP Manager reviews the vendor master record confirming Acme Corp is an approved vendor with net-30 payment terms and no account holds.
+
+Section 5: AP Manager Approval
+The AP Manager approves the invoice in SAP. The system posts the approval document and places the invoice in the payment run queue. Approval timestamp is recorded.
+
+Section 6: Payment Scheduling
+The approved invoice is queued for the next Friday payment run. The vendor will receive funds via ACH within two business days of the payment run.
+
+Section 7: Audit Logging
+The AP Manager records the approval details in the compliance audit spreadsheet including invoice number, amount, approver name, and approval timestamp.
+
+Section 8: Process Closure
+The Finance Analyst closes the invoice record in SAP and marks the vendor correspondence complete in Outlook. The Finance Analyst runs the end-of-day AP aging report to confirm no invoices remain in pending status.
+
+Section 9: Month-End Reconciliation
+On the last business day of each month, the AP team reconciles the accounts payable subledger against the general ledger. Discrepancies are escalated to the CFO for review.

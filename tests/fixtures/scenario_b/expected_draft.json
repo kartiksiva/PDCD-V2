@@ -1,0 +1,82 @@
+{
+  "scenario": "b",
+  "description": "Video + audio + mismatched transcript (HR onboarding transcript on invoice approval video)",
+  "input_metadata": {
+    "has_video": true,
+    "has_audio": true,
+    "has_transcript": true
+  },
+  "transcript_media_consistency": {
+    "verdict": "suspected_mismatch",
+    "similarity_score": 0.21
+  },
+  "extracted_evidence": {
+    "evidence_items": [
+      {"id": "ev-01", "summary": "HR Coordinator accesses Workday to confirm offer letter signature", "actor": "HR Coordinator", "system": "Workday", "input_artifact": "Offer letter", "output_artifact": "Countersigned offer confirmation", "anchor": "00:00:15-00:00:35", "confidence": 0.70},
+      {"id": "ev-02", "summary": "HR Coordinator creates employee record in Workday", "actor": "HR Coordinator", "system": "Workday", "input_artifact": "Employee data", "output_artifact": "Employee record", "anchor": "00:00:35-00:00:55", "confidence": 0.68},
+      {"id": "ev-03", "summary": "IT Support provisions laptop through MDM portal", "actor": "IT Support", "system": "MDM", "input_artifact": "Provisioning request", "output_artifact": "Configured laptop", "anchor": "00:00:55-00:01:15", "confidence": 0.72},
+      {"id": "ev-04", "summary": "HR Coordinator sends welcome email from Outlook", "actor": "HR Coordinator", "system": "Outlook", "input_artifact": "Onboarding checklist", "output_artifact": "Welcome email", "anchor": "00:01:15-00:01:35", "confidence": 0.65},
+      {"id": "ev-05", "summary": "IT Support creates Azure AD account and assigns roles", "actor": "IT Support", "system": "Azure AD", "input_artifact": "Employee record", "output_artifact": "User account with temp credentials", "anchor": "00:01:35-00:01:55", "confidence": 0.71}
+    ],
+    "speakers_detected": ["HR Coordinator", "IT Support"],
+    "process_domain": "HR Onboarding",
+    "transcript_quality": "medium"
+  },
+  "draft": {
+    "pdd": {
+      "purpose": "Onboard new employees through HR and IT provisioning steps.",
+      "scope": "Covers offer confirmation through equipment provisioning. Domain mismatch detected — content may not reflect the video.",
+      "triggers": ["New hire start date confirmed"],
+      "preconditions": ["Offer letter countersigned", "Employee record created in Workday"],
+      "steps": [
+        {"id": "step-01", "summary": "Confirm countersigned offer letter in Workday", "actor": "HR Coordinator", "system": "Workday", "input": "Offer letter", "output": "Confirmation", "exception": null, "source_anchors": [{"source": "transcript", "anchor": "00:00:15-00:00:35", "confidence": 0.70}]},
+        {"id": "step-02", "summary": "Create employee record in Workday", "actor": "HR Coordinator", "system": "Workday", "input": "Employee data", "output": "Employee record", "exception": null, "source_anchors": [{"source": "transcript", "anchor": "00:00:35-00:00:55", "confidence": 0.68}]},
+        {"id": "step-03", "summary": "Provision laptop via MDM", "actor": "IT Support", "system": "MDM", "input": "Provisioning request", "output": "Configured laptop", "exception": null, "source_anchors": [{"source": "transcript", "anchor": "00:00:55-00:01:15", "confidence": 0.72}]},
+        {"id": "step-04", "summary": "Send welcome email from Outlook", "actor": "HR Coordinator", "system": "Outlook", "input": "Onboarding checklist", "output": "Welcome email", "exception": null, "source_anchors": [{"source": "transcript", "anchor": "00:01:15-00:01:35", "confidence": 0.65}]},
+        {"id": "step-05", "summary": "Create Azure AD account and assign roles", "actor": "IT Support", "system": "Azure AD", "input": "Employee record", "output": "User account", "exception": null, "source_anchors": [{"source": "transcript", "anchor": "00:01:35-00:01:55", "confidence": 0.71}]}
+      ],
+      "roles": ["HR Coordinator", "IT Support"],
+      "systems": ["Workday", "MDM", "Outlook", "Azure AD"],
+      "business_rules": ["Offer must be countersigned before provisioning begins"],
+      "exceptions": [],
+      "outputs": ["Provisioned employee with system access"],
+      "metrics": {"coverage": "medium", "confidence": 0.62},
+      "risks": ["transcript_mismatch"]
+    },
+    "sipoc": [
+      {"step_anchor": ["step-01", "step-02"], "source_anchor": "00:00:15-00:00:55", "supplier": "Recruiting Team", "input": "Countersigned offer letter", "process_step": "Create employee record in Workday", "output": "Employee record", "customer": "HR Coordinator", "anchor_missing_reason": null},
+      {"step_anchor": ["step-03", "step-05"], "source_anchor": "00:00:55-00:01:55", "supplier": "HR Coordinator", "input": "Employee record", "process_step": "IT provisioning — laptop and Azure AD", "output": "Configured laptop, user account", "customer": "New Hire", "anchor_missing_reason": null}
+    ],
+    "assumptions": [
+      "Transcript is from a different process than the recorded video — content accuracy cannot be guaranteed"
+    ],
+    "confidence_summary": {
+      "overall": 0.62,
+      "source_quality": "medium",
+      "evidence_strength": "high"
+    },
+    "generated_at": "2026-04-03T00:00:00+00:00",
+    "version": 1
+  },
+  "agent_review": {
+    "decision": "needs_review",
+    "decision_at": "2026-04-03T00:00:00+00:00",
+    "reviewer": "review_agent_v1"
+  },
+  "review_notes": {
+    "flags": [
+      {
+        "code": "transcript_mismatch",
+        "severity": "warning",
+        "message": "Transcript content appears inconsistent with the video/audio source.",
+        "requires_user_action": false
+      }
+    ],
+    "assumptions": []
+  },
+  "agent_signals": {
+    "evidence_strength": "high",
+    "transcript_parsed": true,
+    "alignment": "suspected_mismatch"
+  }
+}

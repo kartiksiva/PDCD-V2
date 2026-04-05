@@ -399,3 +399,16 @@ Given transcript-only fallback:
     - `estimated_cost_usd > cost_cap_usd * 0.8`, or
     - quality profile source duration > 90 minutes.
   - warning payload includes `estimated_cost_usd`, `cost_cap_usd`, and expected duration.
+
+---
+
+## Implementation Progress (as of 2026-04-05)
+
+| Milestone | Status |
+|-----------|--------|
+| Week 1: Infrastructure & skeleton API | ✅ Complete |
+| Week 2: Agent layer (extraction, processing, reviewing) | ✅ Complete |
+| Week 3: Alignment + evidence strength | ✅ Complete |
+| Week 4: Adapter pattern, SIPOC validation | ✅ Complete |
+| Week 5: Evidence-linked exports | 🔲 Not started |
+| Week 6: Integration/E2E tests, CI test step | 🔲 Not started |

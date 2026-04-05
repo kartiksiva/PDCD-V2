@@ -1,8 +1,8 @@
 fastapi==0.116.0
 python-multipart==0.0.20
-openai>=1.30.0
+semantic-kernel>=1.41.1
 uvicorn[standard]==0.34.0
-pydantic==2.10.0
+pydantic>=2.11.0
 SQLAlchemy==2.0.38
 alembic==1.13.3
 azure-storage-blob==12.25.0

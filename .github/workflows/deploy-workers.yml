@@ -1,0 +1,96 @@
+name: Deploy Workers
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/deploy-workers.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build zip
+        run: cd backend && zip -r ../worker.zip . -x "*.pyc" -x "__pycache__/*"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: worker-zip
+          path: worker.zip
+
+  deploy-extracting:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: worker-zip
+      - uses: azure/login@v2
+        with:
+          creds: '${{ secrets.AZURE_CREDENTIALS }}'
+      - name: Deploy extracting worker
+        run: |
+          az webapp deploy \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WORKER_EXTRACTING_NAME }} \
+            --src-path worker.zip --type zip
+          az webapp config appsettings set \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WORKER_EXTRACTING_NAME }} \
+            --settings PFCD_WORKER_ROLE=extracting
+          az webapp config set \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WORKER_EXTRACTING_NAME }} \
+            --startup-file "python -m app.workers.runner"
+
+  deploy-processing:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: worker-zip
+      - uses: azure/login@v2
+        with:
+          creds: '${{ secrets.AZURE_CREDENTIALS }}'
+      - name: Deploy processing worker
+        run: |
+          az webapp deploy \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WORKER_PROCESSING_NAME }} \
+            --src-path worker.zip --type zip
+          az webapp config appsettings set \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WORKER_PROCESSING_NAME }} \
+            --settings PFCD_WORKER_ROLE=processing
+          az webapp config set \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WORKER_PROCESSING_NAME }} \
+            --startup-file "python -m app.workers.runner"
+
+  deploy-reviewing:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: worker-zip
+      - uses: azure/login@v2
+        with:
+          creds: '${{ secrets.AZURE_CREDENTIALS }}'
+      - name: Deploy reviewing worker
+        run: |
+          az webapp deploy \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WORKER_REVIEWING_NAME }} \
+            --src-path worker.zip --type zip
+          az webapp config appsettings set \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WORKER_REVIEWING_NAME }} \
+            --settings PFCD_WORKER_ROLE=reviewing
+          az webapp config set \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WORKER_REVIEWING_NAME }} \
+            --startup-file "python -m app.workers.runner"

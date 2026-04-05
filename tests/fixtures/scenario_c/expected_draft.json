@@ -1,0 +1,98 @@
+{
+  "scenario": "c",
+  "description": "Video without audio + transcript (frame-first evidence scenario)",
+  "input_metadata": {
+    "has_video": true,
+    "has_audio": false,
+    "has_transcript": true
+  },
+  "transcript_media_consistency": {
+    "verdict": "match",
+    "similarity_score": 0.81
+  },
+  "extracted_evidence": {
+    "evidence_items": [
+      {"id": "ev-01", "summary": "Finance Analyst opens SAP inbox and navigates to Invoice Workflow", "actor": "Finance Analyst", "system": "SAP", "input_artifact": "SAP inbox", "output_artifact": "Invoice workflow view", "anchor": "00:00:00-00:00:20", "confidence": 0.75},
+      {"id": "ev-02", "summary": "Invoice INV-2024-0041 from Acme Corp selected with PO-8821 visible", "actor": "Finance Analyst", "system": "SAP", "input_artifact": "Invoice list", "output_artifact": "Invoice detail view", "anchor": "00:00:20-00:00:40", "confidence": 0.78},
+      {"id": "ev-03", "summary": "SAP MIGO shows goods receipt 5000012 dated 2024-03-15", "actor": "Finance Analyst", "system": "SAP", "input_artifact": "Goods receipt lookup", "output_artifact": "Delivery confirmation", "anchor": "00:00:40-00:01:00", "confidence": 0.76},
+      {"id": "ev-04", "summary": "Finance Analyst routes invoice for approval via SAP; Outlook notification sent", "actor": "Finance Analyst", "system": "SAP, Outlook", "input_artifact": "Verified invoice", "output_artifact": "Approval notification", "anchor": "00:01:00-00:01:20", "confidence": 0.74},
+      {"id": "ev-05", "summary": "AP Manager receives approval email and opens SAP link", "actor": "AP Manager", "system": "Outlook, SAP", "input_artifact": "Approval email", "output_artifact": "Invoice review screen", "anchor": "00:01:20-00:01:40", "confidence": 0.73},
+      {"id": "ev-06", "summary": "SAP three-way match view shows green checkmarks on all three documents", "actor": "AP Manager", "system": "SAP", "input_artifact": "PO, GR, Invoice", "output_artifact": "Match confirmation", "anchor": "00:01:40-00:02:00", "confidence": 0.79},
+      {"id": "ev-07", "summary": "AP Manager approves invoice; document posted to payment queue", "actor": "AP Manager", "system": "SAP", "input_artifact": "Reviewed invoice", "output_artifact": "Posted approval, payment queue entry", "anchor": "00:02:00-00:02:20", "confidence": 0.82},
+      {"id": "ev-08", "summary": "Payment run scheduled for Friday via ACH", "actor": "Finance Analyst", "system": "SAP", "input_artifact": "Approved invoice", "output_artifact": "Payment run entry", "anchor": "00:02:20-00:02:40", "confidence": 0.71},
+      {"id": "ev-09", "summary": "Audit trail spreadsheet updated with approval details", "actor": "AP Manager", "system": "Spreadsheet", "input_artifact": "Approval record", "output_artifact": "Audit trail entry", "anchor": "00:02:40-00:03:00", "confidence": 0.70},
+      {"id": "ev-10", "summary": "Invoice closed in SAP; AP aging report confirms zero pending invoices", "actor": "Finance Analyst", "system": "SAP", "input_artifact": "Approved invoice", "output_artifact": "Closed invoice, clean AP aging report", "anchor": "00:03:00-00:03:20", "confidence": 0.72}
+    ],
+    "speakers_detected": [],
+    "process_domain": "Accounts Payable — Invoice Approval",
+    "transcript_quality": "medium"
+  },
+  "draft": {
+    "pdd": {
+      "purpose": "Approve vendor invoices through a three-way match verification and AP Manager sign-off.",
+      "scope": "Covers invoice receipt through payment scheduling. Audio not available; steps derived from screen captions.",
+      "triggers": ["Vendor invoice received in SAP inbox"],
+      "preconditions": ["Purchase order exists", "Goods receipt posted", "Vendor is active"],
+      "steps": [
+        {"id": "step-01", "summary": "Open SAP inbox and navigate to Invoice Workflow", "actor": "Finance Analyst", "system": "SAP", "input": "SAP inbox", "output": "Invoice workflow view", "exception": null, "source_anchors": [{"source": "transcript", "anchor": "00:00:00-00:00:20", "confidence": 0.75}]},
+        {"id": "step-02", "summary": "Select invoice INV-2024-0041", "actor": "Finance Analyst", "system": "SAP", "input": "Invoice list", "output": "Invoice detail", "exception": null, "source_anchors": [{"source": "transcript", "anchor": "00:00:20-00:00:40", "confidence": 0.78}]},
+        {"id": "step-03", "summary": "Verify goods receipt in SAP MIGO", "actor": "Finance Analyst", "system": "SAP", "input": "Goods receipt number", "output": "Delivery confirmation", "exception": null, "source_anchors": [{"source": "transcript", "anchor": "00:00:40-00:01:00", "confidence": 0.76}]},
+        {"id": "step-04", "summary": "Route invoice for AP Manager approval", "actor": "Finance Analyst", "system": "SAP, Outlook", "input": "Verified invoice", "output": "Approval notification email", "exception": null, "source_anchors": [{"source": "transcript", "anchor": "00:01:00-00:01:20", "confidence": 0.74}]},
+        {"id": "step-05", "summary": "AP Manager opens invoice from email link", "actor": "AP Manager", "system": "Outlook, SAP", "input": "Approval email", "output": "Invoice review screen", "exception": null, "source_anchors": [{"source": "transcript", "anchor": "00:01:20-00:01:40", "confidence": 0.73}]},
+        {"id": "step-06", "summary": "Verify three-way match in SAP", "actor": "AP Manager", "system": "SAP", "input": "PO, GR, Invoice", "output": "Match confirmation", "exception": null, "source_anchors": [{"source": "transcript", "anchor": "00:01:40-00:02:00", "confidence": 0.79}]},
+        {"id": "step-07", "summary": "Approve invoice in SAP", "actor": "AP Manager", "system": "SAP", "input": "Reviewed invoice", "output": "Posted approval, payment queue entry", "exception": null, "source_anchors": [{"source": "transcript", "anchor": "00:02:00-00:02:20", "confidence": 0.82}]},
+        {"id": "step-08", "summary": "Schedule payment run for Friday", "actor": "Finance Analyst", "system": "SAP", "input": "Approved invoice", "output": "Payment scheduled", "exception": null, "source_anchors": [{"source": "transcript", "anchor": "00:02:20-00:02:40", "confidence": 0.71}]},
+        {"id": "step-09", "summary": "Log approval in audit trail", "actor": "AP Manager", "system": "Spreadsheet", "input": "Approval details", "output": "Audit entry", "exception": null, "source_anchors": [{"source": "transcript", "anchor": "00:02:40-00:03:00", "confidence": 0.70}]},
+        {"id": "step-10", "summary": "Close invoice and confirm AP aging report is clear", "actor": "Finance Analyst", "system": "SAP", "input": "Approved invoice", "output": "Closed record, clean AP report", "exception": null, "source_anchors": [{"source": "transcript", "anchor": "00:03:00-00:03:20", "confidence": 0.72}]}
+      ],
+      "roles": ["Finance Analyst", "AP Manager"],
+      "systems": ["SAP", "Outlook", "Spreadsheet"],
+      "business_rules": [
+        "Three-way match required before approval",
+        "AP Manager must approve invoices above $10,000"
+      ],
+      "exceptions": ["Goods not received — hold invoice"],
+      "outputs": ["Approved invoice in payment queue", "Audit trail entry"],
+      "metrics": {"coverage": "medium", "confidence": 0.68},
+      "risks": ["frame_first_evidence"]
+    },
+    "sipoc": [
+      {"step_anchor": ["step-01", "step-02"], "source_anchor": "00:00:00-00:00:40", "supplier": "Vendor", "input": "Invoice", "process_step": "Receive and select invoice in SAP", "output": "Invoice detail", "customer": "Finance Analyst", "anchor_missing_reason": null},
+      {"step_anchor": ["step-03", "step-04"], "source_anchor": "00:00:40-00:01:20", "supplier": "Finance Analyst", "input": "PO, GR, Invoice", "process_step": "Three-way match and routing", "output": "Approval notification", "customer": "AP Manager", "anchor_missing_reason": null},
+      {"step_anchor": ["step-05", "step-06", "step-07"], "source_anchor": "00:01:20-00:02:20", "supplier": "AP Manager", "input": "Approval notification, invoice", "process_step": "AP Manager review and approval", "output": "Approved document", "customer": "Payment engine", "anchor_missing_reason": null},
+      {"step_anchor": ["step-08", "step-09", "step-10"], "source_anchor": "00:02:20-00:03:20", "supplier": "AP Manager", "input": "Approved invoice", "process_step": "Payment scheduling and closure", "output": "Payment queued, audit log, closed invoice", "customer": "Vendor, Accounting", "anchor_missing_reason": null}
+    ],
+    "assumptions": [
+      "Steps inferred from screen captions only — no audio narration available",
+      "Actor assignments may be inaccurate without audio confirmation"
+    ],
+    "confidence_summary": {
+      "overall": 0.68,
+      "source_quality": "medium",
+      "evidence_strength": "medium"
+    },
+    "generated_at": "2026-04-03T00:00:00+00:00",
+    "version": 1
+  },
+  "agent_review": {
+    "decision": "needs_review",
+    "decision_at": "2026-04-03T00:00:00+00:00",
+    "reviewer": "review_agent_v1"
+  },
+  "review_notes": {
+    "flags": [
+      {
+        "code": "frame_first_evidence",
+        "severity": "warning",
+        "message": "Video audio is not available; sequence is derived with stronger frame evidence.",
+        "requires_user_action": false
+      }
+    ],
+    "assumptions": []
+  },
+  "agent_signals": {
+    "evidence_strength": "medium",
+    "transcript_parsed": true,
+    "alignment": "match"
+  }
+}

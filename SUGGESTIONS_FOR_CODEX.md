@@ -60,3 +60,16 @@ az webapp identity show --name pfcd-dev-api --resource-group app-pfcd-v2
 # Verify Key Vault Secrets Access
 az keyvault secret list --vault-name pfcd-dev-kv
 ```
+
+## 6. Session Update (2026-04-01)
+### Completed
+- Backend deployed to App Service; `/health` returns 200.
+- Oryx build enabled with `SCM_DO_BUILD_DURING_DEPLOYMENT=true`.
+- SQL connectivity hardened (firewall rule, connection string flags, password rotation on rerun).
+- Key Vault RBAC enabled and secrets wired via App Service settings.
+- GitHub Actions switched to Service Principal auth and zip deploy.
+
+### Remaining / Follow-up
+- Update `infra/README.md` deployment section to reflect Service Principal auth (currently mentions publish profile).
+- Rotate any exposed secrets (SQL admin + Key Vault connection string, SP if needed).
+- Consider replacing AllowAzureServices firewall rule with App Service outbound IP allowlist for tighter security.

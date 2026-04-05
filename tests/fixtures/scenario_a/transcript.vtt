@@ -1,0 +1,46 @@
+WEBVTT
+
+00:00:00.000 --> 00:00:12.000
+Finance Analyst: Good morning everyone. Today I'll walk through the invoice approval process at Contoso.
+
+00:00:12.000 --> 00:00:28.000
+Finance Analyst: Step one — I open the SAP inbox and filter for invoices pending approval. Here you can see several invoices from this week.
+
+00:00:28.000 --> 00:00:45.000
+Finance Analyst: I select invoice INV-2024-0041 from Vendor Acme Corp. The system shows the PO number, line items, and the goods receipt confirmation.
+
+00:00:45.000 --> 00:01:05.000
+Finance Analyst: Step two — I verify the invoice amount matches the purchase order. Here PO-8821 shows $12,400 and the invoice shows $12,400. They match.
+
+00:01:05.000 --> 00:01:22.000
+Finance Analyst: Step three — I check the goods receipt in SAP transaction MIGO. Goods receipt 5000012 confirms delivery was completed on 2024-03-15.
+
+00:01:22.000 --> 00:01:40.000
+Finance Analyst: Step four — Since the amount is above $10,000 it requires AP Manager approval. I click 'Route for Approval' and SAP automatically sends an Outlook notification to the AP Manager.
+
+00:01:40.000 --> 00:02:00.000
+AP Manager: I received the Outlook email. Let me open the SAP approval link. I can see the three-way match summary — PO, goods receipt, and invoice all align.
+
+00:02:00.000 --> 00:02:18.000
+AP Manager: Step five — I review the vendor master record. Acme Corp is an approved vendor. Payment terms are net-30. No holds on the account.
+
+00:02:18.000 --> 00:02:35.000
+AP Manager: Step six — I approve the invoice in SAP. The system posts the document and moves it to payment run queue. Approval timestamp recorded: 09:14 UTC.
+
+00:02:35.000 --> 00:02:55.000
+Finance Analyst: Step seven — For invoices over $50,000 there is an additional CFO sign-off. This one is $12,400 so it goes directly to payment scheduling.
+
+00:02:55.000 --> 00:03:15.000
+Finance Analyst: Step eight — I confirm the invoice is now in the payment run. The next payment run is Friday. Vendor will receive funds via ACH within two business days.
+
+00:03:15.000 --> 00:03:35.000
+AP Manager: Step nine — I log the approval in our audit trail spreadsheet with the invoice number, amount, approver, and timestamp for monthly compliance reporting.
+
+00:03:35.000 --> 00:03:50.000
+Finance Analyst: Step ten — I close the invoice in SAP and mark the vendor communication as complete in Outlook. Process is done.
+
+00:03:50.000 --> 00:04:05.000
+Finance Analyst: Step eleven — End-of-day, I run the AP aging report in SAP to ensure no outstanding invoices remain in the pending queue.
+
+00:04:05.000 --> 00:04:20.000
+AP Manager: Step twelve — On the last business day of the month we reconcile the AP subledger against the general ledger. Any discrepancies are escalated to the CFO.

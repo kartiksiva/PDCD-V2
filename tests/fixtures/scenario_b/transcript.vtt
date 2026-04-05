@@ -1,0 +1,28 @@
+WEBVTT
+
+00:00:00.000 --> 00:00:15.000
+HR Coordinator: Good morning. Today we're onboarding our new software engineer, Alex. Let me walk through the HR onboarding checklist.
+
+00:00:15.000 --> 00:00:35.000
+HR Coordinator: First I access Workday to confirm Alex's offer letter is countersigned. The system shows the e-signature was completed on 2024-03-18.
+
+00:00:35.000 --> 00:00:55.000
+HR Coordinator: I create Alex's employee record in Workday. Department: Engineering. Manager: Jordan Smith. Start date: 2024-04-01.
+
+00:00:55.000 --> 00:01:15.000
+IT Support: I provision the laptop through our MDM portal. MacBook Pro, serial number assigned. Pre-loaded with security agents and collaboration tools.
+
+00:01:15.000 --> 00:01:35.000
+HR Coordinator: I send Alex the welcome email from Outlook with first-day instructions, parking details, and the IT helpdesk contact number.
+
+00:01:35.000 --> 00:01:55.000
+IT Support: I create the Azure AD account for Alex and assign role: standard-employee and group: engineering-team. An automated email goes out with temp credentials.
+
+00:01:55.000 --> 00:02:15.000
+HR Coordinator: Alex completes mandatory compliance training in LMS within the first three days. I mark the training modules as required in Workday.
+
+00:02:15.000 --> 00:02:35.000
+HR Coordinator: Step eight — I schedule Alex's 30-60-90 day check-in meetings in Outlook with the hiring manager. Calendar invites sent.
+
+00:02:35.000 --> 00:02:50.000
+IT Support: Confirmed — Alex's equipment is ready for pickup at the IT kiosk on the first day.

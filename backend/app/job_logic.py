@@ -143,7 +143,7 @@ def default_job_payload(payload: JobCreateRequest) -> Dict[str, Any]:
         },
         "review_notes": {"flags": [], "assumptions": []},
         "agent_signals": {
-            "evidence_strength": "medium",
+            "evidence_strength": None,  # set authoritatively by reviewing agent
             "alignment": None,
         },
         "agent_review": {
