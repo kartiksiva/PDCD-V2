@@ -35,7 +35,7 @@ jobs:
           az webapp deploy \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_EXTRACTING_NAME }} \
-            --src-path worker.zip --type zip
+            --src-path worker.zip --type zip --async true
           az webapp config appsettings set \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_EXTRACTING_NAME }} \
@@ -44,6 +44,19 @@ jobs:
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_EXTRACTING_NAME }} \
             --startup-file "python -m app.workers.runner"
+      - name: Verify extracting worker is running
+        run: |
+          echo "Waiting for Kudu to finish extracting zip..."
+          sleep 60
+          state=$(az webapp show \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WORKER_EXTRACTING_NAME }} \
+            --query "state" -o tsv)
+          echo "App state: $state"
+          if [ "$state" != "Running" ]; then
+            echo "ERROR: extracting worker is not Running (state=$state)"
+            exit 1
+          fi
 
   deploy-processing:
     needs: build
@@ -60,7 +73,7 @@ jobs:
           az webapp deploy \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_PROCESSING_NAME }} \
-            --src-path worker.zip --type zip
+            --src-path worker.zip --type zip --async true
           az webapp config appsettings set \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_PROCESSING_NAME }} \
@@ -69,6 +82,19 @@ jobs:
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_PROCESSING_NAME }} \
             --startup-file "python -m app.workers.runner"
+      - name: Verify processing worker is running
+        run: |
+          echo "Waiting for Kudu to finish extracting zip..."
+          sleep 60
+          state=$(az webapp show \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WORKER_PROCESSING_NAME }} \
+            --query "state" -o tsv)
+          echo "App state: $state"
+          if [ "$state" != "Running" ]; then
+            echo "ERROR: processing worker is not Running (state=$state)"
+            exit 1
+          fi
 
   deploy-reviewing:
     needs: build
@@ -85,7 +111,7 @@ jobs:
           az webapp deploy \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_REVIEWING_NAME }} \
-            --src-path worker.zip --type zip
+            --src-path worker.zip --type zip --async true
           az webapp config appsettings set \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_REVIEWING_NAME }} \
@@ -94,3 +120,16 @@ jobs:
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_REVIEWING_NAME }} \
             --startup-file "python -m app.workers.runner"
+      - name: Verify reviewing worker is running
+        run: |
+          echo "Waiting for Kudu to finish extracting zip..."
+          sleep 60
+          state=$(az webapp show \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WORKER_REVIEWING_NAME }} \
+            --query "state" -o tsv)
+          echo "App state: $state"
+          if [ "$state" != "Running" ]; then
+            echo "ERROR: reviewing worker is not Running (state=$state)"
+            exit 1
+          fi
