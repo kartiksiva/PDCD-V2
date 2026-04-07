@@ -39,7 +39,9 @@ jobs:
           az webapp config appsettings set \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_EXTRACTING_NAME }} \
-            --settings PFCD_WORKER_ROLE=extracting
+            --settings PFCD_WORKER_ROLE=extracting \
+              AZURE_OPENAI_ENDPOINT="${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
+              AZURE_OPENAI_DEPLOYMENT_NAME="${{ secrets.AZURE_OPENAI_DEPLOYMENT_NAME }}"
           az webapp config set \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_EXTRACTING_NAME }} \
@@ -77,7 +79,9 @@ jobs:
           az webapp config appsettings set \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_PROCESSING_NAME }} \
-            --settings PFCD_WORKER_ROLE=processing
+            --settings PFCD_WORKER_ROLE=processing \
+              AZURE_OPENAI_ENDPOINT="${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
+              AZURE_OPENAI_DEPLOYMENT_NAME="${{ secrets.AZURE_OPENAI_DEPLOYMENT_NAME }}"
           az webapp config set \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_PROCESSING_NAME }} \
@@ -115,7 +119,9 @@ jobs:
           az webapp config appsettings set \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_REVIEWING_NAME }} \
-            --settings PFCD_WORKER_ROLE=reviewing
+            --settings PFCD_WORKER_ROLE=reviewing \
+              AZURE_OPENAI_ENDPOINT="${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
+              AZURE_OPENAI_DEPLOYMENT_NAME="${{ secrets.AZURE_OPENAI_DEPLOYMENT_NAME }}"
           az webapp config set \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_REVIEWING_NAME }} \
