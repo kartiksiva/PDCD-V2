@@ -188,7 +188,7 @@ chore: bump SQLAlchemy to 2.0.38
 
 ---
 
-## Current Implementation Status (as of 2026-04-05)
+## Current Implementation Status (as of 2026-04-07)
 
 **Done:**
 - FastAPI endpoints and job lifecycle API
@@ -196,21 +196,18 @@ chore: bump SQLAlchemy to 2.0.38
 - Job state machine (QUEUED → COMPLETED/FAILED)
 - Service Bus message queuing and worker framework
 - Blob/local export storage abstraction
-- PDF and Markdown export (basic)
 - Azure infrastructure bootstrap script
 - TTL/cleanup worker (`workers/cleanup.py` — expiry scan + data purge)
 - Static API key authentication (X-API-Key header, 401/403, timing-safe)
 - Real agent logic: extraction (SK + asyncio.run) and processing (SK + asyncio.run)
 - Semantic Kernel migration (replaces `openai` SDK, uses `DefaultAzureCredential`)
-- Transcript/video anchor alignment engine (`alignment.py` — VTT cue parsing, 2s tolerance, confidence penalty)
+- Transcript/video anchor alignment engine (`alignment.py` — VTT cue parsing, 2s tolerance, confidence penalty, first-60s consistency scoring, numeric `similarity_score`, PRD §8.5 verdict; full token similarity pending Azure Speech)
 - Evidence strength computation (`evidence.py` — PRD-compliant source hierarchy, confidence degradation)
 - Worker App Service deployment workflow (`deploy-workers.yml` — parallel extracting/processing/reviewing)
 - `IProcessEvidenceAdapter` contract + `TranscriptAdapter` (VTT/TXT) + `VideoAdapter` (metadata stub) + `AdapterRegistry`
 - Extraction agent uses adapter-normalized content (VTT cleaned, inline anchors, `document_type_manifests` stored)
 - SIPOC schema validation (`sipoc_validator.py` — per-row field check, step_anchor cross-ref, anchor classification, quality gate)
-- 118 unit tests passing (test_repository, test_worker, test_cleanup, test_auth, test_agents, test_adapters, test_sipoc_validator)
-
-**Not yet implemented (next phase):**
-- Evidence-linked PDF/DOCX rendering (frame captures, OCR snippets, evidence bundle manifest)
-- Integration and E2E tests
-- CI test step in GitHub Actions workflow
+- Evidence-linked PDF/DOCX/Markdown exports (`export_builder.py` — evidence bundle manifest, OCR snippets, anchor cross-ref, real DOCX via python-docx; PRD §8.10)
+- 205 tests passing (162 unit + 43 integration)
+- CI test step in GitHub Actions (`deploy-backend.yml` — `test` job gates `deploy`; pytest over unit + integration with SQLite)
+- Bug-fix pass (2026-04-07): OCR anchor field, alignment verdict computation + media gate, runner dead-branch cleanup, AgentRun incremental insert, transcript_mismatch guard in reviewing agent

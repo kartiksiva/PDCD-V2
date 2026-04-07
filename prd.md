@@ -402,7 +402,7 @@ Given transcript-only fallback:
 
 ---
 
-## Implementation Progress (as of 2026-04-05)
+## Implementation Progress (as of 2026-04-07)
 
 | Milestone | Status |
 |-----------|--------|
@@ -410,5 +410,6 @@ Given transcript-only fallback:
 | Week 2: Agent layer (extraction, processing, reviewing) | ✅ Complete |
 | Week 3: Alignment + evidence strength | ✅ Complete |
 | Week 4: Adapter pattern, SIPOC validation | ✅ Complete |
-| Week 5: Evidence-linked exports | 🔲 Not started |
-| Week 6: Integration/E2E tests, CI test step | 🔲 Not started |
+| Week 5: Evidence-linked exports | ✅ Complete |
+| Week 6: Integration/E2E tests, CI test step | ✅ Complete |
+| Bug-fix pass (2026-04-07): OCR anchor field, alignment verdict, media-consistency gate, runner dead-branch, AgentRun persistence, doc drift | ✅ Complete |

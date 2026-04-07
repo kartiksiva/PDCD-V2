@@ -53,7 +53,7 @@ Implemented real LLM-backed agents, anchor alignment, evidence strength computat
 ### Semantic Kernel Migration
 
 - Replaced `openai` SDK with `semantic-kernel>=1.41.1`
-- `kernel_factory.py`: builds SK `Kernel` using `DefaultAzureCredential` + `AzureOpenAIChatCompletion`
+- `kernel_factory.py`: builds SK `Kernel` using `DefaultAzureCredential` + `AzureChatCompletion` (from `semantic_kernel.connectors.ai.open_ai`)
 - `extraction.py`: `_call_extraction` (async SK invocation) + `run_extraction` synchronous wrapper via `asyncio.run`
 - `processing.py`: `_call_processing` (async SK invocation) + `run_processing` synchronous wrapper via `asyncio.run`
 - `reviewing.py`: pure-Python reviewing agent (no LLM call; deterministic quality-gate logic)
@@ -61,22 +61,22 @@ Implemented real LLM-backed agents, anchor alignment, evidence strength computat
 
 ### Anchor Alignment Engine (`alignment.py`)
 
-- `run_anchor_alignment(manifest, extraction_result)` validates VTT cue timestamps against section-label anchors produced by extraction
+- `run_anchor_alignment(job)` validates VTT cue timestamps against section-label anchors produced by extraction (takes the full job dict)
 - VTT cue parsing with 2-second tolerance window for timestamp matching
-- Confidence penalty applied when anchor count falls below threshold or cues are missing
-- Emits `anchor_alignment_summary` signal persisted to `agent_signals` in job payload
-- Verdict values: `match`, `inconclusive`, `suspected_mismatch` (per PRD §8.5)
+- Confidence penalty applied per-item when anchor validation fails; mutates `evidence_items[].confidence` in-place
+- Computes `similarity_score` and `verdict` from valid-anchor ratio in the first 60-second window (PRD §8.5 "first N seconds" scope); writes both to `transcript_media_consistency` when media is present
+- `anchor_alignment_summary` includes: `{validated, invalid, section_label, skipped, verdict, similarity_score, window_sec, window_anchors_checked, consistency_method}`
+- Full token/sequence similarity (PRD §8.5) requires Azure Speech — see module docstring for upgrade path
 
 ### Evidence Strength Computation (`evidence.py`)
 
-- `compute_evidence_strength(manifest, extraction_result)` implements PRD §7 source hierarchy:
-  - `has_video + has_audio` → `"high"` (Priority 1)
-  - `has_video + transcript` (no audio) → `"medium"` (Priority 2)
-  - `audio_only` → `"medium"` (Priority 3)
-  - `transcript_only` → `"low"` (Priority 4)
-- Confidence degradation: mean confidence < 0.60 downgrades strength by one tier
-- Bug fix: `has_video + has_audio` with no transcript was incorrectly returning `"medium"`; now correctly returns `"high"`
-- `evidence_strength` initial sentinel in `default_job_payload()` changed from `"medium"` to `None` to distinguish uncomputed from computed-medium
+- `compute_evidence_strength(has_video, has_audio, has_transcript, evidence_items)` implements PRD §7 source hierarchy:
+  - `has_video + has_audio` → `"high"` (Priority 1 — with or without transcript)
+  - `has_video + has_transcript` (no audio) → `"medium"` (Priority 2)
+  - `has_transcript` only (no video, no audio) → `"medium"` (Priority 3)
+  - all other cases (video only, audio only, or no sources) → `"low"` (Priority 4)
+- Confidence degradation: mean confidence < 0.60 downgrades strength by one tier (high→medium, medium→low)
+- `evidence_strength` initial sentinel in `default_job_payload()` is `None` to distinguish uncomputed from computed-medium
 
 ### Worker Deployment Workflow (`deploy-workers.yml`)
 
@@ -142,10 +142,118 @@ Full PRD §8.8 + §10 quality gate replacing the prior single-anchor existence c
 - `tests/unit/test_sipoc_validator.py`: 21 tests covering quality gate, required fields, step_anchor cross-ref, anchor classification, missing-reason rules, and reviewing agent integration
 - Total passing: 118 (up from 61 at agent layer close)
 
-## Outstanding Items
+---
 
-| Item | Status |
-|------|--------|
-| Evidence-linked PDF/DOCX rendering (frame captures, OCR snippets, evidence bundle manifest) | Not started |
-| Integration and E2E tests | Not started |
-| CI test step in GitHub Actions workflow | Not started |
+## Section 5: Evidence-Linked Exports (2026-04-06)
+
+Implemented PRD §8.10 evidence-linked PDF, DOCX, and Markdown export rendering.
+
+### `export_builder.py`
+
+New module replacing the inline `_build_export_pdf` / `_build_export_markdown` functions in `main.py`.
+
+- **`build_evidence_bundle(finalized_draft, job)`**: builds the evidence bundle manifest
+  - Collects anchors from all PDD step `source_anchors[]` entries and SIPOC row `source_anchor` fields
+  - Classifies each anchor: `timestamp_range`, `frame_id`, `section_label`, `missing`
+  - PRD §8.10 filter: only anchors linked to ≥1 PDD step or SIPOC row are included
+  - Deduplicates by anchor value; merged entries accumulate all linked step IDs
+  - Attaches OCR snippets from `job.extracted_evidence.evidence_items` when anchor matches
+  - Carries `evidence_strength` from `job.agent_signals` and `frame_policy` from `input_manifest`
+  - `frame_captures_note`: honest stub note pending Azure Vision integration
+- **`build_export_markdown(draft, bundle)`**: enhanced Markdown with evidence bundle section (anchor table with type, confidence, linked steps, OCR snippet)
+- **`build_export_pdf(draft, bundle)`**: enhanced PDF with Evidence Bundle section listing all linked anchors, types, confidence, and OCR snippets
+- **`build_export_docx(draft, bundle, job_id)`**: real DOCX using `python-docx==1.1.2` — SIPOC table + Evidence Bundle table
+
+### `main.py` changes
+
+- Removed inline `_build_export_pdf` / `_build_export_markdown`; both `fpdf` import and old functions gone
+- `finalize_job`: calls `build_evidence_bundle(finalized_draft, job)` and passes bundle to all export builders
+- `get_export` fallback path: builds bundle on-the-fly for regenerated exports
+- DOCX content-type updated from `text/plain` to correct `application/vnd.openxmlformats-officedocument.wordprocessingml.document`
+- JSON export `exports_manifest.evidence_bundle` now populated with the real bundle dict
+
+### Dependencies
+
+- `python-docx==1.1.2` added to `requirements.txt`
+
+### Test Coverage
+
+- `tests/unit/test_export_builder.py`: 44 tests covering `_classify_anchor_type`, `build_evidence_bundle` (PRD §8.10 filter, dedup, OCR attachment, step/SIPOC linking), and all three export format builders
+- `tests/unit/test_worker.py`: 5 existing export tests updated to import from `export_builder`
+- Total passing: 162 (up from 118 at Section 4 close)
+
+---
+
+## Section 6: Integration Tests + CI Gate (2026-04-06)
+
+Added a complete integration test suite exercising the real job lifecycle through the FastAPI layer with a real SQLite DB and no Azure services.
+
+### Test Infrastructure
+
+- `pytest.ini` (repo root): `testpaths = tests`, `unit`/`integration` markers registered.
+- `tests/conftest.py`: shared fixtures — `AppContext` NamedTuple, `app_client`, `app_client_with_auth`, `seeded_needs_review_job`, `seeded_completed_job`.
+- Module reload pattern: `importlib.reload(app.db)` → `app.repository` → `app.main` per fixture; each test gets a fresh `tmp_path` SQLite file. `ORCHESTRATOR` is replaced with `MagicMock()` after reload so `enqueue()` is never called against Azure. `ExportStorage` uses local filesystem (`EXPORTS_BASE_PATH=tmp_path/exports`).
+
+### Integration Test Files (`tests/integration/`)
+
+- **`test_lifecycle.py`** (14 tests): create, get, simulate, get draft, update draft, finalize (idempotency), delete, finalize-after-delete.
+- **`test_auth_enforcement.py`** (13 tests): 401/403 on missing/wrong key, correct key passes, auth-disabled path, /health and /dev/simulate exempt, parametrized coverage of all 6 protected endpoints.
+- **`test_error_cases.py`** (8 tests): draft endpoints on wrong state → 409, finalize without user_saved_draft → 409, finalize with injected BLOCKER flag → 409 (PRD §10 gate), export before finalize → 409, invalid export format → 400, simulate missing job → 404, upload oversize file → 413.
+- **`test_exports.py`** (8 tests): JSON fields present, Markdown has `#` heading, PDF `%PDF` magic + Content-Disposition, DOCX `PK` ZIP + openxmlformats content-type, all 4 formats 200, evidence bundle linked_anchors non-empty, scenario-a happy path, transcript-only fallback.
+
+### CI Gate
+
+`deploy-backend.yml` updated: new `test` job runs before `deploy` (via `needs: test`). Installs `unixodbc-dev` system dep for pyodbc build on Ubuntu, then `pytest tests/unit tests/integration -x --tb=short` with `PYTHONPATH=backend` and `DATABASE_URL=sqlite:///./test-ci.db`.
+
+### Test Coverage
+
+- 43 integration tests passing.
+- Total: 162 unit + 43 integration = 205 tests in the suite.
+
+---
+
+## Section 7: Bug-Fix Pass (2026-04-07)
+
+Resolved issues from Codex + Gemini review. No new features — all changes are corrections to existing behaviour.
+
+### OCR Anchor Field Mismatch (`export_builder.py`)
+
+- `build_evidence_bundle` was looking up OCR snippets via `item.get("source_anchor")` but the extraction schema stores the field as `anchor`.
+- Fixed to `item.get("anchor") or item.get("source_anchor")` — prefers the real extraction field, falls back for compatibility.
+- Updated `test_export_builder.py` fixture to use `anchor`, so the test now exercises the actual extraction code path.
+
+### Alignment Verdict + Consistency Scoring (`alignment.py`, `job_logic.py`)
+
+- Default seed in `default_job_payload()` changed from conditional `"match"` (for video+transcript) to unconditional `"inconclusive"`. Verdict is now computed by `run_anchor_alignment`.
+- **First-N-seconds scope (PRD §8.5):** `_consistency_score_from_anchors` filters evidence items to those whose timestamp anchors start within `CONSISTENCY_WINDOW_SEC` (60 s), falling back to full-corpus if no items fall in the window. This implements the "first N seconds" scoping specified by the PRD.
+- **`similarity_score`** (float 0.0–1.0 or `None`) is now computed and written to `transcript_media_consistency.similarity_score`. Thresholds: `≥0.8 → match`, `0.5–0.8 → inconclusive`, `<0.5 → suspected_mismatch`. `None` when no timestamp anchors exist (section-label-only transcripts).
+- `anchor_alignment_summary` now includes: `verdict`, `similarity_score`, `window_sec`, `window_anchors_checked`, `consistency_method`.
+- **Known limitation:** `consistency_method` is `"anchor_validity_proxy"`. Full PRD §8.5 token/sequence similarity against audio-derived text requires Azure Speech transcription of the video — blocked until VideoAdapter Azure Vision/Speech integration is complete. The module docstring documents the upgrade path.
+- Verdict and `similarity_score` are written to `transcript_media_consistency` **only when `has_video or has_audio`** — transcript-only jobs leave the field as `"inconclusive"` (PRD §8.5 scope guard).
+
+### Reviewing Agent Transcript-Mismatch Guard (`reviewing.py`)
+
+- The `transcript_mismatch` flag now requires `(has_video or has_audio) and has_transcript` before checking `verdict == "suspected_mismatch"`.
+- Prevents spurious "inconsistent with video/audio source" warnings on transcript-only jobs regardless of what the alignment engine writes.
+
+### Runner `approve_for_draft` Dead Code (`workers/runner.py`)
+
+- Both branches of the reviewing-phase if/else were setting `JobStatus.NEEDS_REVIEW` — the condition was dead code.
+- Collapsed to a single unconditional `NEEDS_REVIEW` assignment with a comment explaining the design: `agent_review.decision` (`approve_for_draft` / `needs_review` / `blocked`) is the differentiator the UI should use, not job status.
+
+### AgentRun Incremental Insert (`repository.py`)
+
+- `upsert_job` was deleting all `agent_runs` rows then re-inserting the full in-memory list on every call, risking audit trail loss on a crash between delete and insert.
+- Changed to insert-only-if-new: loads existing `agent_run_id`s from DB once, skips any already-persisted runs. The in-memory set is updated after each insert to guard against duplicate IDs within the same payload.
+
+### Documentation Corrections (`IMPLEMENTATION_SUMMARY.md`, `REFERENCE.md`)
+
+- Corrected alignment function signature (`run_anchor_alignment(job)`, not `(manifest, extraction_result)`).
+- Corrected alignment output description (emits count summary, not verdict values — verdict now correctly described after the above fix).
+- Corrected evidence-strength tier table: `transcript_only → medium`, `audio_only / video_only / no_sources → low`.
+- Corrected `AzureOpenAIChatCompletion` → `AzureChatCompletion` (actual import in `kernel_factory.py`).
+- Updated `REFERENCE.md`: frontend is active (not placeholder), `/health` can return 503 with env diagnostics, test directory layout reflects integration tests and `test_export_builder.py`.
+
+### Test Coverage
+
+- 205 tests (162 unit + 43 integration) — all passing after fixes.

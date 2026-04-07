@@ -14,11 +14,16 @@ import anyio
 from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
-from fpdf import FPDF
 
 logger = logging.getLogger(__name__)
 
 from app.auth import verify_api_key
+from app.export_builder import (
+    build_evidence_bundle,
+    build_export_docx,
+    build_export_markdown,
+    build_export_pdf,
+)
 from app.job_logic import (
     DraftUpdateRequest,
     JobCreateRequest,
@@ -79,52 +84,6 @@ async def _repo_get_job(job_id: str) -> Optional[Dict[str, Any]]:
 async def _repo_upsert_job(job_id: str, payload: Dict[str, Any]) -> None:
     await anyio.to_thread.run_sync(JOB_REPO.upsert_job, job_id, payload)
 
-
-def _build_export_markdown(draft: Dict[str, Any]) -> str:
-    if not draft:
-        return "No finalized draft available."
-    parts = [
-        "# Process Definition Document",
-        "",
-        f"Purpose: {draft['pdd'].get('purpose')}",
-        f"Scope: {draft['pdd'].get('scope')}",
-        "## Steps",
-    ]
-    for step in draft["pdd"].get("steps", []):
-        parts.append(f"- {step.get('id')}: {step.get('summary')}")
-    parts.extend(["", "## SIPOC", ""])
-    for idx, row in enumerate(draft.get("sipoc", []), start=1):
-        parts.append(f"{idx}. {row.get('process_step')} — anchor: {row.get('source_anchor')}")
-    return "\n".join(parts)
-
-
-def _build_export_pdf(draft: Dict[str, Any]) -> bytes:
-    from fpdf.enums import XPos, YPos
-
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Helvetica", size=12)
-    page_width = pdf.w - pdf.l_margin - pdf.r_margin
-
-    def _row(text: str) -> None:
-        pdf.set_x(pdf.l_margin)
-        pdf.multi_cell(page_width, 8, text)
-
-    pdf.cell(page_width, 10, "Process Definition Document", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    pdf.ln(2)
-    _row(f"Purpose: {draft.get('pdd', {}).get('purpose', '')}")
-    _row(f"Scope: {draft.get('pdd', {}).get('scope', '')}")
-    pdf.ln(2)
-    pdf.set_x(pdf.l_margin)
-    pdf.cell(page_width, 8, "Steps:", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    for step in draft.get("pdd", {}).get("steps", []):
-        _row(f"- {step.get('id')}: {step.get('summary')}")
-    pdf.ln(2)
-    pdf.set_x(pdf.l_margin)
-    pdf.cell(page_width, 8, "SIPOC:", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    for idx, row in enumerate(draft.get("sipoc", []), start=1):
-        _row(f"{idx}. {row.get('process_step')} - anchor: {row.get('source_anchor')}")
-    return bytes(pdf.output())
 
 
 async def _job_or_404(job_id: str) -> Dict[str, Any]:
@@ -326,23 +285,24 @@ async def finalize_job(job_id: str) -> Dict[str, Any]:
 
     job["finalized_draft"] = copy.deepcopy(job["draft"])
     job["finalized_draft"]["finalized_at"] = _utc_now()
+    evidence_bundle = build_evidence_bundle(job["finalized_draft"], job)
     exports_payload = {
         "job_id": job_id,
         "status": JobStatus.COMPLETED.value,
         "provider_effective": job["provider_effective"],
         "draft": job["finalized_draft"],
         "review_notes": job["review_notes"],
-        "exports_manifest": {"format": "json", "evidence_bundle": []},
+        "exports_manifest": {"format": "json", "evidence_bundle": evidence_bundle},
     }
     json_bytes = json.dumps(exports_payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
-    markdown_bytes = _build_export_markdown(job["finalized_draft"]).encode("utf-8")
-    pdf_bytes = _build_export_pdf(job["finalized_draft"])
-    docx_bytes = f"PFCD DOCX placeholder for {job_id}\n".encode("utf-8")
+    markdown_bytes = build_export_markdown(job["finalized_draft"], evidence_bundle).encode("utf-8")
+    pdf_bytes = build_export_pdf(job["finalized_draft"], evidence_bundle)
+    docx_bytes = build_export_docx(job["finalized_draft"], evidence_bundle, job_id)
 
     json_meta = EXPORT_STORAGE.save_bytes(job_id, "json", json_bytes, "application/json")
     md_meta = EXPORT_STORAGE.save_bytes(job_id, "markdown", markdown_bytes, "text/markdown; charset=utf-8")
     pdf_meta = EXPORT_STORAGE.save_bytes(job_id, "pdf", pdf_bytes, "application/pdf", download_name=f"pdd-{job_id}.pdf")
-    docx_meta = EXPORT_STORAGE.save_bytes(job_id, "docx", docx_bytes, "text/plain; charset=utf-8", download_name=f"pdd-{job_id}.docx")
+    docx_meta = EXPORT_STORAGE.save_bytes(job_id, "docx", docx_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", download_name=f"pdd-{job_id}.docx")
 
     job["exports"] = {
         "json": json_meta.__dict__,
@@ -389,6 +349,7 @@ async def get_export(job_id: str, fmt: str):
         raise HTTPException(status_code=409, detail="Finalized draft not available; re-run finalize.")
     draft = job["finalized_draft"]
     if fmt == "json":
+        bundle = build_evidence_bundle(draft, job)
         return JSONResponse(
             {
                 "job_id": job_id,
@@ -398,21 +359,22 @@ async def get_export(job_id: str, fmt: str):
                 "review_notes": job["review_notes"],
                 "exports_manifest": {
                     "format": "json",
-                    "evidence_bundle": [],
+                    "evidence_bundle": bundle,
                 },
             }
         )
+    bundle = build_evidence_bundle(draft, job)
     if fmt == "markdown":
-        return PlainTextResponse(_build_export_markdown(draft))
+        return PlainTextResponse(build_export_markdown(draft, bundle))
     if fmt == "pdf":
         return Response(
-            content=_build_export_pdf(draft),
+            content=build_export_pdf(draft, bundle),
             media_type="application/pdf",
             headers={"Content-Disposition": f'attachment; filename="pdd-{job_id}.pdf"'},
         )
     return Response(
-        content=f"PFCD DOCX placeholder for {job_id}\n".encode("utf-8"),
-        media_type="text/plain; charset=utf-8",
+        content=build_export_docx(draft, bundle, job_id),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": f'attachment; filename="pdd-{job_id}.docx"'},
     )
 

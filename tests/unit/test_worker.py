@@ -231,17 +231,14 @@ def test_worker_duplicate_message_skipped(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_build_export_markdown_empty_draft():
-    import importlib
-    import app.main as main_mod
-    importlib.reload(main_mod)
-    from app.main import _build_export_markdown
+    from app.export_builder import build_evidence_bundle, build_export_markdown
 
-    result = _build_export_markdown({})
+    result = build_export_markdown({}, build_evidence_bundle({}, {}))
     assert "No finalized draft" in result
 
 
 def test_build_export_markdown_with_draft():
-    from app.main import _build_export_markdown
+    from app.export_builder import build_evidence_bundle, build_export_markdown
 
     draft = {
         "pdd": {
@@ -251,7 +248,7 @@ def test_build_export_markdown_with_draft():
         },
         "sipoc": [{"process_step": "Step A", "source_anchor": "00:00:00"}],
     }
-    result = _build_export_markdown(draft)
+    result = build_export_markdown(draft, build_evidence_bundle(draft, {}))
     assert "Test purpose" in result
     assert "step-01" in result
     assert "Step A" in result
@@ -259,7 +256,7 @@ def test_build_export_markdown_with_draft():
 
 def test_build_export_markdown_special_characters():
     """Markdown export should handle special characters without error."""
-    from app.main import _build_export_markdown
+    from app.export_builder import build_evidence_bundle, build_export_markdown
 
     draft = {
         "pdd": {
@@ -269,13 +266,13 @@ def test_build_export_markdown_special_characters():
         },
         "sipoc": [],
     }
-    result = _build_export_markdown(draft)
+    result = build_export_markdown(draft, build_evidence_bundle(draft, {}))
     assert "<special>" in result
 
 
 def test_build_export_pdf_returns_bytes():
     """PDF export should return non-empty bytes."""
-    from app.main import _build_export_pdf
+    from app.export_builder import build_evidence_bundle, build_export_pdf
 
     draft = {
         "pdd": {
@@ -285,7 +282,7 @@ def test_build_export_pdf_returns_bytes():
         },
         "sipoc": [{"process_step": "Step A", "source_anchor": "00:00:00"}],
     }
-    result = _build_export_pdf(draft)
+    result = build_export_pdf(draft, build_evidence_bundle(draft, {}))
     assert isinstance(result, bytes)
     assert len(result) > 0
     # PDF files start with %PDF
@@ -294,9 +291,9 @@ def test_build_export_pdf_returns_bytes():
 
 def test_build_export_pdf_empty_draft():
     """PDF export should handle an empty draft without raising."""
-    from app.main import _build_export_pdf
+    from app.export_builder import build_evidence_bundle, build_export_pdf
 
-    result = _build_export_pdf({})
+    result = build_export_pdf({}, build_evidence_bundle({}, {}))
     assert isinstance(result, bytes)
     assert len(result) > 0
 

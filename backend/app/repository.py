@@ -201,11 +201,22 @@ class JobRepository:
                     )
                 )
 
-            session.execute(delete(AgentRun).where(AgentRun.job_id == job_id))
+            # Incremental insert: only write runs that don't already exist in the DB.
+            # This preserves audit history across upsert calls and is safe against
+            # concurrent writes — each agent_run_id is a UUID generated once.
+            existing_run_ids: set[str] = set(
+                session.execute(
+                    select(AgentRun.agent_run_id).where(AgentRun.job_id == job_id)
+                ).scalars().all()
+            )
             for run in payload.get("agent_runs", []):
+                run_id = run.get("agent_run_id") or str(uuid4())
+                if run_id in existing_run_ids:
+                    continue
+                existing_run_ids.add(run_id)  # guard against duplicates within this payload
                 session.add(
                     AgentRun(
-                        agent_run_id=run.get("agent_run_id") or str(uuid4()),
+                        agent_run_id=run_id,
                         job_id=job_id,
                         agent=run.get("agent", "unknown"),
                         model=run.get("model", "unknown"),

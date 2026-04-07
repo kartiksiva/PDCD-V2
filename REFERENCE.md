@@ -42,19 +42,26 @@ PDCD-V2/
 │   │   └── versions/      # Migration scripts (20260401_0001_init.py)
 │   ├── requirements.txt   # Python dependencies (pinned)
 │   └── alembic.ini        # Alembic config
-├── frontend/              # Placeholder (not yet implemented)
+├── frontend/              # React/Vite frontend (active — see frontend/src/)
 ├── infra/
 │   ├── dev-bootstrap.sh   # Idempotent Azure resource provisioning script
 │   └── README.md          # Infra setup and verification guide
 ├── tests/
-│   └── unit/
-│       ├── test_repository.py  # job roundtrip and event logging tests
-│       ├── test_worker.py      # worker phase dispatch and export tests
-│       ├── test_cleanup.py     # TTL expiry and purge tests
-│       ├── test_auth.py        # API key auth HTTP-level tests
-│       ├── test_agents.py      # extraction, processing, reviewing, alignment, evidence tests
-│       ├── test_adapters.py    # TranscriptAdapter, VideoAdapter, AdapterRegistry, extraction integration
-│       └── test_sipoc_validator.py  # SIPOC schema validation and reviewing agent integration
+│   ├── conftest.py            # shared fixtures (AppContext, app_client, seeded jobs)
+│   ├── unit/
+│   │   ├── test_repository.py      # job roundtrip and event logging tests
+│   │   ├── test_worker.py          # worker phase dispatch and export tests
+│   │   ├── test_cleanup.py         # TTL expiry and purge tests
+│   │   ├── test_auth.py            # API key auth HTTP-level tests
+│   │   ├── test_agents.py          # extraction, processing, reviewing, alignment, evidence tests
+│   │   ├── test_adapters.py        # TranscriptAdapter, VideoAdapter, AdapterRegistry, extraction integration
+│   │   ├── test_sipoc_validator.py # SIPOC schema validation and reviewing agent integration
+│   │   └── test_export_builder.py  # evidence bundle, PDF, Markdown, DOCX export tests
+│   └── integration/
+│       ├── test_lifecycle.py       # full job create→simulate→finalize→delete lifecycle
+│       ├── test_auth_enforcement.py # 401/403 on all protected endpoints
+│       ├── test_error_cases.py     # 409/410/413/400 error paths
+│       └── test_exports.py         # PDF/DOCX/Markdown/JSON export format checks
 ├── .github/
 │   └── workflows/
 │       ├── deploy-backend.yml
@@ -163,7 +170,7 @@ Base path: `/api`
 | POST | `/api/jobs/{job_id}/finalize` | Finalize draft (move to FINALIZING) |
 | GET | `/api/jobs/{job_id}/exports/{format}` | Export draft (`json`, `markdown`, `pdf`, `docx`) |
 | DELETE | `/api/jobs/{job_id}` | Soft-delete / mark job expired |
-| GET | `/health` | Health check (`{"status": "ok"}`) |
+| GET | `/health` | Health check — returns `{"status": "ok"}` (200) or `{"status": "degraded", ...}` (503) with env diagnostics when Azure connections are unavailable |
 
 ---
 

@@ -126,12 +126,13 @@ class Worker:
                 build_draft(job)
             cost = run_reviewing(job, profile_conf)
             job["agent_review"]["decision_at"] = _utc_now()
-            blocker = any(f["severity"] == "blocker" for f in job["review_notes"]["flags"])
+            # All reviewing outcomes transition to NEEDS_REVIEW so a human can
+            # inspect before finalizing.  The agent's decision is recorded in
+            # job["agent_review"]["decision"] ("approve_for_draft", "needs_review",
+            # or "blocked") — the UI uses that field to control which actions
+            # are available (e.g. show finalize button only for approve_for_draft).
             previous_review_status = job["status"]
-            if blocker or job["agent_review"]["decision"] != "approve_for_draft":
-                job["status"] = JobStatus.NEEDS_REVIEW.value
-            else:
-                job["status"] = JobStatus.NEEDS_REVIEW.value  # always goes to review; UI decides
+            job["status"] = JobStatus.NEEDS_REVIEW.value
             if previous_review_status != job["status"]:
                 self._record_status_event(job_id, previous_review_status, job["status"], self.phase)
         else:

@@ -87,9 +87,13 @@ def run_reviewing(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:  
 
     job["agent_signals"]["evidence_strength"] = evidence_strength
 
-    # 4. Transcript/media consistency
+    # 4. Transcript/media consistency — only relevant when both media and transcript exist
     consistency = job.get("transcript_media_consistency") or {}
-    if consistency.get("verdict") == "suspected_mismatch":
+    if (
+        (has_video or has_audio)
+        and has_transcript
+        and consistency.get("verdict") == "suspected_mismatch"
+    ):
         flags.append(_flag(
             "transcript_mismatch",
             "warning",

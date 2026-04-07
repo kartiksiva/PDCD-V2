@@ -14,7 +14,29 @@ permissions:
   contents: read
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ODBC system libraries
+        run: sudo apt-get install -y unixodbc-dev
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Run tests
+        run: pytest tests/unit tests/integration -x --tb=short
+        env:
+          DATABASE_URL: "sqlite:///./test-ci.db"
+          PYTHONPATH: backend
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

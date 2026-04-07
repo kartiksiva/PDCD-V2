@@ -138,7 +138,9 @@ def default_job_payload(payload: JobCreateRequest) -> Dict[str, Any]:
         "teams_metadata": _safe_dict(payload.teams_metadata),
         "agent_runs": [],
         "transcript_media_consistency": {
-            "verdict": "inconclusive" if not (has_video and has_transcript) else "match",
+            # Seeded as "inconclusive"; run_anchor_alignment will compute the
+            # real verdict from anchor-validation results during extraction.
+            "verdict": "inconclusive",
             "similarity_score": None,
         },
         "review_notes": {"flags": [], "assumptions": []},
