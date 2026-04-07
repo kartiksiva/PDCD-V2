@@ -413,3 +413,4 @@ Given transcript-only fallback:
 | Week 5: Evidence-linked exports | ✅ Complete |
 | Week 6: Integration/E2E tests, CI test step | ✅ Complete |
 | Bug-fix pass (2026-04-07): OCR anchor field, alignment verdict, media-consistency gate, runner dead-branch, AgentRun persistence, doc drift | ✅ Complete |
+| Azure E2E deployment (2026-04-07): worker 504 fix, semantic-kernel dep, worker ContainerTimeout (health server), OpenAI endpoint + RBAC | ✅ Complete |

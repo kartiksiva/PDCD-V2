@@ -257,3 +257,51 @@ Resolved issues from Codex + Gemini review. No new features — all changes are 
 ### Test Coverage
 
 - 205 tests (162 unit + 43 integration) — all passing after fixes.
+
+---
+
+## Section 8: Azure End-to-End Deployment (2026-04-07)
+
+Validated full Azure deployment. All four App Services are running and the job pipeline is live. A series of infrastructure bugs were found and fixed during the first real end-to-end run.
+
+### Worker Deploy 504 GatewayTimeout (`deploy-workers.yml`)
+
+- `az webapp deploy` without `--async true` blocks until Kudu finishes zip extraction — times out at 504 on lower-tier plans.
+- Fixed: added `--async true` to all three worker deploy steps.
+- Added a post-deploy verify step per worker: waits 60 s then checks `az webapp show --query state=Running`; fails the job if the background extraction left the app in a bad state.
+
+### Backend Deploy Failure — `semantic-kernel` Pre-Release Dep (`requirements.txt`)
+
+- `semantic-kernel>=1.41.1` requires `azure-ai-agents>=1.2.0b3` (a pre-release). Kudu uses `uv` which rejects transitive pre-release deps by default → deploy failed with "requirements are unsatisfiable".
+- Fixed: explicitly added `azure-ai-agents>=1.2.0b3` to `requirements.txt`. `uv` allows pre-releases for packages listed as explicit requirements.
+
+### Worker ContainerTimeout — No HTTP Server (`workers/runner.py`)
+
+- Azure App Service probes containers with an HTTP warmup request and kills them after 230 s if no 200 is returned. Workers run `python -m app.workers.runner` (a Service Bus consumer loop) with no HTTP server → crash loop (`ContainerTimeout`).
+- Fixed: added `_start_health_server()` to `runner.py`. Starts a minimal `http.server.HTTPServer` on port 8000 in a daemon thread before the Service Bus loop. Responds 200 to all GET requests. Warmup probe succeeds; container stays alive.
+
+### Wrong Azure OpenAI Endpoint (`AZURE_OPENAI_ENDPOINT`)
+
+- `pfcd-dev-oai` has no custom subdomain (`customSubDomainName: null`), so the correct endpoint is `https://southindia.api.cognitive.microsoft.com/` — not the assumed `https://pfcd-dev-oai.openai.azure.com/` format.
+- Fixed: updated the setting on all four App Services via `az webapp config appsettings set`.
+- Added `AZURE_OPENAI_ENDPOINT` and `AZURE_OPENAI_DEPLOYMENT_NAME` to `deploy-workers.yml` (sourced from GitHub secrets `AZURE_OPENAI_ENDPOINT` and `AZURE_OPENAI_DEPLOYMENT_NAME`) so they are set automatically on every deploy.
+
+### Missing OpenAI RBAC (`Cognitive Services OpenAI User`)
+
+- All four App Services have system-assigned managed identities and `Key Vault Secrets User` on `pfcd-dev-kv` (pre-existing).
+- `Cognitive Services OpenAI User` role was missing on `pfcd-dev-oai` → `DefaultAzureCredential` token acquisition would fail when agents call the LLM.
+- Fixed: assigned `Cognitive Services OpenAI User` to all four managed identity principal IDs on the `pfcd-dev-oai` resource via `az role assignment create`.
+
+### Required GitHub Secrets for Workers
+
+The following secrets must be set in the repo (Settings → Secrets → Actions) for `deploy-workers.yml` to configure workers correctly:
+
+| Secret | Value |
+|--------|-------|
+| `AZURE_OPENAI_ENDPOINT` | `https://southindia.api.cognitive.microsoft.com/` |
+| `AZURE_OPENAI_DEPLOYMENT_NAME` | `gpt-4o-mini` |
+| `AZURE_WORKER_EXTRACTING_NAME` | `pfcd-dev-worker-extracting` |
+| `AZURE_WORKER_PROCESSING_NAME` | `pfcd-dev-worker-processing` |
+| `AZURE_WORKER_REVIEWING_NAME` | `pfcd-dev-worker-reviewing` |
+| `AZURE_RESOURCE_GROUP` | `app-pfcd-v2` |
+| `AZURE_CREDENTIALS` | service principal JSON |

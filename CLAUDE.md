@@ -211,3 +211,4 @@ chore: bump SQLAlchemy to 2.0.38
 - 205 tests passing (162 unit + 43 integration)
 - CI test step in GitHub Actions (`deploy-backend.yml` — `test` job gates `deploy`; pytest over unit + integration with SQLite)
 - Bug-fix pass (2026-04-07): OCR anchor field, alignment verdict computation + media gate, runner dead-branch cleanup, AgentRun incremental insert, transcript_mismatch guard in reviewing agent
+- Azure end-to-end deployment validated (2026-04-07): all four App Services running (pfcd-dev-api + 3 workers); fixed worker 504 deploy timeout (`--async true`), semantic-kernel pre-release dep (`azure-ai-agents>=1.2.0b3`), worker ContainerTimeout (health HTTP server in runner.py), correct OpenAI endpoint (`southindia.api.cognitive.microsoft.com`), `Cognitive Services OpenAI User` RBAC assigned to all managed identities; `AZURE_OPENAI_ENDPOINT` and `AZURE_OPENAI_DEPLOYMENT_NAME` wired into deploy-workers.yml via GitHub secrets
