@@ -64,7 +64,8 @@ jobs:
             --name ${{ secrets.AZURE_WEBAPP_NAME }} \
             --src-path ./backend.zip \
             --type zip \
-            --async
+            --async \
+            --track-status false
           url="https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net/health"
           echo "Polling health endpoint until backend is ready: $url"
           for i in $(seq 1 60); do
