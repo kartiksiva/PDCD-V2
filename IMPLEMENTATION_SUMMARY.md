@@ -298,10 +298,145 @@ The following secrets must be set in the repo (Settings → Secrets → Actions)
 
 | Secret | Value |
 |--------|-------|
-| `AZURE_OPENAI_ENDPOINT` | `https://southindia.api.cognitive.microsoft.com/` |
+| `AZURE_OPENAI_ENDPOINT` | `https://pfcd-dev-oai.openai.azure.com/` ← updated 2026-04-08 (see Section 9) |
 | `AZURE_OPENAI_DEPLOYMENT_NAME` | `gpt-4o-mini` |
 | `AZURE_WORKER_EXTRACTING_NAME` | `pfcd-dev-worker-extracting` |
 | `AZURE_WORKER_PROCESSING_NAME` | `pfcd-dev-worker-processing` |
 | `AZURE_WORKER_REVIEWING_NAME` | `pfcd-dev-worker-reviewing` |
 | `AZURE_RESOURCE_GROUP` | `app-pfcd-v2` |
 | `AZURE_CREDENTIALS` | service principal JSON |
+
+---
+
+## Section 9: Live Pipeline Debugging (2026-04-08)
+
+End-to-end test with a real uploaded file exposed three bugs blocking job progression. All three are now fixed; the processing worker resilience fix (`ff40258`) is deployed. The pipeline is partially working — extracting phase completes, but the processing worker has an open issue (see Current Problem below).
+
+### Key files to read for context
+
+| File | Purpose |
+|------|---------|
+| `CLAUDE.md` | Conventions, state machine, current implementation status |
+| `IMPLEMENTATION_SUMMARY.md` | This file — rolling log of what has been built |
+| `prd.md` | Authoritative product requirements |
+| `REFERENCE.md` | File layout, env vars, Azure resource names, API endpoints |
+| `backend/app/workers/runner.py` | Worker entry point — health server + Service Bus receive loop |
+| `.github/workflows/deploy-workers.yml` | Worker deployment workflow |
+| `backend/app/agents/kernel_factory.py` | How SK + AzureChatCompletion is initialised |
+
+---
+
+### Bug 1: Worker boot loop — ContainerTimeout (FIXED, commit `9469000`)
+
+**Symptom:** All three workers restart every ~230 s; no messages consumed.
+
+**Root cause:** Azure App Service default warmup probe timeout is 230 s. The full startup path takes ~224 s:
+- Cert updates: ~72 s
+- Oryx decompresses `output.tar.zst`: ~98 s
+- Python module imports (semantic-kernel, azure.servicebus, SQLAlchemy): ~26 s
+- Health server starts responding: ~224 s elapsed
+
+`_start_health_server()` is called as the first statement in `run()`, but `run()` is only invoked after all module-level imports complete (lines 15–22 of `runner.py` pull the full agent/SK import graph). The health server is correct; the probe window is just too tight.
+
+**Fix:** `WEBSITES_CONTAINER_START_TIME_LIMIT=600` set on all three workers via `az webapp config appsettings set` (live). Added to `deploy-workers.yml` so it survives future deployments.
+
+---
+
+### Bug 2: Azure OpenAI 404 — wrong endpoint (FIXED)
+
+**Symptom:** Processing agent calls fail with `404 Resource not found` from `AzureChatCompletion`.
+
+**Root cause:** `AZURE_OPENAI_ENDPOINT` was set to `https://southindia.api.cognitive.microsoft.com/` (the generic regional cognitive services URL). The `pfcd-dev-oai` resource had no custom subdomain, so calls to that URL return 404. The regional endpoint does not route to a specific OpenAI resource.
+
+**Fix:**
+1. Added custom subdomain to `pfcd-dev-oai` via `az cognitiveservices account update --custom-domain pfcd-dev-oai` → resource endpoint is now `https://pfcd-dev-oai.openai.azure.com/`.
+2. Updated `AZURE_OPENAI_ENDPOINT` app setting on all four App Services (3 workers + API) to `https://pfcd-dev-oai.openai.azure.com/`.
+3. GitHub secret `AZURE_OPENAI_ENDPOINT` updated by user to match.
+
+---
+
+### Bug 3: Worker crash on transient Service Bus DNS failure (FIXED, commit `ff40258`)
+
+**Symptom:** Processing worker starts, logs "Worker listening on phase processing", then crashes ~90 s later:
+```
+ServiceBusConnectionError: Failed to initiate the connection due to exception:
+failed to resolve broker hostname  Error condition: amqp:socket-error
+```
+Crash restarts the process; the same DNS blip can hit again, creating a crash loop.
+
+**Root cause:** `receive_messages()` in the `while True` loop was not wrapped in try/except. A `ServiceBusConnectionError` propagates up through `run()` and kills the Python process. The SDK's internal retry (up to its own timeout) gives up after ~90 s; after that the exception escapes.
+
+**Fix (`runner.py`):** Wrap `receive_messages()` in:
+```python
+try:
+    messages = receiver.receive_messages(max_message_count=1, max_wait_time=5)
+except SBConnectionError as exc:
+    logger.warning("Service Bus connection error; will retry in 10s: %s", exc)
+    time.sleep(10)
+    continue
+```
+The process now survives transient DNS blips and retries after 10 s.
+
+**Status:** Committed and pushed (`ff40258`). `deploy-workers.yml` triggered. Deployment in progress as of 2026-04-08.
+
+---
+
+### Current Problem (OPEN as of 2026-04-08)
+
+**Job `83ff7e57-457d-4954-9a90-f3fc61b2ad01` is stuck at status `processing`, `current_phase: extracting`, `last_completed_phase: extracting`.**
+
+- Extracting phase: **completed** (agent_runs shows one `success` entry).
+- Processing queue: **2 active messages** (1 original + 1 retry enqueued by a failed attempt).
+- Processing worker: currently booting after a crash caused by Bug 3 (DNS error). Running the old code (pre-`ff40258`).
+- Once the `ff40258` deploy completes and the processing worker picks up the message, the job should progress to `current_phase: processing`.
+
+**What to verify next:**
+1. Processing worker runtime log shows `"Health server listening on port 8000"` followed by `"Worker listening on phase processing"` — confirms new code is deployed and worker is stable.
+2. Processing queue active count drops from 2 → 0.
+3. Job status advances to `processing` → `needs_review`.
+4. If the processing agent call still fails, check for errors in the processing worker runtime log. The most likely remaining cause would be an RBAC issue (`Cognitive Services OpenAI User` on `pfcd-dev-oai`) or a Semantic Kernel API version mismatch.
+
+**If the processing worker still crashes after the `ff40258` deploy:** the DNS resolution failure may be persistent rather than transient — investigate the App Service VNet/DNS configuration or consider moving workers to Azure Container Apps (which has better networking for long-running consumers).
+
+---
+
+## Section 10: Worker Reconnect Hardening + Deploy Runtime Guards (2026-04-08)
+
+Implemented follow-up hardening to prevent workers from stalling on repeated Service Bus link failures, plus deploy-time runtime verification to ensure workers really enter their receive loops.
+
+### Worker receive-loop resilience (`backend/app/workers/runner.py`)
+
+- Added `_connection_backoff_seconds(consecutive_errors)`:
+  - bounded exponential backoff (caps at 60 s)
+  - + small random jitter
+- Refactored `run()` into an outer reconnect loop:
+  - `with worker.orchestrator.receive(phase)` now reopens after connection failures
+  - `SBConnectionError` during `receive_messages()` no longer just sleeps on the same receiver; it breaks inner loop and recreates receiver
+  - `SBConnectionError` during receiver setup is also caught with the same backoff path
+- Added reconnection log markers:
+  - `"Service Bus receiver reconnected for phase ..."`
+  - warnings include phase + consecutive error count + next delay
+
+### Unit tests (`tests/unit/test_worker.py`)
+
+- Added `test_run_recreates_receiver_after_servicebus_error`:
+  - simulates one `ServiceBusConnectionError`
+  - verifies `run()` reopens receiver context (2 receive calls) rather than crashing
+- Added `test_connection_backoff_seconds_is_bounded`:
+  - validates backoff progression and 60 s cap behavior
+
+### Worker deployment guardrails (`.github/workflows/deploy-workers.yml`)
+
+- Added post-deploy runtime log checks for all three workers:
+  - downloads App Service logs (`az webapp log download`)
+  - fails deploy if logs do not contain:
+    - `"Health server listening on port 8000"`
+    - `"Worker listening on phase <role>"`
+- Existing app state check (`state == Running`) remains; runtime log checks are an additional guard.
+
+### Operational impact for current incident
+
+- This hardening does not mutate job state directly, but reduces probability of processing worker stalls during DNS/network blips.
+- For job `83ff7e57-457d-4954-9a90-f3fc61b2ad01`, expected recovery signal remains:
+  - processing queue active count drops to 0
+  - job transitions from `extracting` completion toward `needs_review` once processing/reviewing phases consume pending messages.

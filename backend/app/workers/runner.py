@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import threading
 import time
 from datetime import datetime, timezone
@@ -249,6 +250,13 @@ def _start_health_server(port: int = 8000) -> None:
     logging.getLogger(__name__).info("Health server listening on port %d", port)
 
 
+def _connection_backoff_seconds(consecutive_errors: int) -> float:
+    """Return bounded exponential backoff with small jitter for reconnect attempts."""
+    exponent = min(max(1, consecutive_errors), 6)
+    base = min(60.0, float(2 ** exponent))
+    return base + random.uniform(0.0, 1.0)
+
+
 def run() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     _start_health_server()
@@ -257,38 +265,68 @@ def run() -> None:
     if not worker.orchestrator.enabled:
         raise RuntimeError("AZURE_SERVICE_BUS_CONNECTION_STRING is required for workers.")
     logger.info("Worker starting for phase %s", phase)
-    with worker.orchestrator.receive(phase) as receiver:
-        if receiver is None:
-            raise RuntimeError("Service Bus receiver not initialized.")
-        logger.info("Worker listening on phase %s", phase)
-        while True:
-            try:
-                messages = receiver.receive_messages(max_message_count=1, max_wait_time=5)
-            except SBConnectionError as exc:
-                logger.warning("Service Bus connection error; will retry in 10s: %s", exc)
-                time.sleep(10)
-                continue
-            for message in messages:
-                try:
-                    chunks = []
-                    total = 0
-                    for chunk in message.body:
-                        total += len(chunk)
-                        if total > MAX_MESSAGE_BODY_BYTES:
-                            raise ValueError(
-                                f"Message body exceeds {MAX_MESSAGE_BODY_BYTES // (1024 * 1024)}MB limit"
-                            )
-                        chunks.append(chunk)
-                    body = b"".join(chunks)
-                    worker.handle_message(message, body)
-                    receiver.complete_message(message)
-                except json.JSONDecodeError as exc:
-                    logger.error("Unparseable message body; dead-lettering: %s", exc)
-                    receiver.dead_letter_message(message, reason="UnparseableBody")
-                except Exception as exc:
-                    logger.error("Unhandled error processing message; abandoning: %s", exc, exc_info=True)
-                    receiver.abandon_message(message)
-            time.sleep(0.5)
+    consecutive_connection_errors = 0
+    while True:
+        try:
+            with worker.orchestrator.receive(phase) as receiver:
+                if receiver is None:
+                    raise RuntimeError("Service Bus receiver not initialized.")
+                if consecutive_connection_errors > 0:
+                    logger.info(
+                        "Service Bus receiver reconnected for phase %s after %d errors",
+                        phase,
+                        consecutive_connection_errors,
+                    )
+                consecutive_connection_errors = 0
+                logger.info("Worker listening on phase %s", phase)
+                while True:
+                    try:
+                        messages = receiver.receive_messages(max_message_count=1, max_wait_time=5)
+                    except SBConnectionError as exc:
+                        consecutive_connection_errors += 1
+                        delay = _connection_backoff_seconds(consecutive_connection_errors)
+                        logger.warning(
+                            "Service Bus receive error on phase %s (consecutive=%d); "
+                            "recreating receiver in %.1fs: %s",
+                            phase,
+                            consecutive_connection_errors,
+                            delay,
+                            exc,
+                        )
+                        time.sleep(delay)
+                        break
+                    for message in messages:
+                        try:
+                            chunks = []
+                            total = 0
+                            for chunk in message.body:
+                                total += len(chunk)
+                                if total > MAX_MESSAGE_BODY_BYTES:
+                                    raise ValueError(
+                                        f"Message body exceeds {MAX_MESSAGE_BODY_BYTES // (1024 * 1024)}MB limit"
+                                    )
+                                chunks.append(chunk)
+                            body = b"".join(chunks)
+                            worker.handle_message(message, body)
+                            receiver.complete_message(message)
+                        except json.JSONDecodeError as exc:
+                            logger.error("Unparseable message body; dead-lettering: %s", exc)
+                            receiver.dead_letter_message(message, reason="UnparseableBody")
+                        except Exception as exc:
+                            logger.error("Unhandled error processing message; abandoning: %s", exc, exc_info=True)
+                            receiver.abandon_message(message)
+                    time.sleep(0.5)
+        except SBConnectionError as exc:
+            consecutive_connection_errors += 1
+            delay = _connection_backoff_seconds(consecutive_connection_errors)
+            logger.warning(
+                "Service Bus receiver setup error on phase %s (consecutive=%d); retrying in %.1fs: %s",
+                phase,
+                consecutive_connection_errors,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
 
 
 if __name__ == "__main__":

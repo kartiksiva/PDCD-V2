@@ -60,6 +60,25 @@ jobs:
             echo "ERROR: extracting worker is not Running (state=$state)"
             exit 1
           fi
+      - name: Verify extracting worker runtime logs
+        run: |
+          zip=/tmp/extracting-worker-logs.zip
+          out=/tmp/extracting-worker-logs
+          rm -rf "$out"
+          mkdir -p "$out"
+          az webapp log download \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WORKER_EXTRACTING_NAME }} \
+            --log-file "$zip"
+          unzip -o "$zip" -d "$out" >/dev/null
+          if ! grep -R "Health server listening on port 8000" "$out" >/dev/null; then
+            echo "ERROR: extracting worker did not log health server startup"
+            exit 1
+          fi
+          if ! grep -R "Worker listening on phase extracting" "$out" >/dev/null; then
+            echo "ERROR: extracting worker did not enter receive loop"
+            exit 1
+          fi
 
   deploy-processing:
     needs: build
@@ -101,6 +120,25 @@ jobs:
             echo "ERROR: processing worker is not Running (state=$state)"
             exit 1
           fi
+      - name: Verify processing worker runtime logs
+        run: |
+          zip=/tmp/processing-worker-logs.zip
+          out=/tmp/processing-worker-logs
+          rm -rf "$out"
+          mkdir -p "$out"
+          az webapp log download \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WORKER_PROCESSING_NAME }} \
+            --log-file "$zip"
+          unzip -o "$zip" -d "$out" >/dev/null
+          if ! grep -R "Health server listening on port 8000" "$out" >/dev/null; then
+            echo "ERROR: processing worker did not log health server startup"
+            exit 1
+          fi
+          if ! grep -R "Worker listening on phase processing" "$out" >/dev/null; then
+            echo "ERROR: processing worker did not enter receive loop"
+            exit 1
+          fi
 
   deploy-reviewing:
     needs: build
@@ -140,5 +178,24 @@ jobs:
           echo "App state: $state"
           if [ "$state" != "Running" ]; then
             echo "ERROR: reviewing worker is not Running (state=$state)"
+            exit 1
+          fi
+      - name: Verify reviewing worker runtime logs
+        run: |
+          zip=/tmp/reviewing-worker-logs.zip
+          out=/tmp/reviewing-worker-logs
+          rm -rf "$out"
+          mkdir -p "$out"
+          az webapp log download \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WORKER_REVIEWING_NAME }} \
+            --log-file "$zip"
+          unzip -o "$zip" -d "$out" >/dev/null
+          if ! grep -R "Health server listening on port 8000" "$out" >/dev/null; then
+            echo "ERROR: reviewing worker did not log health server startup"
+            exit 1
+          fi
+          if ! grep -R "Worker listening on phase reviewing" "$out" >/dev/null; then
+            echo "ERROR: reviewing worker did not enter receive loop"
             exit 1
           fi

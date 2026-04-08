@@ -6,9 +6,13 @@ import importlib
 import json
 import pathlib
 import sys
+from contextlib import contextmanager
 from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
+
+import pytest
+from azure.servicebus.exceptions import ServiceBusConnectionError as SBConnectionError
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
@@ -224,6 +228,77 @@ def test_worker_duplicate_message_skipped(tmp_path, monkeypatch):
         worker.handle_message(MagicMock(), message)
 
     assert not run_phase_called, "Duplicate message should have been skipped"
+
+
+def test_run_recreates_receiver_after_servicebus_error(monkeypatch):
+    """run() should recreate the receiver after Service Bus connection failures."""
+    from app.workers import runner as runner_mod
+
+    monkeypatch.setenv("PFCD_WORKER_ROLE", "processing")
+    monkeypatch.setattr(runner_mod, "_start_health_server", lambda: None)
+    monkeypatch.setattr(runner_mod.logging, "basicConfig", lambda **_: None)
+    monkeypatch.setattr(runner_mod, "_connection_backoff_seconds", lambda _: 0.0)
+    monkeypatch.setattr(runner_mod.time, "sleep", lambda _: None)
+
+    class _FakeReceiver:
+        def __init__(self, mode: str) -> None:
+            self.mode = mode
+
+        def receive_messages(self, **_: Any):
+            if self.mode == "sb_error":
+                raise SBConnectionError()
+            raise KeyboardInterrupt()
+
+        def complete_message(self, _message: Any) -> None:
+            raise AssertionError("No messages should be completed in this test")
+
+        def dead_letter_message(self, _message: Any, **__: Any) -> None:
+            raise AssertionError("No messages should be dead-lettered in this test")
+
+        def abandon_message(self, _message: Any) -> None:
+            raise AssertionError("No messages should be abandoned in this test")
+
+    class _FakeOrchestrator:
+        def __init__(self) -> None:
+            self.enabled = True
+            self.receive_calls = 0
+
+        @contextmanager
+        def receive(self, _phase: str, max_wait_time: int = 5):
+            del max_wait_time
+            self.receive_calls += 1
+            mode = "sb_error" if self.receive_calls == 1 else "stop"
+            yield _FakeReceiver(mode)
+
+    fake_orchestrator = _FakeOrchestrator()
+
+    class _FakeWorker:
+        def __init__(self, _phase: str) -> None:
+            self.orchestrator = fake_orchestrator
+
+        def handle_message(self, _message: Any, _body: Any) -> None:
+            raise AssertionError("No messages should be handled in this test")
+
+    monkeypatch.setattr(runner_mod, "Worker", _FakeWorker)
+
+    with pytest.raises(KeyboardInterrupt):
+        runner_mod.run()
+
+    assert fake_orchestrator.receive_calls == 2
+
+
+def test_connection_backoff_seconds_is_bounded(monkeypatch):
+    from app.workers.runner import _connection_backoff_seconds
+
+    monkeypatch.setattr("app.workers.runner.random.uniform", lambda _a, _b: 0.25)
+
+    first = _connection_backoff_seconds(1)
+    second = _connection_backoff_seconds(2)
+    capped = _connection_backoff_seconds(99)
+
+    assert first == 2.25
+    assert second == 4.25
+    assert capped == 60.25
 
 
 # ---------------------------------------------------------------------------
