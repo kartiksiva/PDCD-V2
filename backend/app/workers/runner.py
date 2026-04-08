@@ -13,6 +13,7 @@ from typing import Any, Dict
 from uuid import uuid4
 
 from azure.servicebus import ServiceBusMessage
+from azure.servicebus.exceptions import ServiceBusConnectionError as SBConnectionError
 
 from app.agents import run_extraction, run_processing, run_reviewing
 from app.agents.alignment import run_anchor_alignment
@@ -261,7 +262,12 @@ def run() -> None:
             raise RuntimeError("Service Bus receiver not initialized.")
         logger.info("Worker listening on phase %s", phase)
         while True:
-            messages = receiver.receive_messages(max_message_count=1, max_wait_time=5)
+            try:
+                messages = receiver.receive_messages(max_message_count=1, max_wait_time=5)
+            except SBConnectionError as exc:
+                logger.warning("Service Bus connection error; will retry in 10s: %s", exc)
+                time.sleep(10)
+                continue
             for message in messages:
                 try:
                     chunks = []
