@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -76,18 +77,29 @@ def _safe_dict(value: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _default_openai_deployment() -> str:
+    # Prefer explicit env config from App Service settings; fall back to the
+    # currently provisioned deployment name in Azure OpenAI.
+    return (
+        os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME")
+        or os.environ.get("AZURE_OPENAI_DEPLOYMENT")
+        or "gpt-4o-mini"
+    )
+
+
 def profile_config(profile: Profile) -> Dict[str, Any]:
+    deployment = _default_openai_deployment()
     if profile == Profile.QUALITY:
         return {
             "profile": profile.value,
             "provider": "azure_openai",
-            "model": "gpt-4o",
+            "model": deployment,
             "cost_cap_usd": 8.0,
         }
     return {
         "profile": profile.value,
         "provider": "azure_openai",
-        "model": "gpt-4.1-mini",
+        "model": deployment,
         "cost_cap_usd": 4.0,
     }
 
@@ -179,7 +191,7 @@ def add_agent_run(
     *,
     cost: float = 0.0,
     confidence_delta: float = 0.0,
-    model: str = "gpt-4.1-mini",
+    model: str = "gpt-4o-mini",
     duration_ms: int = 0,
     message: Optional[str] = None,
 ) -> str:
