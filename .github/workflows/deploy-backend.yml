@@ -65,5 +65,15 @@ jobs:
             --src-path ./backend.zip \
             --type zip \
             --async
-          sleep 20
-          curl -f "https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net/health"
+          url="https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net/health"
+          echo "Polling health endpoint until backend is ready: $url"
+          for i in $(seq 1 60); do
+            if curl -fsS --max-time 10 "$url" >/dev/null; then
+              echo "Health check passed on attempt $i"
+              exit 0
+            fi
+            echo "Health check not ready yet (attempt $i/60); waiting 20s..."
+            sleep 20
+          done
+          echo "ERROR: backend health check did not pass within 20 minutes"
+          exit 1
