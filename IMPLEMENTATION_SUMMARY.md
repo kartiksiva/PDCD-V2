@@ -440,3 +440,110 @@ Implemented follow-up hardening to prevent workers from stalling on repeated Ser
 - For job `83ff7e57-457d-4954-9a90-f3fc61b2ad01`, expected recovery signal remains:
   - processing queue active count drops to 0
   - job transitions from `extracting` completion toward `needs_review` once processing/reviewing phases consume pending messages.
+
+---
+
+## Section 11: Live Status + Handoff (2026-04-10)
+
+This section captures the latest live debugging state before context reset.
+
+### Commits pushed (chronological)
+
+- `caefebf` — worker reconnect loop hardening + deploy runtime checks
+- `5f1deaa` — backend/worker deploy workflows changed to readiness polling
+- `35cfab6` — added `--track-status false` to `az webapp deploy` commands to avoid ~19m CLI status timeout
+- `b8bd8f9` — **critical fix**: `profile_config()` now uses configured Azure OpenAI deployment (`AZURE_OPENAI_DEPLOYMENT_NAME` / `AZURE_OPENAI_DEPLOYMENT`) instead of hardcoded `gpt-4.1-mini`; added `tests/unit/test_job_logic.py`
+
+### What was verified live on Azure
+
+- App Service control-plane states reported `Running` for:
+  - `pfcd-dev-api`
+  - `pfcd-dev-worker-extracting`
+  - `pfcd-dev-worker-processing`
+  - `pfcd-dev-worker-reviewing`
+- API `/health` returned `status: ok` earlier in session.
+- API + workers point to same DB setting:
+  - `DATABASE_URL = @Microsoft.KeyVault(.../sql-connection-string)`
+- Service Bus queue checks during incident:
+  - extracting message consumed (queue `active` moved `1 -> 0`)
+  - processing queue drained after manual restart of processing worker (`3 -> 0`)
+
+### Transaction-specific status (`4e252d67-ff64-476d-98b0-a7ec8d3f40a0`)
+
+- Started as `queued`
+- Advanced to `processing` (extracting completed)
+- Ended `failed` in phase `processing` with:
+  - `NotFoundError 404 Resource not found` from `AzureChatCompletion`
+
+Root cause confirmed:
+- Azure OpenAI account deployment list contains `gpt-4o-mini`
+- old routing selected `gpt-4.1-mini` for balanced profile
+- mismatch triggered processing-phase 404
+
+### Reviewing worker check
+
+- Reviewing agent is deterministic (no LLM call in `backend/app/agents/reviewing.py`)
+- Same OpenAI-404 issue does **not** apply to reviewing phase directly
+
+### Current blocker
+
+The latest deployment runs containing `b8bd8f9` did not land:
+
+- Workers run `24151722686` (sha `b8bd8f9...`) — failed
+  - all worker jobs failed in `Deploy <role> worker`
+- Backend run `24151732803` (sha `b8bd8f9...`) — failed
+  - failed in `Deploy to Azure App Service`
+
+So production may still be on pre-`b8bd8f9` code (`35cfab6`), which means processing 404 can still occur for new jobs until deploy succeeds.
+
+### Tooling/auth status
+
+- GitHub CLI (`gh`) installed (`2.89.0`)
+- `gh auth status` currently shows invalid token for `kartiksiva`
+- Need `gh auth login -h github.com` before using `gh run view ... --log-failed` for direct failed-step logs
+
+### Next actions after resume
+
+1. Re-auth `gh` and fetch failed logs for runs:
+   - workers: `24151722686`
+   - backend: `24151732803`
+2. Fix the deploy-step failure (currently failing before verification steps).
+3. Redeploy successfully with sha `b8bd8f9`.
+4. Create a fresh transaction and verify end-to-end progression:
+   - `queued -> processing -> needs_review` (or clear deterministic failure reason if blocked).
+
+---
+
+## Section 12: Manual Deploy Packaging Guardrail (2026-04-10)
+
+Documented a deployment packaging pitfall observed during manual redeploy.
+
+### Problem observed
+
+- Local deploy zips accidentally included `backend/.venv/**`.
+- This significantly increased artifact size and caused long Oryx build times (large upload/extract + unnecessary dependency handling), increasing timeout risk.
+
+### Guardrail
+
+- Do **not** include local virtual environments in App Service zip deploy artifacts.
+- For Oryx-based deploys, package source files only (`app/`, `alembic/`, `alembic.ini`, `requirements.txt`, etc.).
+
+### Recommended packaging command
+
+```bash
+cd backend
+zip -rq ../worker.zip . \
+  -x '.venv/*' '.venv/**' '*/.venv/*' \
+  -x '__pycache__/*' '*/__pycache__/*' \
+  -x '*.pyc' '.pytest_cache/*' '.mypy_cache/*' '.DS_Store' '*.log'
+cd ..
+cp worker.zip backend.zip
+```
+
+### Verification check before deploy
+
+```bash
+zipinfo -1 worker.zip | rg '^\.venv/' || true
+```
+
+- Expected result: no output (no `.venv` entries present).
