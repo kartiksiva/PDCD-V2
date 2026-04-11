@@ -14,7 +14,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build zip
-        run: cd backend && zip -r ../worker.zip . -x "*.pyc" -x "__pycache__/*"
+        run: |
+          cd backend && zip -r ../worker.zip . \
+            -x "venv/*" -x ".venv/*" -x "env/*" \
+            -x "*.pyc" -x "__pycache__/*" \
+            -x ".pytest_cache/*" -x ".coverage" \
+            -x "*.db" -x "*.sqlite3" \
+            -x ".env" -x ".env.*" \
+            -x "storage/*"
       - uses: actions/upload-artifact@v4
         with:
           name: worker-zip

@@ -57,7 +57,13 @@ jobs:
       - name: Deploy to Azure App Service
         run: |
           cd backend
-          zip -r ../backend.zip .
+          zip -r ../backend.zip . \
+            -x "venv/*" -x ".venv/*" -x "env/*" \
+            -x "*.pyc" -x "__pycache__/*" \
+            -x ".pytest_cache/*" -x ".coverage" \
+            -x "*.db" -x "*.sqlite3" \
+            -x ".env" -x ".env.*" \
+            -x "storage/*"
           cd ..
           az webapp deploy \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
