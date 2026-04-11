@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from typing import Any, Dict
@@ -14,6 +15,7 @@ from semantic_kernel.contents import ChatHistory
 from app.agents.kernel_factory import get_kernel
 
 _DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
+logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
     "You are a business process analyst. Convert extracted evidence into a complete "
@@ -125,6 +127,12 @@ def run_processing(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
     manifest = job.get("input_manifest") or {}
     profile = profile_conf.get("profile", "balanced")
     deployment = profile_conf.get("model", _DEPLOYMENT)
+    logger.info(
+        "Processing model resolved for job %s: profile=%s deployment=%s",
+        job.get("job_id"),
+        profile,
+        deployment,
+    )
 
     user_prompt = _USER_PROMPT_TEMPLATE.format(
         evidence_json=json.dumps(evidence, ensure_ascii=True, separators=(",", ":")),

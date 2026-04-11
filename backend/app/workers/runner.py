@@ -123,6 +123,12 @@ class Worker:
             cost = run_extraction(job, profile_conf)
             run_anchor_alignment(job)
         elif self.phase == "processing":
+            logger.info(
+                "Processing phase runtime pair for job %s: endpoint=%s deployment=%s",
+                job_id,
+                os.environ.get("AZURE_OPENAI_ENDPOINT"),
+                profile_conf.get("model"),
+            )
             cost = run_processing(job, profile_conf)
         elif self.phase == "reviewing":
             # Ensure draft exists (fallback stub if processing was skipped)
@@ -261,6 +267,13 @@ def run() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     _start_health_server()
     phase = _resolve_phase()
+    logger.info(
+        "Worker runtime OpenAI config: role=%s endpoint=%s deployment_name=%s deployment=%s",
+        phase,
+        os.environ.get("AZURE_OPENAI_ENDPOINT"),
+        os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME"),
+        os.environ.get("AZURE_OPENAI_DEPLOYMENT"),
+    )
     worker = Worker(phase)
     if not worker.orchestrator.enabled:
         raise RuntimeError("AZURE_SERVICE_BUS_CONNECTION_STRING is required for workers.")

@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import logging
 import os
 
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from semantic_kernel import Kernel
 from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion
 
+logger = logging.getLogger(__name__)
+
 
 def get_kernel(deployment: str) -> Kernel:
     endpoint = os.environ["AZURE_OPENAI_ENDPOINT"]
+    logger.info(
+        "Initializing Semantic Kernel AzureChatCompletion with endpoint=%s deployment=%s",
+        endpoint,
+        deployment,
+    )
     token_provider = get_bearer_token_provider(
         DefaultAzureCredential(),
         "https://cognitiveservices.azure.com/.default",
