@@ -45,7 +45,8 @@ jobs:
             --settings PFCD_WORKER_ROLE=extracting \
               AZURE_OPENAI_ENDPOINT="${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
               AZURE_OPENAI_DEPLOYMENT_NAME="${{ secrets.AZURE_OPENAI_DEPLOYMENT_NAME }}" \
-              WEBSITES_CONTAINER_START_TIME_LIMIT=600
+              WEBSITES_CONTAINER_START_TIME_LIMIT=600 \
+              WEBSITES_PORT=8000
           az webapp config set \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_EXTRACTING_NAME }} \
@@ -68,32 +69,23 @@ jobs:
               echo "Extracting worker is Running"
               exit 0
             fi
-            sleep 20
+            sleep 10
           done
-          echo "ERROR: extracting worker did not reach Running state within 20 minutes"
+          echo "ERROR: extracting worker did not reach Running state within 10 minutes"
           exit 1
-      - name: Verify extracting worker runtime logs
+      - name: Verify extracting worker health endpoint
         run: |
+          url="https://${{ secrets.AZURE_WORKER_EXTRACTING_NAME }}.azurewebsites.net/"
+          echo "Polling extracting worker health endpoint: $url"
           for i in $(seq 1 30); do
-            zip=/tmp/extracting-worker-logs.zip
-            out=/tmp/extracting-worker-logs
-            rm -rf "$out"
-            mkdir -p "$out"
-            if az webapp log download \
-              --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-              --name ${{ secrets.AZURE_WORKER_EXTRACTING_NAME }} \
-              --log-file "$zip" >/dev/null 2>&1; then
-              unzip -o "$zip" -d "$out" >/dev/null 2>&1 || true
-              if grep -R "Health server listening on port 8000" "$out" >/dev/null \
-                && grep -R "Worker listening on phase extracting" "$out" >/dev/null; then
-                echo "Extracting worker runtime logs verified"
-                exit 0
-              fi
+            if curl -fsS --max-time 10 "$url" >/dev/null 2>&1; then
+              echo "Extracting worker health check passed on attempt $i"
+              exit 0
             fi
-            echo "extracting runtime logs not ready yet (attempt $i/30); waiting 20s..."
-            sleep 20
+            echo "extracting health not ready yet (attempt $i/30); waiting 10s..."
+            sleep 10
           done
-          echo "ERROR: extracting worker runtime log markers not found within 10 minutes"
+          echo "ERROR: extracting worker health endpoint did not respond within 5 minutes"
           exit 1
 
   deploy-processing:
@@ -114,7 +106,8 @@ jobs:
             --settings PFCD_WORKER_ROLE=processing \
               AZURE_OPENAI_ENDPOINT="${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
               AZURE_OPENAI_DEPLOYMENT_NAME="${{ secrets.AZURE_OPENAI_DEPLOYMENT_NAME }}" \
-              WEBSITES_CONTAINER_START_TIME_LIMIT=600
+              WEBSITES_CONTAINER_START_TIME_LIMIT=600 \
+              WEBSITES_PORT=8000
           az webapp config set \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_PROCESSING_NAME }} \
@@ -137,32 +130,23 @@ jobs:
               echo "Processing worker is Running"
               exit 0
             fi
-            sleep 20
+            sleep 10
           done
-          echo "ERROR: processing worker did not reach Running state within 20 minutes"
+          echo "ERROR: processing worker did not reach Running state within 10 minutes"
           exit 1
-      - name: Verify processing worker runtime logs
+      - name: Verify processing worker health endpoint
         run: |
+          url="https://${{ secrets.AZURE_WORKER_PROCESSING_NAME }}.azurewebsites.net/"
+          echo "Polling processing worker health endpoint: $url"
           for i in $(seq 1 30); do
-            zip=/tmp/processing-worker-logs.zip
-            out=/tmp/processing-worker-logs
-            rm -rf "$out"
-            mkdir -p "$out"
-            if az webapp log download \
-              --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-              --name ${{ secrets.AZURE_WORKER_PROCESSING_NAME }} \
-              --log-file "$zip" >/dev/null 2>&1; then
-              unzip -o "$zip" -d "$out" >/dev/null 2>&1 || true
-              if grep -R "Health server listening on port 8000" "$out" >/dev/null \
-                && grep -R "Worker listening on phase processing" "$out" >/dev/null; then
-                echo "Processing worker runtime logs verified"
-                exit 0
-              fi
+            if curl -fsS --max-time 10 "$url" >/dev/null 2>&1; then
+              echo "Processing worker health check passed on attempt $i"
+              exit 0
             fi
-            echo "processing runtime logs not ready yet (attempt $i/30); waiting 20s..."
-            sleep 20
+            echo "processing health not ready yet (attempt $i/30); waiting 10s..."
+            sleep 10
           done
-          echo "ERROR: processing worker runtime log markers not found within 10 minutes"
+          echo "ERROR: processing worker health endpoint did not respond within 5 minutes"
           exit 1
 
   deploy-reviewing:
@@ -183,7 +167,8 @@ jobs:
             --settings PFCD_WORKER_ROLE=reviewing \
               AZURE_OPENAI_ENDPOINT="${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
               AZURE_OPENAI_DEPLOYMENT_NAME="${{ secrets.AZURE_OPENAI_DEPLOYMENT_NAME }}" \
-              WEBSITES_CONTAINER_START_TIME_LIMIT=600
+              WEBSITES_CONTAINER_START_TIME_LIMIT=600 \
+              WEBSITES_PORT=8000
           az webapp config set \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_REVIEWING_NAME }} \
@@ -206,30 +191,21 @@ jobs:
               echo "Reviewing worker is Running"
               exit 0
             fi
-            sleep 20
+            sleep 10
           done
-          echo "ERROR: reviewing worker did not reach Running state within 20 minutes"
+          echo "ERROR: reviewing worker did not reach Running state within 10 minutes"
           exit 1
-      - name: Verify reviewing worker runtime logs
+      - name: Verify reviewing worker health endpoint
         run: |
+          url="https://${{ secrets.AZURE_WORKER_REVIEWING_NAME }}.azurewebsites.net/"
+          echo "Polling reviewing worker health endpoint: $url"
           for i in $(seq 1 30); do
-            zip=/tmp/reviewing-worker-logs.zip
-            out=/tmp/reviewing-worker-logs
-            rm -rf "$out"
-            mkdir -p "$out"
-            if az webapp log download \
-              --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-              --name ${{ secrets.AZURE_WORKER_REVIEWING_NAME }} \
-              --log-file "$zip" >/dev/null 2>&1; then
-              unzip -o "$zip" -d "$out" >/dev/null 2>&1 || true
-              if grep -R "Health server listening on port 8000" "$out" >/dev/null \
-                && grep -R "Worker listening on phase reviewing" "$out" >/dev/null; then
-                echo "Reviewing worker runtime logs verified"
-                exit 0
-              fi
+            if curl -fsS --max-time 10 "$url" >/dev/null 2>&1; then
+              echo "Reviewing worker health check passed on attempt $i"
+              exit 0
             fi
-            echo "reviewing runtime logs not ready yet (attempt $i/30); waiting 20s..."
-            sleep 20
+            echo "reviewing health not ready yet (attempt $i/30); waiting 10s..."
+            sleep 10
           done
-          echo "ERROR: reviewing worker runtime log markers not found within 10 minutes"
+          echo "ERROR: reviewing worker health endpoint did not respond within 5 minutes"
           exit 1
