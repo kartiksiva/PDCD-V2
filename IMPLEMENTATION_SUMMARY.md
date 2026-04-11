@@ -547,3 +547,75 @@ zipinfo -1 worker.zip | rg '^\.venv/' || true
 ```
 
 - Expected result: no output (no `.venv` entries present).
+
+---
+
+## Section 13: Deployment Pipeline Hardening (2026-04-11)
+
+Four separate issues were identified and fixed in the CI/deployment pipeline. All changes are in `.github/workflows/deploy-backend.yml` and `.github/workflows/deploy-workers.yml` plus the agent import chain.
+
+### Fix 1: venv and dev artifacts excluded from zip (`deploy-backend.yml`, `deploy-workers.yml`)
+
+**Problem:** Backend deploy used `zip -r ../backend.zip .` with no exclusions. Workers used `zip -r ../worker.zip . -x "*.pyc" -x "__pycache__/*"` — excluding bytecode but not virtual environments. Any `venv/`, `.venv/`, or `env/` directory inside `backend/` (common on dev machines or CI runs that install deps in-place) would be bundled into the artifact, bloating it by 200–500 MB and risking Azure zip-deploy size-limit failures or timeouts.
+
+**Fix:** Both workflows now pass a consistent exclusion list to `zip`:
+```
+-x "venv/*" -x ".venv/*" -x "env/*"
+-x "*.pyc" -x "__pycache__/*"
+-x ".pytest_cache/*" -x ".coverage"
+-x "*.db" -x "*.sqlite3"
+-x ".env" -x ".env.*"
+-x "storage/*"
+```
+
+---
+
+### Fix 2: Worker triple restart cycle eliminated (`deploy-workers.yml`)
+
+**Problem:** For each worker, the previous step order was:
+1. `az webapp deploy` (zip, async) → restart #1 — code lands but startup-file not yet set
+2. `az webapp config appsettings set` → restart #2 — env vars change
+3. `az webapp config set --startup-file` → restart #3 — startup command finally correct
+
+Three restarts per worker (9 total across all three), with verify steps starting to poll after restart #1 but two more restarts still pending. `WEBSITES_CONTAINER_START_TIME_LIMIT=600` was also applied after the deploy restart, so Azure's default 230 s container startup window was active for the deploy restart — enough to kill the process during heavy Python imports.
+
+**Fix:** Reordered to configure-first, deploy-last for all three workers:
+1. `az webapp config appsettings set` (includes `WEBSITES_CONTAINER_START_TIME_LIMIT=600`, `WEBSITES_PORT=8000`) — runs first, restart happens with no code yet (no-op)
+2. `az webapp config set --startup-file` — runs second, another no-op restart
+3. `az webapp deploy` (zip) — final step, triggers the single definitive restart with all config already in place
+
+**Backend:** CORS `appsettings set` was running before the zip deploy, adding a redundant restart. Moved to a post-deploy step (applied after health check passes).
+
+---
+
+### Fix 3: CI test failures from eager semantic-kernel imports (`backend/app/agents/`)
+
+**Problem:** `app/agents/__init__.py` eagerly imported `run_extraction` → `extraction.py` → `from semantic_kernel.connectors.ai.open_ai import ...` at module level. Any test that imported any `app.agents.*` submodule (adapters, alignment, sipoc_validator, evidence) triggered this import chain and failed immediately if `semantic_kernel` was not installed — before any `monkeypatch` could apply. This caused widespread CI failures across tests that had nothing to do with the LLM layer.
+
+**Fix:** SK imports moved inside the functions that actually need them:
+- `extraction.py`: `from semantic_kernel...` and `from app.agents.kernel_factory import get_kernel` moved inside `_call_extraction()`
+- `processing.py`: same, inside `_call_processing()`
+- `kernel_factory.py`: `from azure.identity...`, `from semantic_kernel import Kernel`, and `from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion` moved inside `get_kernel()`
+- `app/agents/__init__.py`: removed `run_extraction`, `run_processing`, `run_reviewing` from eager re-exports (SK-dependent; only used by `runner.py`)
+- `workers/runner.py`: updated to import directly from `app.agents.extraction`, `app.agents.processing`, `app.agents.reviewing`
+
+SK is now only imported at worker runtime when an LLM call is actually made. All tests run without `semantic_kernel` installed. 134+ tests pass with lightweight deps only.
+
+---
+
+### Fix 4: Deployment verification time reduced (`deploy-workers.yml`, `deploy-backend.yml`)
+
+**Problem:** Total workflow wall time was ~30 minutes, comprising:
+- Workers: `az webapp show` state check (60 × 20s = 20 min max) + `az webapp log download` runtime log check (30 × 20s = 10 min max) = 30 min per worker
+- Backend: health check (60 × 20s = 20 min max)
+- The `az webapp log download` step was the main offender — downloading full log archives every 20s, unreliable (old log entries from prior runs could satisfy the grep), and redundant once `state=Running` was confirmed.
+
+**Fix:**
+- Removed all `az webapp log download` runtime log verification steps permanently — `state=Running` is the correct and sufficient signal
+- Halved all polling intervals: 20s → 10s
+- Workers: 90 × 10s = 15 min max (vs 30 min)
+- Backend: 60 × 10s = 10 min max (vs 20 min)
+
+Note: A curl HTTP probe against the worker's public URL was attempted as an additional check, but reverted — Python startup with heavy Azure SDK imports takes longer than the probe window, causing false failures. The `az webapp show state=Running` check is reliable.
+
+**Expected total deployment time:** ~10–15 min vs ~30 min previously.
