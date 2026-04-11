@@ -7,11 +7,7 @@ import json
 import os
 from typing import Any, Dict, List, Tuple
 
-from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion, AzureChatPromptExecutionSettings
-from semantic_kernel.contents import ChatHistory
-
 from app.agents.adapters.registry import AdapterRegistry
-from app.agents.kernel_factory import get_kernel
 
 _DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
 _adapter_registry = AdapterRegistry()
@@ -59,6 +55,9 @@ def _cost_usd(prompt_tokens: int, completion_tokens: int) -> float:
 
 async def _call_extraction(deployment: str, system_prompt: str, user_content: str):
     """Invoke Azure OpenAI via Semantic Kernel; returns (raw_json, prompt_tokens, completion_tokens)."""
+    from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion, AzureChatPromptExecutionSettings
+    from semantic_kernel.contents import ChatHistory
+    from app.agents.kernel_factory import get_kernel
     kernel = get_kernel(deployment)
     chat = ChatHistory()
     chat.add_system_message(system_prompt)

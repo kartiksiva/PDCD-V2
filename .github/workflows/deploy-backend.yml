@@ -47,13 +47,6 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Set CORS origins on App Service
-        run: |
-          az webapp config appsettings set \
-            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --name ${{ secrets.AZURE_WEBAPP_NAME }} \
-            --settings PFCD_CORS_ORIGINS="${{ secrets.PFCD_CORS_ORIGINS }}"
-
       - name: Deploy to Azure App Service
         run: |
           cd backend
@@ -84,3 +77,10 @@ jobs:
           done
           echo "ERROR: backend health check did not pass within 20 minutes"
           exit 1
+
+      - name: Apply post-deploy configuration
+        run: |
+          az webapp config appsettings set \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WEBAPP_NAME }} \
+            --settings PFCD_CORS_ORIGINS="${{ secrets.PFCD_CORS_ORIGINS }}"

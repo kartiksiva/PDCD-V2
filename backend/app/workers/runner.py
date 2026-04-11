@@ -16,8 +16,10 @@ from uuid import uuid4
 from azure.servicebus import ServiceBusMessage
 from azure.servicebus.exceptions import ServiceBusConnectionError as SBConnectionError
 
-from app.agents import run_extraction, run_processing, run_reviewing
 from app.agents.alignment import run_anchor_alignment
+from app.agents.extraction import run_extraction
+from app.agents.processing import run_processing
+from app.agents.reviewing import run_reviewing
 from app.job_logic import JobStatus, Profile, add_agent_run, build_draft, load_transcript_text, profile_config
 from app.repository import JobRepository
 from app.servicebus import ServiceBusOrchestrator, build_message, max_retries
