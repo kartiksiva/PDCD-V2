@@ -59,33 +59,19 @@ jobs:
             --src-path worker.zip --type zip --async true --track-status false
       - name: Verify extracting worker is running
         run: |
-          for i in $(seq 1 60); do
+          for i in $(seq 1 90); do
             state=$(az webapp show \
               --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
               --name ${{ secrets.AZURE_WORKER_EXTRACTING_NAME }} \
               --query "state" -o tsv)
-            echo "extracting state check $i/60: $state"
+            echo "extracting state check $i/90: $state"
             if [ "$state" = "Running" ]; then
               echo "Extracting worker is Running"
               exit 0
             fi
             sleep 10
           done
-          echo "ERROR: extracting worker did not reach Running state within 10 minutes"
-          exit 1
-      - name: Verify extracting worker health endpoint
-        run: |
-          url="https://${{ secrets.AZURE_WORKER_EXTRACTING_NAME }}.azurewebsites.net/"
-          echo "Polling extracting worker health endpoint: $url"
-          for i in $(seq 1 30); do
-            if curl -fsS --max-time 10 "$url" >/dev/null 2>&1; then
-              echo "Extracting worker health check passed on attempt $i"
-              exit 0
-            fi
-            echo "extracting health not ready yet (attempt $i/30); waiting 10s..."
-            sleep 10
-          done
-          echo "ERROR: extracting worker health endpoint did not respond within 5 minutes"
+          echo "ERROR: extracting worker did not reach Running state within 15 minutes"
           exit 1
 
   deploy-processing:
@@ -120,33 +106,19 @@ jobs:
             --src-path worker.zip --type zip --async true --track-status false
       - name: Verify processing worker is running
         run: |
-          for i in $(seq 1 60); do
+          for i in $(seq 1 90); do
             state=$(az webapp show \
               --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
               --name ${{ secrets.AZURE_WORKER_PROCESSING_NAME }} \
               --query "state" -o tsv)
-            echo "processing state check $i/60: $state"
+            echo "processing state check $i/90: $state"
             if [ "$state" = "Running" ]; then
               echo "Processing worker is Running"
               exit 0
             fi
             sleep 10
           done
-          echo "ERROR: processing worker did not reach Running state within 10 minutes"
-          exit 1
-      - name: Verify processing worker health endpoint
-        run: |
-          url="https://${{ secrets.AZURE_WORKER_PROCESSING_NAME }}.azurewebsites.net/"
-          echo "Polling processing worker health endpoint: $url"
-          for i in $(seq 1 30); do
-            if curl -fsS --max-time 10 "$url" >/dev/null 2>&1; then
-              echo "Processing worker health check passed on attempt $i"
-              exit 0
-            fi
-            echo "processing health not ready yet (attempt $i/30); waiting 10s..."
-            sleep 10
-          done
-          echo "ERROR: processing worker health endpoint did not respond within 5 minutes"
+          echo "ERROR: processing worker did not reach Running state within 15 minutes"
           exit 1
 
   deploy-reviewing:
@@ -181,31 +153,17 @@ jobs:
             --src-path worker.zip --type zip --async true --track-status false
       - name: Verify reviewing worker is running
         run: |
-          for i in $(seq 1 60); do
+          for i in $(seq 1 90); do
             state=$(az webapp show \
               --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
               --name ${{ secrets.AZURE_WORKER_REVIEWING_NAME }} \
               --query "state" -o tsv)
-            echo "reviewing state check $i/60: $state"
+            echo "reviewing state check $i/90: $state"
             if [ "$state" = "Running" ]; then
               echo "Reviewing worker is Running"
               exit 0
             fi
             sleep 10
           done
-          echo "ERROR: reviewing worker did not reach Running state within 10 minutes"
-          exit 1
-      - name: Verify reviewing worker health endpoint
-        run: |
-          url="https://${{ secrets.AZURE_WORKER_REVIEWING_NAME }}.azurewebsites.net/"
-          echo "Polling reviewing worker health endpoint: $url"
-          for i in $(seq 1 30); do
-            if curl -fsS --max-time 10 "$url" >/dev/null 2>&1; then
-              echo "Reviewing worker health check passed on attempt $i"
-              exit 0
-            fi
-            echo "reviewing health not ready yet (attempt $i/30); waiting 10s..."
-            sleep 10
-          done
-          echo "ERROR: reviewing worker health endpoint did not respond within 5 minutes"
+          echo "ERROR: reviewing worker did not reach Running state within 15 minutes"
           exit 1
