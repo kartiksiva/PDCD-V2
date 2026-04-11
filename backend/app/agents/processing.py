@@ -5,12 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-from datetime import datetime, timezone
 from typing import Any, Dict
 
+from app.job_logic import _utc_now
 
-_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
 logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
@@ -91,8 +89,22 @@ Rules:
 """
 
 
-def _cost_usd(prompt_tokens: int, completion_tokens: int) -> float:
-    return (prompt_tokens * 0.15 + completion_tokens * 0.60) / 1_000_000
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _extract_usage_tokens(metadata: Dict[str, Any]) -> tuple[int, int]:
+    usage = metadata.get("usage")
+    if usage is None:
+        return 0, 0
+    if isinstance(usage, dict):
+        return _safe_int(usage.get("prompt_tokens")), _safe_int(usage.get("completion_tokens"))
+    return _safe_int(getattr(usage, "prompt_tokens", 0)), _safe_int(
+        getattr(usage, "completion_tokens", 0)
+    )
 
 
 async def _call_processing(deployment: str, system_prompt: str, user_content: str):
@@ -109,11 +121,11 @@ async def _call_processing(deployment: str, system_prompt: str, user_content: st
     )
     svc = kernel.get_service(type=AzureChatCompletion)  # type: ignore[arg-type]
     result = await svc.get_chat_message_content(chat, settings, kernel=kernel)
-    usage = result.metadata.get("usage", {})
+    prompt_tokens, completion_tokens = _extract_usage_tokens(result.metadata)
     return (
         str(result),
-        usage.get("prompt_tokens", 0),
-        usage.get("completion_tokens", 0),
+        prompt_tokens,
+        completion_tokens,
     )
 
 
@@ -125,7 +137,9 @@ def run_processing(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
     evidence = job.get("extracted_evidence") or {}
     manifest = job.get("input_manifest") or {}
     profile = profile_conf.get("profile", "balanced")
-    deployment = profile_conf.get("model", _DEPLOYMENT)
+    deployment = profile_conf.get("model")
+    if not deployment:
+        raise RuntimeError("profile_conf.model is required for processing.")
     logger.info(
         "Processing model resolved for job %s: profile=%s deployment=%s",
         job.get("job_id"),
@@ -145,7 +159,7 @@ def run_processing(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
     draft = json.loads(raw)
 
     # Ensure required top-level keys are present
-    draft.setdefault("generated_at", datetime.now(timezone.utc).isoformat())
+    draft.setdefault("generated_at", _utc_now())
     draft.setdefault("version", 1)
     draft.setdefault("assumptions", [])
     draft.setdefault("confidence_summary", {
@@ -155,4 +169,5 @@ def run_processing(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
     })
 
     job["draft"] = draft
-    return _cost_usd(pt, ct)
+    from app.job_logic import estimate_cost_usd
+    return estimate_cost_usd(deployment, pt, ct)

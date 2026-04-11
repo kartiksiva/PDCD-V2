@@ -87,6 +87,11 @@ def test_worker_extracting_phase(tmp_path, monkeypatch):
     assert len(enqueued) == 1
     assert enqueued[0][0] == "processing"
 
+    extraction_runs = [r for r in updated["agent_runs"] if r["agent"] == "extraction"]
+    assert len(extraction_runs) == 1
+    assert extraction_runs[0]["status"] == "success"
+    assert updated["active_agent_run_id"] is None
+
 
 def test_worker_reviewing_phase_builds_draft(tmp_path, monkeypatch):
     """Reviewing phase calls build_draft and sets status to NEEDS_REVIEW."""
@@ -228,6 +233,34 @@ def test_worker_duplicate_message_skipped(tmp_path, monkeypatch):
         worker.handle_message(MagicMock(), message)
 
     assert not run_phase_called, "Duplicate message should have been skipped"
+
+
+def test_worker_skips_out_of_order_earlier_phase(tmp_path, monkeypatch):
+    """If a later phase is already completed, earlier-phase messages are skipped."""
+    db_path = tmp_path / "worker-out-of-order.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+
+    _, repo_mod = _reload_modules()
+    from app.workers.runner import Worker
+
+    repository = repo_mod.JobRepository.from_env()
+    repository.init_db()
+
+    job = _make_job(status="needs_review")
+    job_id = job["job_id"]
+    job["last_completed_phase"] = "reviewing"
+    repository.upsert_job(job_id, job)
+
+    worker = Worker("extracting")
+    worker.repo = repository
+    worker.orchestrator = MagicMock()
+
+    message = _make_message(job_id, "extracting")
+    run_phase_called = []
+    with patch.object(worker, "_run_phase", side_effect=lambda *a: run_phase_called.append(True)):
+        worker.handle_message(MagicMock(), message)
+
+    assert not run_phase_called, "Out-of-order earlier phase should have been skipped"
 
 
 def test_run_recreates_receiver_after_servicebus_error(monkeypatch):
@@ -381,7 +414,7 @@ def test_storage_rejects_path_traversal_job_id(tmp_path):
     """save_bytes must reject job_id containing path traversal sequences."""
     from app.storage import ExportStorage
 
-    store = ExportStorage(base_path=str(tmp_path), connection_string=None, container="exports")
+    store = ExportStorage(base_path=str(tmp_path), connection_string=None, account_url=None, container="exports")
     try:
         store.save_bytes("../../etc/passwd", "json", b"data", "application/json")
         assert False, "Expected ValueError"
@@ -393,7 +426,7 @@ def test_storage_rejects_invalid_format(tmp_path):
     """save_bytes must reject non-alphanumeric format strings."""
     from app.storage import ExportStorage
 
-    store = ExportStorage(base_path=str(tmp_path), connection_string=None, container="exports")
+    store = ExportStorage(base_path=str(tmp_path), connection_string=None, account_url=None, container="exports")
     try:
         store.save_bytes(str(uuid4()), "../evil", b"data", "application/json")
         assert False, "Expected ValueError"
@@ -405,7 +438,7 @@ def test_storage_valid_save_and_load(tmp_path):
     """save_bytes followed by load_bytes should return the same content."""
     from app.storage import ExportStorage
 
-    store = ExportStorage(base_path=str(tmp_path), connection_string=None, container="exports")
+    store = ExportStorage(base_path=str(tmp_path), connection_string=None, account_url=None, container="exports")
     job_id = str(uuid4()).replace("-", "")
     content = b"hello world"
     meta = store.save_bytes(job_id, "json", content, "application/json")

@@ -1,5 +1,29 @@
 # Repository Guidelines
 
+## Session Bootstrap Protocol (MANDATORY)
+
+At the start of every session, before writing any code:
+
+1. Read `AGENTS.md` (this file)
+2. Read `HANDOVER.md` — work assignment board; pick up items from "Assigned to Codex"
+3. Read `IMPLEMENTATION_SUMMARY.md` — rolling log of what has been built and what remains
+4. Read `prd.md` — authoritative requirements; never modify requirements, only the progress table
+5. Read `REFERENCE.md` on demand — file layout, env vars, API/data model, Azure infra, CI/CD
+
+After completing work:
+- `HANDOVER.md` → move item from "Assigned to Codex" / "In Progress" to "Ready for Claude Review"
+- `IMPLEMENTATION_SUMMARY.md` → append what was built, decisions made, open questions
+
+When picking up an assignment:
+- `HANDOVER.md` → move item from "Assigned to Codex" to "In Progress"
+
+Shared logs are append-only to avoid overwrite conflicts between agents.
+
+## Implementation Status
+- Active implementation details and progress history are maintained in `IMPLEMENTATION_SUMMARY.md`.
+- Use this section for concise architectural decisions or operating guidance that affects agent behavior.
+- 2026-04-11 backlog pass complete for Section 14 Medium/Low items (`M1`–`M5`, `L1`–`L4`) with matching tests; see latest section in `IMPLEMENTATION_SUMMARY.md` for exact file-level deltas and validation results.
+
 ## Project Structure & Module Organization
 This repository is currently a planning workspace for **PFCD Video-First v1**.  
 The tracked artifacts are:

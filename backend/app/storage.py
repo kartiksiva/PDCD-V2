@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 from dataclasses import dataclass
 from typing import Dict, Optional
 
 from azure.storage.blob import BlobServiceClient, ContentSettings
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_EXPORT_CONTAINER = "exports"
@@ -23,13 +26,29 @@ class ExportMeta:
 
 
 class ExportStorage:
-    def __init__(self, *, base_path: str, connection_string: Optional[str], container: str) -> None:
+    def __init__(
+        self,
+        *,
+        base_path: str,
+        connection_string: Optional[str],
+        account_url: Optional[str],
+        container: str,
+    ) -> None:
         self.base_path = base_path
         self.connection_string = connection_string
+        self.account_url = account_url
         self.container = container
         self._client = None
-        if connection_string:
+        if account_url:
+            try:
+                from azure.identity import DefaultAzureCredential
+
+                self._client = BlobServiceClient(account_url=account_url, credential=DefaultAzureCredential())
+            except Exception as exc:
+                logger.warning("Falling back to storage connection string after DAC init failure: %s", exc)
+        if self._client is None and connection_string:
             self._client = BlobServiceClient.from_connection_string(connection_string)
+        if self._client:
             self._ensure_container()
         else:
             os.makedirs(self.base_path, exist_ok=True)
@@ -38,8 +57,18 @@ class ExportStorage:
     def from_env(cls) -> "ExportStorage":
         base_path = os.environ.get("EXPORTS_BASE_PATH", DEFAULT_EXPORT_BASE_PATH)
         connection_string = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
+        account_url = os.environ.get("AZURE_STORAGE_ACCOUNT_URL")
+        if not account_url:
+            account_name = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
+            if account_name:
+                account_url = f"https://{account_name}.blob.core.windows.net"
         container = os.environ.get("AZURE_STORAGE_CONTAINER_EXPORTS", DEFAULT_EXPORT_CONTAINER)
-        return cls(base_path=base_path, connection_string=connection_string, container=container)
+        return cls(
+            base_path=base_path,
+            connection_string=connection_string,
+            account_url=account_url,
+            container=container,
+        )
 
     @property
     def mode(self) -> str:
@@ -84,9 +113,13 @@ class ExportStorage:
     def load_bytes(self, meta: Dict[str, str]) -> bytes:
         storage = meta.get("storage")
         location = meta.get("location")
-        if storage == "blob" and self._client:
+        if storage == "blob":
+            if not self._client:
+                raise FileNotFoundError("Blob export metadata cannot be read in local storage mode.")
             blob_client = self._client.get_blob_client(self.container, location)
             return blob_client.download_blob().readall()
+        if storage == "local" and self._client:
+            raise FileNotFoundError("Local export metadata cannot be read in blob storage mode.")
         if not location:
             raise FileNotFoundError("Export location missing")
         with open(location, "rb") as handle:

@@ -53,19 +53,27 @@ def test_finalize_without_user_saved_draft_returns_409(app_client):
     job_id = _create_queued(app_client.client)
     _simulate(app_client.client, job_id)
 
-    # Reset user_saved_draft to False directly via repo.
-    job = app_client.repo.get_job(job_id)
-    job["user_saved_draft"] = False
-    app_client.repo.upsert_job(job_id, job)
-
     resp = app_client.client.post(f"/api/jobs/{job_id}/finalize")
     assert resp.status_code == 409
     assert "saved" in resp.json()["detail"].lower()
 
 
+def test_simulate_then_finalize_without_save_returns_409(app_client):
+    job_id = _create_queued(app_client.client)
+    _simulate(app_client.client, job_id)
+
+    resp = app_client.client.post(f"/api/jobs/{job_id}/finalize")
+    assert resp.status_code == 409
+
+
 def test_finalize_blocked_by_blocker_flag_returns_409(app_client):
     job_id = _create_queued(app_client.client)
     _simulate(app_client.client, job_id)
+    save_resp = app_client.client.put(
+        f"/api/jobs/{job_id}/draft",
+        json={"assumptions": ["Saved before blocker check"]},
+    )
+    assert save_resp.status_code == 200
 
     # Inject a BLOCKER flag via repo.
     job = app_client.repo.get_job(job_id)

@@ -1,29 +1,54 @@
-# CLAUDE.md — AI Assistant Guide for PDCD-V2
+# CLAUDE.md
 
-This file provides context, conventions, and workflows for AI assistants working on this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+---
+
+## Role in This Project
+
+**Claude is architect and code reviewer only.** Codex is the developer who writes and modifies application code.
+
+Claude's permitted actions:
+- Review PRs and code changes for correctness, architecture fit, and PRD compliance
+- Update `CLAUDE.md`, `HANDOVER.md`, `IMPLEMENTATION_SUMMARY.md`, `prd.md` (progress section only), and `REFERENCE.md`
+- Propose design decisions and flag architectural concerns
+- Run tests and read files to validate Codex's work
+
+Claude must **not** write or modify application code (`.py`, `.ts`, `.tsx`, `.sh`, config files outside docs).
+
+### Agent File Ownership
+
+| File | Read by | Written by | Purpose |
+|------|---------|------------|---------|
+| `CLAUDE.md` | Claude | Claude | Claude's bootstrap, architecture reference, review checklist |
+| `AGENTS.md` | Codex | Codex | Codex's bootstrap — coding style, commit/PR guidelines, build commands |
+| `HANDOVER.md` | **Both** | **Both** | Work assignment board — assignments, in-progress, review queue |
+| `IMPLEMENTATION_SUMMARY.md` | Both | Both (append-only) | Rolling history log |
+| `prd.md` | Both | Claude (progress table only) | Authoritative requirements |
+| `REFERENCE.md` | Both | Claude | File layout, env vars, API/data model, Azure infra |
+
+Work assignments live in `HANDOVER.md`. Claude adds items to "Assigned to Codex"; Codex moves them through the board; Claude closes them after review. Neither agent edits the other's bootstrap file.
 
 ---
 
 ## Session Bootstrap Protocol (MANDATORY)
 
-**At the start of every task or session, before writing any code or making any changes:**
+At the start of every session, before reviewing or commenting on any code:
 
-1. Read `CLAUDE.md` (this file) — conventions, rules, status
-2. Read `IMPLEMENTATION_SUMMARY.md` — rolling log of what has been built and what remains
-3. Read `prd.md` — authoritative product requirements; never modify requirements, only the progress section
-4. Read `REFERENCE.md` only when navigating files, setting up the environment, writing infra/config code, or checking API/data model details
+1. Read `CLAUDE.md` (this file)
+2. Read `HANDOVER.md` — current work assignment board; check what's ready for review
+3. Read `IMPLEMENTATION_SUMMARY.md` — rolling log of what has been built and what remains
+4. Read `prd.md` — authoritative requirements; never modify requirements, only the progress table
+5. Read `REFERENCE.md` on demand — file layout, env vars, API/data model, Azure infra, CI/CD
 
-These files are the persistent project memory. Context is cleared between sessions, so these files are the only source of truth for current project state.
+After any meaningful review or architectural decision, update:
+- `CLAUDE.md` → Implementation Status section (Done / Architecture gaps)
+- `HANDOVER.md` → close completed items; add new Codex assignments
+- `IMPLEMENTATION_SUMMARY.md` → append findings, design decisions, open questions
+- `prd.md` → progress milestone table only
+- `REFERENCE.md` → only when APIs, infra naming, file layout, or env vars actually change
 
-**After completing any meaningful work:**
-
-Update these files to reflect the new state:
-- `CLAUDE.md` → update Implementation Status section (date, Done/Not-yet lists)
-- `IMPLEMENTATION_SUMMARY.md` → append a new subsection or update the relevant section with what was built, bugs fixed, design decisions made
-- `prd.md` → update the Implementation Progress milestone table at the bottom only; never edit requirements
-- `REFERENCE.md` → update only when APIs, infra naming, file layout, or env vars actually change (it is stable reference, not a session log)
-
-Keep updates factual and concise. Future Claude sessions depend on these files being accurate.
+Shared logs are append-only to avoid overwrite conflicts between agents.
 
 ---
 
@@ -31,32 +56,119 @@ Keep updates factual and concise. Future Claude sessions depend on these files b
 
 **PFCD Video-First v1** is an Azure-native process documentation system. It ingests video/audio/transcript evidence, runs agentic extraction and review pipelines, and produces structured process documentation (PDD + SIPOC) in multiple export formats.
 
-The system has completed its skeleton phase. The API, state machine, SQL schema, Azure orchestration, and core agent layer (extraction, processing, reviewing, alignment, evidence strength) are all implemented. Real LLM calls use Semantic Kernel 1.x via `DefaultAzureCredential`.
-
 Reference documents:
 - `prd.md` — authoritative product requirements and evidence hierarchy rules
-- `AGENTS.md` — repository coding and PR guidelines
+- `REFERENCE.md` — file layout, tech stack, env vars, API endpoints, data model, Azure infra
 - `GEMINI.md` — architecture overview and planning context
 - `REVIEW_CLOSURE_2026-03-21.md` — skeleton approval status and conditions
 
-For file layout, tech stack, env vars, API endpoints, data model, Azure infra, and CI/CD details → see `REFERENCE.md`
+---
+
+## Build and Test Commands
+
+All commands run from `backend/` with the venv activated.
+
+```bash
+# Setup (first time)
+cd backend
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+alembic upgrade head
+
+# Run API server (local)
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+
+# Run all tests
+.venv/bin/pytest ../tests/ -v
+
+# Run unit tests only
+.venv/bin/pytest ../tests/unit/ -v
+
+# Run a single test file
+.venv/bin/pytest ../tests/unit/test_agents.py -v
+
+# Run a single test by name
+.venv/bin/pytest ../tests/unit/test_agents.py::test_function_name -v
+
+# Run integration tests only (no Azure creds needed — uses SQLite in-memory)
+.venv/bin/pytest ../tests/integration/ -v
+```
+
+Use `.venv/bin/pytest` (not system `pytest`) to ensure Python 3.11 venv is active. Tests use `tmp_path` with an isolated SQLite database; no Azure credentials are required.
+
+### Worker processes
+
+```bash
+PFCD_WORKER_ROLE=extracting python -m app.workers.runner
+PFCD_WORKER_ROLE=processing python -m app.workers.runner
+PFCD_WORKER_ROLE=reviewing  python -m app.workers.runner
+python -m app.workers.cleanup   # TTL expiry + data purge
+```
 
 ---
 
-## Authentication
+## Architecture
 
-All `/api/*` endpoints require the `X-API-Key` header when `PFCD_API_KEY` is set.
+### Request → Pipeline → Export Flow
 
-| Scenario | Result |
-|----------|--------|
-| `PFCD_API_KEY` unset | Auth disabled — all requests pass (local dev) |
-| Header absent, auth enabled | `401 Unauthorized` |
-| Header present but wrong | `403 Forbidden` |
-| Header matches `PFCD_API_KEY` | Request proceeds normally |
+```
+HTTP POST /api/jobs
+    └─ main.py → JobRepository (SQLite/Azure SQL)
+                └─ ServiceBusOrchestrator → queue: "extracting"
 
-`/health` is always public regardless of `PFCD_API_KEY`.
+Worker (PFCD_WORKER_ROLE=extracting)
+    └─ runner.py → extraction.py
+                    ├─ AdapterRegistry → TranscriptAdapter (VTT/TXT) | VideoAdapter
+                    └─ SK Kernel (AzureChatCompletion + DefaultAzureCredential)
+                        └─ produces: evidence_items[], document_type_manifests
+                            └─ alignment.py: VTT anchor validation, similarity_score
+                                └─ queue: "processing"
 
-Uses `secrets.compare_digest` to prevent timing attacks. Implemented in `backend/app/auth.py`.
+Worker (PFCD_WORKER_ROLE=processing)
+    └─ runner.py → processing.py (SK)
+                    └─ evidence.py: source hierarchy → evidence_strength
+                        └─ queue: "reviewing"
+
+Worker (PFCD_WORKER_ROLE=reviewing)
+    └─ runner.py → reviewing.py (pure-Python, no LLM)
+                    └─ sipoc_validator.py: per-row field check, step_anchor cross-ref
+                        └─ COMPLETED | NEEDS_REVIEW
+
+GET /api/jobs/{id}/exports/{format}
+    └─ export_builder.py → PDF | DOCX | Markdown | JSON (with evidence bundle)
+```
+
+### Key Module Responsibilities
+
+| Module | Role |
+|--------|------|
+| `main.py` | All HTTP endpoints, app startup, upload handling |
+| `job_logic.py` | `JobStatus` / `Profile` / `ReviewSeverity` enums; `default_job_payload()` |
+| `repository.py` | `JobRepository` — sole owner of all DB reads/writes |
+| `db.py` | `session_scope` context manager, DB engine, `DATABASE_URL` config |
+| `servicebus.py` | `ServiceBusOrchestrator`, `build_message()`, phase dispatch |
+| `storage.py` | `ExportStorage` — blob or local file abstraction |
+| `workers/runner.py` | Service Bus receive loop, phase handler dispatch |
+| `workers/cleanup.py` | TTL expiry scan and data purge |
+| `agents/kernel_factory.py` | Builds SK `Kernel` with `DefaultAzureCredential` |
+| `agents/extraction.py` | Adapter-normalized content → SK extraction → evidence_items |
+| `agents/processing.py` | SK processing → PDD/SIPOC draft |
+| `agents/reviewing.py` | Pure-Python quality gate; calls `sipoc_validator.py` |
+| `agents/alignment.py` | VTT cue parsing, 2s tolerance, anchor confidence penalty |
+| `agents/evidence.py` | PRD §7 source hierarchy → `evidence_strength` |
+| `agents/adapters/` | `IProcessEvidenceAdapter` ABC + Transcript/Video adapters + registry |
+| `export_builder.py` | Evidence bundle manifest; PDF/DOCX/Markdown generation |
+| `auth.py` | `verify_api_key` FastAPI dependency — `X-API-Key` enforcement |
+
+### Patterns to Know
+
+**Async/sync boundary:** All blocking DB calls use `await anyio.to_thread.run_sync(...)`. SK agent calls use `asyncio.run()` inside synchronous worker handlers.
+
+**Factory pattern:** `from_env()` classmethods on `JobRepository`, `ExportStorage`. This isolates env var reads and enables monkeypatching in tests.
+
+**Repository pattern:** All DB access goes through `JobRepository`. Never call `SessionLocal` directly from endpoints or workers.
+
+**JSON columns:** All JSON stored deterministically: `json.dumps(..., ensure_ascii=True, separators=(',', ':'))`.
 
 ---
 
@@ -67,148 +179,111 @@ QUEUED → PROCESSING → NEEDS_REVIEW → FINALIZING → COMPLETED
                                                  ↘ FAILED
 ```
 
-- `JobStatus` enum defined in `backend/app/job_logic.py`
-- Transitions driven by Service Bus worker phases (extracting → processing → reviewing)
-- `phase_attempt` tracks retry count per phase
-- `error` field (JSON TEXT) stores exception details on failure
+`JobStatus` enum is in `job_logic.py`. `phase_attempt` tracks retry count. `error` (JSON TEXT) stores exception details on failure.
 
 ---
 
-## Code Conventions
+## Evidence Hierarchy (PRD §7)
 
-### Python Style
+When reviewing extraction or review logic:
 
-- **Indent:** 4 spaces
-- **Classes:** `PascalCase` (e.g., `JobRepository`, `ExportStorage`)
-- **Functions/methods/variables:** `snake_case`
-- **Constants:** `UPPER_SNAKE_CASE` (e.g., `MAX_UPLOAD_BYTES`)
-- **Private helpers:** `_leading_underscore` (e.g., `_utc_now`, `_serialize`)
-- **Enums:** `PascalCase` class, `UPPER_CASE` members (e.g., `JobStatus.QUEUED`, `ReviewSeverity.BLOCKER`)
-
-### Async Pattern
-
-All blocking DB operations are wrapped:
-```python
-result = await anyio.to_thread.run_sync(JOB_REPO.get_job, job_id)
-```
-
-FastAPI endpoints use `async def` throughout.
-
-### Factory Pattern
-
-Services use `from_env()` classmethods for construction:
-```python
-JOB_REPO = JobRepository.from_env()
-EXPORT_STORAGE = ExportStorage.from_env()
-ORCHESTRATOR = ServiceBusOrchestrator()
-```
-
-This keeps environment variable reading isolated and makes testing via monkeypatch easy.
-
-### Repository Pattern
-
-All persistence goes through `JobRepository` in `repository.py`. Do not access `SessionLocal` or ORM models directly from endpoints — call repository methods.
-
-### Context Managers
-
-- `session_scope()` in `db.py` wraps DB sessions with commit/rollback
-- `_lifespan()` in `main.py` handles app startup (calls `JOB_REPO.init_db()`)
-
-### Error Handling
-
-- Use `HTTPException` with appropriate status codes (400, 409, 410, 413, 503)
-- Store exception details in the `error` JSON field on the job record
-- Do not add error handling for scenarios that cannot happen; trust internal guarantees
-
-### Timestamps
-
-Always use `datetime.now(timezone.utc).isoformat()` for UTC timestamps stored as ISO 8601 strings.
-
-### IDs
-
-Use `str(uuid4())` for all new identifiers.
-
----
-
-## Evidence Hierarchy (from PRD)
-
-When working on extraction or review logic, respect this priority order:
-
-1. **Video** (highest evidence value)
+1. **Video** (highest)
 2. **Audio/transcript** derived from video
 3. **Standalone transcript**
 4. **Document/slide** (lowest)
 
-If video and transcript conflict, video evidence takes precedence. This rule must be implemented in the evidence scoring and review phase.
+Video beats transcript on conflict. `evidence.py` implements: `has_video + has_audio` → `"high"`, mean confidence < 0.60 downgrades one tier.
 
 ---
 
 ## Cost Profiles
 
-| Profile | Model | Cost Cap |
-|---------|-------|----------|
+| Profile | Model | Cap |
+|---------|-------|-----|
 | `balanced` | GPT-4o-mini | $4 |
 | `quality` | GPT-4o | $8 |
 
-Track per-run estimates in the `agent_runs.cost_estimate_usd` column. Respect profile caps when scheduling agent calls.
+Tracked in `agent_runs.cost_estimate_usd`. Respect caps when reviewing agent call scheduling.
+
+---
+
+## Authentication
+
+All `/api/*` endpoints require `X-API-Key` header when `PFCD_API_KEY` env var is set. `/health` is always public. Uses `secrets.compare_digest` (timing-safe). Implemented in `auth.py`.
+
+---
+
+## Code Conventions
+
+- **Python indent:** 4 spaces
+- **Classes:** `PascalCase` | **functions/vars:** `snake_case` | **constants:** `UPPER_SNAKE_CASE` | **private helpers:** `_leading_underscore`
+- **Enums:** `PascalCase` class, `UPPER_CASE` members (e.g., `JobStatus.QUEUED`)
+- **Timestamps:** `datetime.now(timezone.utc).isoformat()`
+- **IDs:** `str(uuid4())`
+- **HTTP errors:** `HTTPException` with 400/409/410/413/503 — no error handling for impossible scenarios
 
 ---
 
 ## Commit Style
 
-Follow conventional commits:
-
 ```
 feat: add transcript alignment engine
 fix: correct phase retry counter reset
-docs: update API endpoint table in README
+docs: update API endpoint table in REFERENCE.md
 refactor: extract evidence scoring to separate module
 chore: bump SQLAlchemy to 2.0.38
 ```
 
----
+## PR Review Checklist (for Claude's review role)
 
-## PR Guidelines
-
-- Brief summary of user-facing change
-- Link to relevant PRD section or decision
-- List validation steps actually run
-- Note any Azure resource or config impact
-- Include log snippets for workflow changes
-
----
-
-## Security Rules
-
-- **Never** hardcode secrets, connection strings, or credentials
-- All secrets go in environment variables or Azure Key Vault
-- Redact transcript/video identifiers in logs by default
-- Use `DefaultAzureCredential` — do not use storage shared keys or SAS tokens in application code
-- Validate file size at the API boundary (`MAX_UPLOAD_BYTES = 500 * 1024 * 1024`)
+- Does the change comply with the PRD section it claims to address?
+- Does it route all DB access through `JobRepository`?
+- Does it respect the evidence hierarchy for extraction/review changes?
+- Are new env vars documented in `REFERENCE.md`?
+- Do tests cover the failure path, not just the happy path?
+- Are Azure SDK clients using `DefaultAzureCredential` (no hardcoded keys)?
 
 ---
 
-## Current Implementation Status (as of 2026-04-07)
+## Current Implementation Status (as of 2026-04-12)
 
 **Done:**
 - FastAPI endpoints and job lifecycle API
-- SQL schema and Alembic migration
+- SQL schema and Alembic migration (8 migrations: init + enum + review + datetime)
 - Job state machine (QUEUED → COMPLETED/FAILED)
-- Service Bus message queuing and worker framework
+- Service Bus message queuing and three-worker framework
 - Blob/local export storage abstraction
-- Azure infrastructure bootstrap script
-- TTL/cleanup worker (`workers/cleanup.py` — expiry scan + data purge)
-- Static API key authentication (X-API-Key header, 401/403, timing-safe)
-- Real agent logic: extraction (SK + asyncio.run) and processing (SK + asyncio.run)
-- Semantic Kernel migration (replaces `openai` SDK, uses `DefaultAzureCredential`)
-- Transcript/video anchor alignment engine (`alignment.py` — VTT cue parsing, 2s tolerance, confidence penalty, first-60s consistency scoring, numeric `similarity_score`, PRD §8.5 verdict; full token similarity pending Azure Speech)
-- Evidence strength computation (`evidence.py` — PRD-compliant source hierarchy, confidence degradation)
-- Worker App Service deployment workflow (`deploy-workers.yml` — parallel extracting/processing/reviewing)
-- `IProcessEvidenceAdapter` contract + `TranscriptAdapter` (VTT/TXT) + `VideoAdapter` (metadata stub) + `AdapterRegistry`
-- Extraction agent uses adapter-normalized content (VTT cleaned, inline anchors, `document_type_manifests` stored)
-- SIPOC schema validation (`sipoc_validator.py` — per-row field check, step_anchor cross-ref, anchor classification, quality gate)
-- Evidence-linked PDF/DOCX/Markdown exports (`export_builder.py` — evidence bundle manifest, OCR snippets, anchor cross-ref, real DOCX via python-docx; PRD §8.10)
-- 205 tests passing (162 unit + 43 integration)
-- CI test step in GitHub Actions (`deploy-backend.yml` — `test` job gates `deploy`; pytest over unit + integration with SQLite)
-- Bug-fix pass (2026-04-07): OCR anchor field, alignment verdict computation + media gate, runner dead-branch cleanup, AgentRun incremental insert, transcript_mismatch guard in reviewing agent
-- Azure end-to-end deployment validated (2026-04-07): all four App Services running (pfcd-dev-api + 3 workers); fixed worker 504 deploy timeout (`--async true`), semantic-kernel pre-release dep (`azure-ai-agents>=1.2.0b3`), worker ContainerTimeout (health HTTP server in runner.py), correct OpenAI endpoint (`southindia.api.cognitive.microsoft.com`), `Cognitive Services OpenAI User` RBAC assigned to all managed identities; `AZURE_OPENAI_ENDPOINT` and `AZURE_OPENAI_DEPLOYMENT_NAME` wired into deploy-workers.yml via GitHub secrets
+- Azure infrastructure bootstrap script (`infra/dev-bootstrap.sh`)
+- TTL/cleanup worker
+- Static API key authentication (timing-safe)
+- Real agent logic: extraction + processing (SK + `DefaultAzureCredential`)
+- Transcript/video anchor alignment engine (`alignment.py`)
+- Evidence strength computation (`evidence.py`)
+- Worker App Service deployment workflow (`deploy-workers.yml` — parallel)
+- `IProcessEvidenceAdapter` + `TranscriptAdapter` (VTT/TXT) + `VideoAdapter` (metadata stub) + `AdapterRegistry`
+- SIPOC schema validation (`sipoc_validator.py`)
+- Evidence-linked PDF/DOCX/Markdown exports (`export_builder.py`)
+- CI test gate in `deploy-backend.yml` (`test` job gates `deploy`)
+- Azure end-to-end deployment validated: all four App Services live (pfcd-dev-api + 3 workers)
+- Deployment pipeline hardening (Section 13)
+- Section 14 C/H pass: `/dev/simulate` auth, async finalize, AgentRun lifecycle, DefaultAzureCredential storage, SK kernel caching, SB sender reuse, cost tracking + cap warn, deployment-aware pricing, profile-specific deployment vars
+- SK runtime hardening: canonical `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME`, api_version pinned, safe usage parsing, fail-fast on missing deployment
+- Section 14 M/L pass (reviewed 2026-04-12, 231 tests passing):
+  - Timestamp columns → `DateTime(timezone=True)` (M1)
+  - Canonical `anchor_utils.classify_anchor()` shared by all three callers (M2)
+  - `_transcript_text_inline` ephemeral field documented + popped before persistence (M3)
+  - Draft upsert-by-composite-PK preserving audit timestamps (M4)
+  - Stub draft detection: `draft_source:"stub"` + BLOCKER flag in reviewing agent (M5)
+  - `_utc_now()` consolidated; `servicebus._utc_now_dt()` renamed (L1)
+  - Workers use canonical `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME` (L2)
+  - Speaker heuristic tightened: VTT tag preference, 25-char cap, numeric-start rejection, prefix filter (L3)
+  - `/dev/simulate` no longer sets `user_saved_draft=True`; 409 path exercisable (L4)
+  - Dead code removed: `_cost_usd()`, `_DEPLOYMENT` vars (DC1)
+
+**Assigned to Codex:** See `HANDOVER.md` for current assignments, in-progress work, and review queue.
+
+**Architecture gaps (non-blocking):**
+- Full token/sequence similarity in `alignment.py` requires Azure Speech (currently uses anchor ratio only)
+- `VideoAdapter` returns metadata stub only — Azure Vision integration pending
+- Frontend (`frontend/`) is present but not yet integrated with the backend pipeline
+- Service Bus sender auto-reconnect on stale AMQP link (optional enhancement, see `SECTION14_MEDIUM_LOW_FINDINGS_2026-04-11.md`)

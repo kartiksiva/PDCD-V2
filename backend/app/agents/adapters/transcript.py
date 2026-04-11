@@ -25,6 +25,16 @@ _SECTION_LABEL_RE = re.compile(
 
 _VTT_MIME_TYPES = {"text/vtt", "text/webvtt"}
 _TXT_MIME_TYPES = {"text/plain"}
+_VTT_VOICE_TAG_RE = re.compile(r"^<v(?:\s+([^>]+))?>\s*(.*)$", re.IGNORECASE)
+_FALSE_SPEAKER_PREFIXES = (
+    "step",
+    "section",
+    "process",
+    "invoice",
+    "task",
+    "phase",
+    "action",
+)
 
 
 def _parse_vtt(text: str) -> Tuple[str, List[str]]:
@@ -299,9 +309,37 @@ class TranscriptAdapter(IProcessEvidenceAdapter):
 
 def _extract_speaker(content: str) -> str | None:
     """Extract speaker name from 'Speaker Name: content' pattern."""
-    if ": " in content:
-        candidate = content.split(": ", 1)[0].strip()
-        # Heuristic: speaker names are short and don't look like process steps
-        if 0 < len(candidate) <= 40 and "\n" not in candidate:
+    stripped = (content or "").strip()
+    if not stripped:
+        return None
+
+    vtt_match = _VTT_VOICE_TAG_RE.match(stripped)
+    if vtt_match:
+        tag_speaker = (vtt_match.group(1) or "").strip()
+        if _is_valid_speaker_candidate(tag_speaker):
+            return tag_speaker
+        stripped = (vtt_match.group(2) or "").strip()
+
+    if ": " in stripped:
+        candidate = stripped.split(": ", 1)[0].strip()
+        if _is_valid_speaker_candidate(candidate):
             return candidate
     return None
+
+
+def _is_valid_speaker_candidate(candidate: str) -> bool:
+    if not candidate:
+        return False
+    if len(candidate) > 25 or "\n" in candidate:
+        return False
+    if candidate[0].isdigit():
+        return False
+    lower = candidate.lower()
+    if any(lower.startswith(prefix) for prefix in _FALSE_SPEAKER_PREFIXES):
+        return False
+    if not any(ch.isalpha() for ch in candidate):
+        return False
+    # Keep short, name-like tokens (e.g., "AP Manager", "Alice", "John D.")
+    if len(candidate.split()) > 4:
+        return False
+    return True

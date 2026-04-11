@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Column, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -13,8 +13,8 @@ class Job(Base):
 
     job_id = Column(String(64), primary_key=True)
     status = Column(String(32), nullable=False)
-    created_at = Column(String(64), nullable=False)
-    updated_at = Column(String(64), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False)
     profile_requested = Column(String(32), nullable=False)
     provider_effective = Column(Text, nullable=False)
     has_video = Column(Boolean, nullable=False, default=False)
@@ -26,15 +26,15 @@ class Job(Base):
     agent_review = Column(Text, nullable=False, default="{}")
     speaker_resolutions = Column(Text, nullable=False, default="{}")
     user_saved_draft = Column(Boolean, nullable=False, default=False)
-    user_saved_at = Column(String(64), nullable=True)
+    user_saved_at = Column(DateTime(timezone=True), nullable=True)
     current_phase = Column(String(32), nullable=True)
     last_completed_phase = Column(String(32), nullable=True)
     phase_attempt = Column(Integer, nullable=False, default=0)
     payload_hash = Column(String(128), nullable=True)
     active_agent_run_id = Column(String(64), nullable=True)
-    deleted_at = Column(String(64), nullable=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
     cleanup_pending = Column(Boolean, nullable=False, default=False)
-    ttl_expires_at = Column(String(64), nullable=True)
+    ttl_expires_at = Column(DateTime(timezone=True), nullable=True)
     error = Column(Text, nullable=True)
 
 
@@ -59,10 +59,10 @@ class Draft(Base):
     draft_kind = Column(String(32), primary_key=True)
     payload = Column(Text, nullable=False)
     version = Column(Integer, nullable=False, default=1)
-    generated_at = Column(String(64), nullable=True)
-    user_reconciled_at = Column(String(64), nullable=True)
-    finalized_at = Column(String(64), nullable=True)
-    updated_at = Column(String(64), nullable=True)
+    generated_at = Column(DateTime(timezone=True), nullable=True)
+    user_reconciled_at = Column(DateTime(timezone=True), nullable=True)
+    finalized_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class AgentRun(Base):
@@ -79,8 +79,8 @@ class AgentRun(Base):
     cost_estimate_usd = Column(Float, nullable=False, default=0.0)
     confidence_delta = Column(Float, nullable=False, default=0.0)
     message = Column(Text, nullable=True)
-    created_at = Column(String(64), nullable=False)
-    updated_at = Column(String(64), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class ExportPayload(Base):
@@ -98,4 +98,4 @@ class JobEvent(Base):
     job_id = Column(String(64), ForeignKey("jobs.job_id"), nullable=False)
     event_type = Column(String(64), nullable=False)
     payload = Column(Text, nullable=False)
-    created_at = Column(String(64), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False)

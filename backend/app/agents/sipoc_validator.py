@@ -2,16 +2,10 @@
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List
 
-# Timestamp range: HH:MM:SS[-HH:MM:SS] with optional fractional seconds
-_TIMESTAMP_RANGE_RE = re.compile(
-    r"^\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:-\d{2}:\d{2}:\d{2}(?:\.\d+)?)?$"
-)
-# Frame ID fallback anchor: frame-N, frame_N, frameN (case-insensitive)
-_FRAME_ID_RE = re.compile(r"^frame[-_]?\d+", re.IGNORECASE)
+from app.agents.anchor_utils import classify_anchor
 
 _REQUIRED_FIELDS = ["supplier", "input", "process_step", "output", "customer"]
 
@@ -25,22 +19,6 @@ def _flag(
         "message": message,
         "requires_user_action": requires_user_action,
     }
-
-
-def _classify_anchor(anchor: str) -> str:
-    """
-    Classify a source_anchor string.
-
-    Returns one of: "timestamp_range", "section_label", "frame_id", "missing".
-    """
-    if not anchor or not anchor.strip():
-        return "missing"
-    a = anchor.strip()
-    if _TIMESTAMP_RANGE_RE.match(a):
-        return "timestamp_range"
-    if _FRAME_ID_RE.match(a):
-        return "frame_id"
-    return "section_label"
 
 
 @dataclass
@@ -139,7 +117,7 @@ def validate_sipoc(
 
         # 3. source_anchor — classify type
         source_anchor_raw = str(row.get("source_anchor") or "")
-        anchor_type = _classify_anchor(source_anchor_raw)
+        anchor_type = classify_anchor(source_anchor_raw)
         has_source_anchor = anchor_type != "missing"
 
         # 4. anchor_missing_reason — required when anchors are absent

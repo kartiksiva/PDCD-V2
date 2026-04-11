@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import sys
 from typing import Any, Dict
+from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 from uuid import uuid4
 
@@ -13,6 +15,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
 FIXTURES = ROOT / "tests" / "fixtures"
 sys.path.insert(0, str(BACKEND))
+os.environ.setdefault("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", "test-deployment")
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +126,37 @@ def test_extraction_cost_calculation(monkeypatch):
 
     expected_cost = (1000 * 0.15 + 500 * 0.60) / 1_000_000
     assert abs(cost - expected_cost) < 1e-9
+
+
+def test_extraction_usage_tokens_supports_object_usage():
+    from app.agents.extraction import _extract_usage_tokens
+
+    prompt_tokens, completion_tokens = _extract_usage_tokens(
+        {"usage": SimpleNamespace(prompt_tokens=123, completion_tokens=45)}
+    )
+
+    assert prompt_tokens == 123
+    assert completion_tokens == 45
+
+
+def test_processing_usage_tokens_supports_dict_usage():
+    from app.agents.processing import _extract_usage_tokens
+
+    prompt_tokens, completion_tokens = _extract_usage_tokens(
+        {"usage": {"prompt_tokens": 10, "completion_tokens": 20}}
+    )
+
+    assert prompt_tokens == 10
+    assert completion_tokens == 20
+
+
+def test_processing_usage_tokens_defaults_to_zero_when_missing():
+    from app.agents.processing import _extract_usage_tokens
+
+    prompt_tokens, completion_tokens = _extract_usage_tokens({})
+
+    assert prompt_tokens == 0
+    assert completion_tokens == 0
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +307,25 @@ def test_reviewing_sets_transcript_fallback_flag():
     flag_codes = [f["code"] for f in job["review_notes"]["flags"]]
     assert "transcript_fallback" in flag_codes
     assert job["agent_review"]["decision"] == "needs_review"
+
+
+def test_reviewing_blocks_stub_draft_source():
+    from app.agents.reviewing import run_reviewing
+
+    draft = {
+        "draft_source": "stub",
+        "pdd": _full_pdd(),
+        "sipoc": _full_sipoc(),
+        "confidence_summary": {"overall": 0.65, "source_quality": "medium", "evidence_strength": "medium"},
+    }
+    job = _job_with_draft(draft, has_video=True, has_audio=True, has_transcript=True, consistency_verdict="match")
+
+    run_reviewing(job, _balanced_profile())
+
+    by_code = {f["code"]: f for f in job["review_notes"]["flags"]}
+    assert "stub_draft_detected" in by_code
+    assert by_code["stub_draft_detected"]["severity"] == "blocker"
+    assert job["agent_review"]["decision"] == "blocked"
 
 
 def test_reviewing_blocks_on_incomplete_pdd():

@@ -55,11 +55,15 @@ def test_auth_disabled_when_env_unset(app_client):
     assert resp.status_code not in (401, 403)
 
 
-def test_dev_simulate_requires_no_auth_key(app_client_with_auth):
-    """dev/simulate is NOT on the api_router, so no auth dependency."""
+def test_dev_simulate_requires_auth_key(app_client_with_auth):
     ctx, _ = app_client_with_auth
-    # A missing job returns 404, which confirms no 401/403 was raised.
     resp = ctx.client.post(f"/dev/jobs/{uuid4()}/simulate")
+    assert resp.status_code == 401
+
+
+def test_dev_simulate_with_auth_key_passes(app_client_with_auth):
+    ctx, key = app_client_with_auth
+    resp = ctx.client.post(f"/dev/jobs/{uuid4()}/simulate", headers=_h(key))
     assert resp.status_code == 404
 
 

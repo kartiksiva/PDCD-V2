@@ -414,3 +414,4 @@ Given transcript-only fallback:
 | Week 6: Integration/E2E tests, CI test step | ✅ Complete |
 | Bug-fix pass (2026-04-07): OCR anchor field, alignment verdict, media-consistency gate, runner dead-branch, AgentRun persistence, doc drift | ✅ Complete |
 | Azure E2E deployment (2026-04-07): worker 504 fix, semantic-kernel dep, worker ContainerTimeout (health server), OpenAI endpoint + RBAC | ✅ Complete |
+| Section 14 Medium/Low backlog pass (2026-04-11): M1–M5, L1–L4, dead code cleanup, and test-gap closure | ✅ Complete |

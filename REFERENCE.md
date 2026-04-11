@@ -128,7 +128,10 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 | `PFCD_CLEANUP_INTERVAL_SECONDS` | Cleanup worker poll interval | `300` |
 | `PFCD_API_KEY` | Static API key for `X-API-Key` header | `""` (auth disabled if unset) |
 | `AZURE_OPENAI_ENDPOINT` | Azure OpenAI REST endpoint | required for agents |
-| `AZURE_OPENAI_DEPLOYMENT` | Model deployment name | `gpt-4o-mini` |
+| `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME` | Chat model deployment name (canonical) | required for agents |
+| `AZURE_OPENAI_API_VERSION` | Azure OpenAI API version for Semantic Kernel | `2024-10-21` |
+| `AZURE_OPENAI_DEPLOYMENT_NAME` | Legacy deployment alias (deprecated) | fallback only |
+| `AZURE_OPENAI_DEPLOYMENT` | Legacy deployment alias (deprecated) | fallback only |
 
 ### Starting Workers (Service Bus Phases)
 

@@ -237,8 +237,6 @@ async def update_draft(job_id: str, payload: DraftUpdateRequest) -> Dict[str, An
         job["draft"]["assumptions"] = payload.assumptions
     if payload.speaker_resolutions is not None:
         job["speaker_resolutions"].update(payload.speaker_resolutions)
-    job["user_saved_draft"] = True
-    job["user_saved_at"] = _utc_now()
     job["updated_at"] = _utc_now()
     job["draft"]["user_reconciled_at"] = _utc_now()
     await _repo_upsert_job(job_id, job)
@@ -267,7 +265,11 @@ async def finalize_job(job_id: str) -> Dict[str, Any]:
         return {"job_id": job_id, "status": job["status"], "exports": job["exports"]}
     if job["draft"] is None:
         raise HTTPException(status_code=409, detail="No draft available.")
-    if not job["user_saved_draft"]:
+    draft_saved = bool(
+        job.get("user_saved_draft")
+        or (job.get("draft") or {}).get("user_reconciled_at")
+    )
+    if not draft_saved:
         raise HTTPException(status_code=409, detail="Draft must be saved before finalize.")
     blockers = [f for f in job["review_notes"]["flags"] if f["severity"] == ReviewSeverity.BLOCKER.value]
     if blockers:
@@ -295,14 +297,36 @@ async def finalize_job(job_id: str) -> Dict[str, Any]:
         "exports_manifest": {"format": "json", "evidence_bundle": evidence_bundle},
     }
     json_bytes = json.dumps(exports_payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
-    markdown_bytes = build_export_markdown(job["finalized_draft"], evidence_bundle).encode("utf-8")
-    pdf_bytes = build_export_pdf(job["finalized_draft"], evidence_bundle)
-    docx_bytes = build_export_docx(job["finalized_draft"], evidence_bundle, job_id)
+    markdown_bytes = await anyio.to_thread.run_sync(
+        lambda: build_export_markdown(job["finalized_draft"], evidence_bundle).encode("utf-8")
+    )
+    pdf_bytes = await anyio.to_thread.run_sync(
+        lambda: build_export_pdf(job["finalized_draft"], evidence_bundle)
+    )
+    docx_bytes = await anyio.to_thread.run_sync(
+        lambda: build_export_docx(job["finalized_draft"], evidence_bundle, job_id)
+    )
 
-    json_meta = EXPORT_STORAGE.save_bytes(job_id, "json", json_bytes, "application/json")
-    md_meta = EXPORT_STORAGE.save_bytes(job_id, "markdown", markdown_bytes, "text/markdown; charset=utf-8")
-    pdf_meta = EXPORT_STORAGE.save_bytes(job_id, "pdf", pdf_bytes, "application/pdf", download_name=f"pdd-{job_id}.pdf")
-    docx_meta = EXPORT_STORAGE.save_bytes(job_id, "docx", docx_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", download_name=f"pdd-{job_id}.docx")
+    json_meta = await anyio.to_thread.run_sync(
+        EXPORT_STORAGE.save_bytes, job_id, "json", json_bytes, "application/json"
+    )
+    md_meta = await anyio.to_thread.run_sync(
+        EXPORT_STORAGE.save_bytes, job_id, "markdown", markdown_bytes, "text/markdown; charset=utf-8"
+    )
+    pdf_meta = await anyio.to_thread.run_sync(
+        lambda: EXPORT_STORAGE.save_bytes(
+            job_id, "pdf", pdf_bytes, "application/pdf", download_name=f"pdd-{job_id}.pdf"
+        )
+    )
+    docx_meta = await anyio.to_thread.run_sync(
+        lambda: EXPORT_STORAGE.save_bytes(
+            job_id,
+            "docx",
+            docx_bytes,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            download_name=f"pdd-{job_id}.docx",
+        )
+    )
 
     job["exports"] = {
         "json": json_meta.__dict__,
@@ -405,7 +429,7 @@ app.include_router(api_router)
 # ---------------------------------------------------------------------------
 # Dev-only endpoint — NOT for production use
 # ---------------------------------------------------------------------------
-@app.post("/dev/jobs/{job_id}/simulate", tags=["dev"])
+@app.post("/dev/jobs/{job_id}/simulate", tags=["dev"], dependencies=[Depends(verify_api_key)])
 async def dev_simulate(job_id: str) -> Dict[str, Any]:
     """Advance a queued/processing job to needs_review with a mock draft.
     Only useful for local development without Service Bus workers."""
@@ -503,8 +527,8 @@ async def dev_simulate(job_id: str) -> Dict[str, Any]:
             },
         ]
     }
-    job["user_saved_draft"] = True
-    job["user_saved_at"] = _utc_now()
+    job["user_saved_draft"] = False
+    job["user_saved_at"] = None
     job["updated_at"] = _utc_now()
     await _repo_upsert_job(job_id, job)
     return {"job_id": job_id, "status": job["status"], "detail": "Simulated needs_review state."}

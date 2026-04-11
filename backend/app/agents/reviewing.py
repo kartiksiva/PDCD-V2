@@ -34,6 +34,14 @@ def run_reviewing(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:  
     pdd = draft.get("pdd") or {}
     sipoc = draft.get("sipoc") or []
 
+    if draft.get("draft_source") == "stub":
+        flags.append(_flag(
+            "stub_draft_detected",
+            "blocker",
+            "Draft content is a fallback stub and must be replaced before finalize.",
+            requires_user_action=True,
+        ))
+
     # 1. PDD completeness — key must be present (not None); empty lists are valid
     for key in _PDD_REQUIRED_KEYS:
         val = pdd.get(key)

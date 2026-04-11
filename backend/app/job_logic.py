@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import os
+import logging
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 
 class JobStatus(str, Enum):
@@ -78,17 +81,44 @@ def _safe_dict(value: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _default_openai_deployment() -> str:
-    # Prefer explicit env config from App Service settings; fall back to the
-    # currently provisioned deployment name in Azure OpenAI.
+    deployment = os.environ.get("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME")
+    if deployment:
+        return deployment
+
+    deployment_name_alias = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME")
+    if deployment_name_alias:
+        logger.warning(
+            "AZURE_OPENAI_DEPLOYMENT_NAME is deprecated; prefer AZURE_OPENAI_CHAT_DEPLOYMENT_NAME."
+        )
+        return deployment_name_alias
+
+    deployment_alias = os.environ.get("AZURE_OPENAI_DEPLOYMENT")
+    if deployment_alias:
+        logger.warning(
+            "AZURE_OPENAI_DEPLOYMENT is deprecated; prefer AZURE_OPENAI_CHAT_DEPLOYMENT_NAME."
+        )
+        return deployment_alias
+
+    raise RuntimeError(
+        "Azure OpenAI deployment is not configured. Set AZURE_OPENAI_CHAT_DEPLOYMENT_NAME "
+        "(preferred) or legacy AZURE_OPENAI_DEPLOYMENT_NAME / AZURE_OPENAI_DEPLOYMENT."
+    )
+
+
+def _profile_openai_deployment(profile: Profile) -> str:
+    if profile == Profile.QUALITY:
+        return (
+            os.environ.get("AZURE_OPENAI_DEPLOYMENT_QUALITY")
+            or _default_openai_deployment()
+        )
     return (
-        os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME")
-        or os.environ.get("AZURE_OPENAI_DEPLOYMENT")
-        or "gpt-4o-mini"
+        os.environ.get("AZURE_OPENAI_DEPLOYMENT_BALANCED")
+        or _default_openai_deployment()
     )
 
 
 def profile_config(profile: Profile) -> Dict[str, Any]:
-    deployment = _default_openai_deployment()
+    deployment = _profile_openai_deployment(profile)
     if profile == Profile.QUALITY:
         return {
             "profile": profile.value,
@@ -191,7 +221,7 @@ def add_agent_run(
     *,
     cost: float = 0.0,
     confidence_delta: float = 0.0,
-    model: str = "gpt-4o-mini",
+    model: str = "gpt-4.1",
     duration_ms: int = 0,
     message: Optional[str] = None,
 ) -> str:
@@ -212,6 +242,68 @@ def add_agent_run(
     )
     job["active_agent_run_id"] = run_id
     return run_id
+
+
+def update_agent_run(
+    job: Dict[str, Any],
+    run_id: Optional[str],
+    *,
+    status: str,
+    duration_ms: int,
+    cost: float,
+    message: Optional[str] = None,
+) -> None:
+    if not run_id:
+        return
+    for run in job.get("agent_runs", []):
+        if run.get("agent_run_id") == run_id:
+            run["status"] = status
+            run["duration_ms"] = int(duration_ms)
+            run["cost_estimate_usd"] = float(cost)
+            run["message"] = message
+            run["updated_at"] = _utc_now()
+            return
+
+
+def model_pricing_per_million(deployment: str) -> Tuple[float, float]:
+    normalized = (deployment or "").lower().strip()
+    if "gpt-4.1-mini" in normalized:
+        return (0.40, 1.60)
+    if "gpt-4.1" in normalized:
+        return (2.00, 8.00)
+    if "gpt-4o-mini" in normalized:
+        return (0.15, 0.60)
+    return (0.15, 0.60)
+
+
+def estimate_cost_usd(deployment: str, prompt_tokens: int, completion_tokens: int) -> float:
+    prompt_price, completion_price = model_pricing_per_million(deployment)
+    return (prompt_tokens * prompt_price + completion_tokens * completion_price) / 1_000_000
+
+
+def apply_cost_tracking_and_cap_warning(job: Dict[str, Any], *, phase: str, cost: float, cap_usd: float) -> None:
+    agent_signals = job.setdefault("agent_signals", {})
+    tracker = agent_signals.setdefault("cost_tracking", {"total_estimated_usd": 0.0, "warnings": []})
+    tracker["total_estimated_usd"] = float(tracker.get("total_estimated_usd", 0.0)) + float(cost)
+    total = tracker["total_estimated_usd"]
+    if total <= float(cap_usd):
+        return
+    code = "cost_cap_exceeded"
+    if any(flag.get("code") == code for flag in job.get("review_notes", {}).get("flags", [])):
+        return
+    warning = {
+        "code": code,
+        "severity": ReviewSeverity.WARNING.value,
+        "message": (
+            f"Estimated processing cost ${total:.4f} exceeded profile cap ${float(cap_usd):.2f} "
+            f"during phase '{phase}'."
+        ),
+        "requires_user_action": False,
+    }
+    job.setdefault("review_notes", {}).setdefault("flags", []).append(warning)
+    tracker.setdefault("warnings", []).append(
+        {"code": code, "phase": phase, "at": _utc_now(), "total_estimated_usd": round(total, 6)}
+    )
 
 
 def load_transcript_text(job: Dict[str, Any], storage: Any) -> Optional[str]:
@@ -301,6 +393,7 @@ def build_draft(job: Dict[str, Any]) -> None:
         "anchor_missing_reason": None,
     }
     job["draft"] = {
+        "draft_source": "stub",
         "pdd": {
             "purpose": "Extract structured process steps from supplied evidence.",
             "scope": "Captured workflow from first-class evidence sources only.",

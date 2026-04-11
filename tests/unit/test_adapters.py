@@ -208,6 +208,20 @@ def test_transcript_adapter_extract_facts_identifies_speakers():
     assert "AP Manager" in speakers
 
 
+def test_extract_speaker_prefers_vtt_voice_tag():
+    from app.agents.adapters.transcript import _extract_speaker
+
+    assert _extract_speaker("<v Jane Doe>Welcome everyone") == "Jane Doe"
+
+
+def test_extract_speaker_rejects_numeric_or_false_positive_prefixes():
+    from app.agents.adapters.transcript import _extract_speaker
+
+    assert _extract_speaker("3rd approver: Reviews ticket") is None
+    assert _extract_speaker("Step 2: Validate invoice fields") is None
+    assert _extract_speaker("Invoice approval: Manager approves request") is None
+
+
 def test_transcript_adapter_extract_facts_returns_empty_on_no_content():
     from app.agents.adapters.transcript import TranscriptAdapter
 

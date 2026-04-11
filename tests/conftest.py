@@ -35,6 +35,8 @@ def _reload_app(monkeypatch, tmp_path, *, api_key: str | None = None):
 
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
     monkeypatch.setenv("EXPORTS_BASE_PATH", str(exports_path))
+    monkeypatch.setenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", "test-deployment")
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
     monkeypatch.delenv("AZURE_SERVICE_BUS_CONNECTION_STRING", raising=False)
     monkeypatch.delenv("AZURE_STORAGE_CONNECTION_STRING", raising=False)
 
@@ -66,6 +68,11 @@ def _reload_app(monkeypatch, tmp_path, *, api_key: str | None = None):
 def app_client(monkeypatch, tmp_path):
     """AppContext with auth disabled and a fresh SQLite DB."""
     return _reload_app(monkeypatch, tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def _set_openai_test_env(monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", "test-deployment")
 
 
 @pytest.fixture
@@ -110,6 +117,11 @@ def seeded_needs_review_job(app_client):
 def seeded_completed_job(seeded_needs_review_job):
     """(job_id, AppContext) with the job fully finalized (status=completed)."""
     job_id, ctx = seeded_needs_review_job
+    save_resp = ctx.client.put(
+        f"/api/jobs/{job_id}/draft",
+        json={"assumptions": ["Saved by seeded_completed_job fixture"]},
+    )
+    assert save_resp.status_code == 200, f"save draft failed: {save_resp.text}"
     resp = ctx.client.post(f"/api/jobs/{job_id}/finalize")
     assert resp.status_code == 200, f"finalize failed: {resp.text}"
     return job_id, ctx

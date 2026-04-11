@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import io
-import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
+from app.agents.anchor_utils import classify_anchor
 
 
 @dataclass
@@ -21,14 +22,7 @@ class _AnchorEntry:
 
 def _classify_anchor_type(anchor: str) -> str:
     """Classify anchor string into a type label."""
-    if not anchor:
-        return "missing"
-    # e.g. 00:01:15 or 00:00:00-00:00:10
-    if re.match(r"^\d{2}:\d{2}:\d{2}(-\d{2}:\d{2}:\d{2})?$", anchor):
-        return "timestamp_range"
-    if re.match(r"^frame-\d+", anchor, re.IGNORECASE):
-        return "frame_id"
-    return "section_label"
+    return classify_anchor(anchor)
 
 
 def build_evidence_bundle(finalized_draft: Dict[str, Any], job: Dict[str, Any]) -> Dict[str, Any]:

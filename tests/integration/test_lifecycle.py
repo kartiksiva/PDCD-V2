@@ -131,6 +131,11 @@ def test_update_draft_saves_changes(app_client):
 
 def test_finalize_job_returns_completed(seeded_needs_review_job):
     job_id, ctx = seeded_needs_review_job
+    save_resp = ctx.client.put(
+        f"/api/jobs/{job_id}/draft",
+        json={"assumptions": ["Saved before finalize"]},
+    )
+    assert save_resp.status_code == 200
     resp = ctx.client.post(f"/api/jobs/{job_id}/finalize")
     assert resp.status_code == 200
     body = resp.json()

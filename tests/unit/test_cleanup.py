@@ -60,7 +60,7 @@ def test_find_expired_jobs(tmp_path, monkeypatch):
     future_id = _create_job(repository, ttl_expires_at=_utc_iso(1))
     no_ttl_id = _create_job(repository, ttl_expires_at=None)
 
-    now = _utc_iso()
+    now = datetime.now(timezone.utc)
     expired = repository.find_expired_jobs(now)
 
     assert past_id in expired
@@ -75,7 +75,7 @@ def test_find_expired_jobs_skips_terminal_statuses(tmp_path, monkeypatch):
     already_completed = _create_job(repository, ttl_expires_at=_utc_iso(-1), status="completed")
     active = _create_job(repository, ttl_expires_at=_utc_iso(-1), status="queued")
 
-    now = _utc_iso()
+    now = datetime.now(timezone.utc)
     expired = repository.find_expired_jobs(now)
 
     assert already_expired not in expired

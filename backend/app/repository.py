@@ -36,6 +36,29 @@ class JobRepository:
     def _deserialize(self, payload: str) -> Dict[str, Any]:
         return json.loads(payload) if payload else {}
 
+    @staticmethod
+    def _to_datetime(value: Any) -> datetime | None:
+        if value is None or value == "":
+            return None
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value)
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _to_iso(value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, str):
+            return value
+        return None
+
     def _job_to_payload(
         self,
         job: Job,
@@ -57,8 +80,8 @@ class JobRepository:
         payload = {
             "job_id": job.job_id,
             "status": job.status,
-            "created_at": job.created_at,
-            "updated_at": job.updated_at,
+            "created_at": self._to_iso(job.created_at),
+            "updated_at": self._to_iso(job.updated_at),
             "profile_requested": job.profile_requested,
             "provider_effective": self._deserialize(job.provider_effective),
             "input_manifest": self._deserialize(input_manifest.payload) if input_manifest else {},
@@ -75,16 +98,16 @@ class JobRepository:
             "finalized_draft": finalized_payload,
             "speaker_resolutions": self._deserialize(job.speaker_resolutions),
             "user_saved_draft": job.user_saved_draft,
-            "user_saved_at": job.user_saved_at,
+            "user_saved_at": self._to_iso(job.user_saved_at),
             "exports": self._deserialize(exports.payload) if exports else {},
             "current_phase": job.current_phase,
             "last_completed_phase": job.last_completed_phase,
             "phase_attempt": job.phase_attempt,
             "payload_hash": job.payload_hash,
             "active_agent_run_id": job.active_agent_run_id,
-            "deleted_at": job.deleted_at,
+            "deleted_at": self._to_iso(job.deleted_at),
             "cleanup_pending": job.cleanup_pending,
-            "ttl_expires_at": job.ttl_expires_at,
+            "ttl_expires_at": self._to_iso(job.ttl_expires_at),
             "error": self._deserialize(job.error) if job.error else None,
         }
         return payload
@@ -100,8 +123,8 @@ class JobRepository:
             "cost_estimate_usd": run.cost_estimate_usd,
             "confidence_delta": run.confidence_delta,
             "message": run.message,
-            "created_at": run.created_at,
-            "updated_at": run.updated_at,
+            "created_at": self._to_iso(run.created_at),
+            "updated_at": self._to_iso(run.updated_at),
         }
 
     def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
@@ -129,8 +152,8 @@ class JobRepository:
                 session.add(job)
 
             job.status = payload.get("status", job.status)
-            job.created_at = payload.get("created_at", job.created_at or _utc_now())
-            job.updated_at = payload.get("updated_at", job.updated_at or _utc_now())
+            job.created_at = self._to_datetime(payload.get("created_at")) or job.created_at or self._to_datetime(_utc_now())
+            job.updated_at = self._to_datetime(payload.get("updated_at")) or job.updated_at or self._to_datetime(_utc_now())
             job.profile_requested = payload.get("profile_requested", job.profile_requested or "balanced")
             job.provider_effective = self._serialize(payload.get("provider_effective", {}))
             job.has_video = bool(payload.get("has_video"))
@@ -142,15 +165,15 @@ class JobRepository:
             job.agent_review = self._serialize(payload.get("agent_review", {}))
             job.speaker_resolutions = self._serialize(payload.get("speaker_resolutions", {}))
             job.user_saved_draft = bool(payload.get("user_saved_draft"))
-            job.user_saved_at = payload.get("user_saved_at")
+            job.user_saved_at = self._to_datetime(payload.get("user_saved_at"))
             job.current_phase = payload.get("current_phase")
             job.last_completed_phase = payload.get("last_completed_phase")
             job.phase_attempt = int(payload.get("phase_attempt", 0))
             job.payload_hash = payload.get("payload_hash")
             job.active_agent_run_id = payload.get("active_agent_run_id")
-            job.deleted_at = payload.get("deleted_at")
+            job.deleted_at = self._to_datetime(payload.get("deleted_at"))
             job.cleanup_pending = bool(payload.get("cleanup_pending"))
-            job.ttl_expires_at = payload.get("ttl_expires_at")
+            job.ttl_expires_at = self._to_datetime(payload.get("ttl_expires_at"))
             if payload.get("error") is not None:
                 job.error = self._serialize(payload.get("error"))
             else:
@@ -171,35 +194,29 @@ class JobRepository:
             else:
                 review_notes.payload = self._serialize(review_payload)
 
-            session.execute(delete(Draft).where(Draft.job_id == job_id))
+            existing_drafts = {
+                d.draft_kind: d
+                for d in session.execute(
+                    select(Draft).where(Draft.job_id == job_id)
+                ).scalars().all()
+            }
+            draft_by_kind: Dict[str, Dict[str, Any]] = {}
             if payload.get("draft") is not None:
-                draft_payload = payload["draft"]
-                session.add(
-                    Draft(
-                        job_id=job_id,
-                        draft_kind="draft",
-                        payload=self._serialize(draft_payload),
-                        version=int(draft_payload.get("version", 1)),
-                        generated_at=draft_payload.get("generated_at"),
-                        user_reconciled_at=draft_payload.get("user_reconciled_at"),
-                        finalized_at=draft_payload.get("finalized_at"),
-                        updated_at=payload.get("updated_at"),
-                    )
-                )
+                draft_by_kind["draft"] = payload["draft"]
             if payload.get("finalized_draft") is not None:
-                final_payload = payload["finalized_draft"]
-                session.add(
-                    Draft(
-                        job_id=job_id,
-                        draft_kind="finalized",
-                        payload=self._serialize(final_payload),
-                        version=int(final_payload.get("version", 1)),
-                        generated_at=final_payload.get("generated_at"),
-                        user_reconciled_at=final_payload.get("user_reconciled_at"),
-                        finalized_at=final_payload.get("finalized_at"),
-                        updated_at=payload.get("updated_at"),
-                    )
-                )
+                draft_by_kind["finalized"] = payload["finalized_draft"]
+
+            for draft_kind, draft_payload in draft_by_kind.items():
+                draft_row = existing_drafts.get(draft_kind)
+                if not draft_row:
+                    draft_row = Draft(job_id=job_id, draft_kind=draft_kind)
+                    session.add(draft_row)
+                draft_row.payload = self._serialize(draft_payload)
+                draft_row.version = int(draft_payload.get("version", 1))
+                draft_row.generated_at = self._to_datetime(draft_payload.get("generated_at"))
+                draft_row.user_reconciled_at = self._to_datetime(draft_payload.get("user_reconciled_at"))
+                draft_row.finalized_at = self._to_datetime(draft_payload.get("finalized_at"))
+                draft_row.updated_at = self._to_datetime(payload.get("updated_at"))
 
             # Incremental insert: only write runs that don't already exist in the DB.
             # This preserves audit history across upsert calls and is safe against
@@ -212,6 +229,18 @@ class JobRepository:
             for run in payload.get("agent_runs", []):
                 run_id = run.get("agent_run_id") or str(uuid4())
                 if run_id in existing_run_ids:
+                    existing = session.get(AgentRun, run_id)
+                    if existing:
+                        existing.agent = run.get("agent", existing.agent)
+                        existing.model = run.get("model", existing.model)
+                        existing.profile = run.get("profile", existing.profile)
+                        existing.status = run.get("status", existing.status)
+                        existing.duration_ms = int(run.get("duration_ms") or 0)
+                        existing.cost_estimate_usd = float(run.get("cost_estimate_usd") or 0.0)
+                        existing.confidence_delta = float(run.get("confidence_delta") or 0.0)
+                        existing.message = run.get("message")
+                        existing.created_at = self._to_datetime(run.get("created_at")) or existing.created_at
+                        existing.updated_at = self._to_datetime(run.get("updated_at") or _utc_now())
                     continue
                 existing_run_ids.add(run_id)  # guard against duplicates within this payload
                 session.add(
@@ -226,8 +255,8 @@ class JobRepository:
                         cost_estimate_usd=float(run.get("cost_estimate_usd") or 0.0),
                         confidence_delta=float(run.get("confidence_delta") or 0.0),
                         message=run.get("message"),
-                        created_at=run.get("created_at") or _utc_now(),
-                        updated_at=run.get("updated_at"),
+                        created_at=self._to_datetime(run.get("created_at") or _utc_now()),
+                        updated_at=self._to_datetime(run.get("updated_at")),
                     )
                 )
 
@@ -247,11 +276,11 @@ class JobRepository:
                     job_id=job_id,
                     event_type=event_type,
                     payload=self._serialize(payload),
-                    created_at=_utc_now(),
+                    created_at=self._to_datetime(_utc_now()),
                 )
             )
 
-    def find_expired_jobs(self, now_iso: str) -> list[str]:
+    def find_expired_jobs(self, now: datetime) -> list[str]:
         """Return job_ids where ttl_expires_at < now and status not already terminal."""
         _terminal = {
             JobStatus.EXPIRED.value,
@@ -263,7 +292,7 @@ class JobRepository:
             rows = session.execute(
                 select(Job.job_id).where(
                     Job.ttl_expires_at != None,  # noqa: E711
-                    Job.ttl_expires_at < now_iso,
+                    Job.ttl_expires_at < now,
                     Job.status.notin_(list(_terminal)),
                 )
             ).fetchall()
@@ -285,4 +314,4 @@ class JobRepository:
             job = session.get(Job, job_id)
             if job:
                 job.cleanup_pending = False
-                job.updated_at = datetime.now(timezone.utc).isoformat()
+                job.updated_at = datetime.now(timezone.utc)

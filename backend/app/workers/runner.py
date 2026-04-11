@@ -8,7 +8,6 @@ import os
 import random
 import threading
 import time
-from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict
 from uuid import uuid4
@@ -20,7 +19,17 @@ from app.agents.alignment import run_anchor_alignment
 from app.agents.extraction import run_extraction
 from app.agents.processing import run_processing
 from app.agents.reviewing import run_reviewing
-from app.job_logic import JobStatus, Profile, add_agent_run, build_draft, load_transcript_text, profile_config
+from app.job_logic import (
+    JobStatus,
+    Profile,
+    add_agent_run,
+    apply_cost_tracking_and_cap_warning,
+    build_draft,
+    load_transcript_text,
+    profile_config,
+    update_agent_run,
+    _utc_now,
+)
 from app.repository import JobRepository
 from app.servicebus import ServiceBusOrchestrator, build_message, max_retries
 from app.storage import ExportStorage
@@ -48,12 +57,6 @@ _TERMINAL_STATUSES = {
     JobStatus.EXPIRED.value,
     JobStatus.DELETED.value,
 }
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 def _load_message(raw_body: Any) -> Dict[str, Any]:
     if isinstance(raw_body, (bytes, bytearray)):
         return json.loads(raw_body.decode("utf-8"))
@@ -111,7 +114,7 @@ class Worker:
         if job["status"] in {JobStatus.QUEUED.value, JobStatus.NEEDS_REVIEW.value}:
             job["status"] = JobStatus.PROCESSING.value
         job["updated_at"] = _utc_now()
-        add_agent_run(job, agent_name, profile_conf["profile"], "running", model=profile_conf["model"])
+        run_id = add_agent_run(job, agent_name, profile_conf["profile"], "running", model=profile_conf["model"])
         self.repo.upsert_job(job_id, job)
         if previous_status != job["status"]:
             self._record_status_event(job_id, previous_status, job["status"], self.phase)
@@ -119,6 +122,9 @@ class Worker:
 
         start = time.monotonic()
         if self.phase == "extracting":
+            # NOTE: _transcript_text_inline is an in-memory working field used by
+            # extraction/alignment in this phase only. It is intentionally not
+            # persisted in the DB payload contract.
             transcript_text = load_transcript_text(job, self.storage)
             if transcript_text:
                 job["_transcript_text_inline"] = transcript_text
@@ -151,19 +157,26 @@ class Worker:
             cost = 0.0
         duration_ms = int((time.monotonic() - start) * 1000)
         job["updated_at"] = _utc_now()
-        add_agent_run(
+        update_agent_run(
             job,
-            agent_name,
-            profile_conf["profile"],
-            "success",
-            model=profile_conf["model"],
+            run_id,
+            status="success",
             duration_ms=duration_ms,
             cost=cost,
+        )
+        apply_cost_tracking_and_cap_warning(
+            job,
+            phase=self.phase,
+            cost=cost,
+            cap_usd=float(profile_conf["cost_cap_usd"]),
         )
         job["last_completed_phase"] = self.phase
         job["payload_hash"] = message["payload_hash"]
         job["phase_attempt"] = message["attempt"]
         job["active_agent_run_id"] = None
+        if self.phase == "extracting":
+            # Keep the persisted payload deterministic: drop ephemeral working data.
+            job.pop("_transcript_text_inline", None)
         self.repo.upsert_job(job_id, job)
         logger.info("Completed phase %s for job %s", self.phase, job_id)
 
@@ -200,10 +213,21 @@ class Worker:
         except Exception as exc:
             logger.error("Phase %s failed for job %s: %s", self.phase, job_id, exc, exc_info=True)
             attempt = int(payload.get("attempt", 0)) + 1
+            update_agent_run(
+                job,
+                job.get("active_agent_run_id"),
+                status="failed",
+                duration_ms=0,
+                cost=0.0,
+                message=str(exc),
+            )
+            job["active_agent_run_id"] = None
             if attempt > max_retries():
                 job["status"] = JobStatus.FAILED.value
                 job["error"] = {"message": str(exc), "phase": self.phase}
                 job["updated_at"] = _utc_now()
+                if self.phase == "extracting":
+                    job.pop("_transcript_text_inline", None)
                 self.repo.upsert_job(job_id, job)
                 self.repo.append_job_event(
                     job_id,
@@ -270,11 +294,11 @@ def run() -> None:
     _start_health_server()
     phase = _resolve_phase()
     logger.info(
-        "Worker runtime OpenAI config: role=%s endpoint=%s deployment_name=%s deployment=%s",
+        "Worker runtime OpenAI config: role=%s endpoint=%s chat_deployment=%s api_version=%s",
         phase,
         os.environ.get("AZURE_OPENAI_ENDPOINT"),
-        os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME"),
-        os.environ.get("AZURE_OPENAI_DEPLOYMENT"),
+        os.environ.get("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME"),
+        os.environ.get("AZURE_OPENAI_API_VERSION"),
     )
     worker = Worker(phase)
     if not worker.orchestrator.enabled:

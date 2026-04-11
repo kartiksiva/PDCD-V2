@@ -27,7 +27,7 @@ class CleanupWorker:
 
     def expire_ttl_jobs(self) -> None:
         """Phase A: mark TTL-exceeded jobs as EXPIRED and set cleanup_pending=True."""
-        now = _utc_now()
+        now = datetime.now(timezone.utc)
         job_ids = self.repo.find_expired_jobs(now)
         for job_id in job_ids:
             try:

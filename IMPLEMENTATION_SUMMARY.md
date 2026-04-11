@@ -619,3 +619,396 @@ SK is now only imported at worker runtime when an LLM call is actually made. All
 Note: A curl HTTP probe against the worker's public URL was attempted as an additional check, but reverted — Python startup with heavy Azure SDK imports takes longer than the probe window, causing false failures. The `az webapp show state=Running` check is reliable.
 
 **Expected total deployment time:** ~10–15 min vs ~30 min previously.
+
+---
+
+## Section 14: Architecture & Code Review (2026-04-11)
+
+Full read-through of all backend modules, agent layer, workers, tests, and storage by architect/reviewer. Codex is assigned to fix these.
+
+### Critical (fix before next deploy to prod)
+
+**C1 — `/dev/simulate` bypasses API key auth (`main.py:408`)**
+Registered on `@app.post` (top-level `app`), not `api_router`. When `PFCD_API_KEY` is set, any unauthenticated caller can advance any job to `NEEDS_REVIEW` and auto-set `user_saved_draft=True`. Fix: move to `api_router`, or add an explicit env guard (`PFCD_ENV=production → 404`).
+
+**C2 — Blocking I/O on async event loop in `finalize_job` (`main.py:298-301`)**
+`build_export_pdf`, `build_export_docx`, `build_export_markdown` are blocking (FPDF, python-docx) and called directly inside `async def finalize_job`. Will starve other requests on large drafts. Fix: wrap each in `await anyio.to_thread.run_sync(...)`.
+
+### High Priority
+
+**H1 — Two AgentRun rows created per phase (`runner.py:114,154`)**
+`add_agent_run` is called with `status="running"`, then again with `status="success"` — each call generates a new UUID. 6 orphaned "running" rows accumulate per successful job. Fix: insert once, update by run_id to set duration/cost/status on completion.
+
+**H2 — Storage uses connection string, not `DefaultAzureCredential` (`storage.py:31`)**
+`BlobServiceClient.from_connection_string()` uses a storage key. Contradicts the project security policy. Fix: switch to `BlobServiceClient(account_url=..., credential=DefaultAzureCredential())`.
+
+**H3 — Kernel instantiated fresh on every agent call (`kernel_factory.py:11`)**
+New `Kernel`, new `DefaultAzureCredential`, new token provider per LLM call. Token initialization is expensive (MSI endpoint probes). Fix: `@lru_cache(maxsize=None)` keyed on deployment string, or module-level singleton.
+
+**H4 — `ServiceBusOrchestrator.enqueue()` opens a new AMQP connection per message (`servicebus.py:70`)**
+New `ServiceBusClient` created and torn down inside every `enqueue()` call. Fix: hold a persistent client instance, reconnecting on failure.
+
+**H5 — Cost cap declared but never enforced (`job_logic.py:90-104`, `runner.py`)**
+`profile_config` returns `cost_cap_usd` ($4/$8) but no code in the worker loop checks cumulative cost against the cap. This is dead configuration.
+
+**H6 — Cost estimate uses hardcoded gpt-4o-mini pricing regardless of actual deployment (`extraction.py:52`, `processing.py:94`)**
+`_cost_usd` always applies `$0.15/1M input, $0.60/1M output` even if the deployment is `gpt-4.1` or `gpt-4o`. Cost estimates in `agent_runs` are unreliable.
+
+**H7 — `profile_config` does not differentiate models between BALANCED/QUALITY (`job_logic.py:90-104`)**
+Both profiles resolve the same env var deployment name. The CLAUDE.md cost table is aspirational; the code never enforces different models.
+
+### Medium Priority
+
+**M1 — All timestamps stored as `String(64)`, compared lexicographically in SQL (`models.py`, `repository.py:265`)**
+`Job.ttl_expires_at < now_iso` works only because `_utc_now()` always produces `+00:00` UTC. One timezone-aware string with an offset suffix would silently sort wrong. All datetime columns should be `DateTime` types.
+
+**M2 — Anchor classification implemented three ways with different regex (`export_builder.py:22`, `sipoc_validator.py:30`, `alignment.py:29`)**
+A VTT anchor with fractional seconds (`00:01:15.500-00:01:30.500`) is `timestamp_range` in the sipoc_validator but `section_label` in the export_builder. Extract a single `classify_anchor(anchor) -> str` utility used by all three modules.
+
+**M3 — `_transcript_text_inline` doesn't survive DB roundtrips — implicit contract (`runner.py:122`, `alignment.py:226`)**
+Alignment is safe today because it runs in the same phase as extraction (same in-memory job dict). If any future code calls alignment post-extraction after a DB reload, it gets an empty string and silently marks all anchors "inconclusive". Document this as a `# NOTE` in both modules, or load transcript from storage before alignment.
+
+**M4 — `upsert_job` deletes all Draft rows then re-inserts, resetting audit timestamps (`repository.py:174`)**
+Delete-then-insert on every upsert resets `generated_at`/`user_reconciled_at` on the Draft row. Should use ON CONFLICT DO UPDATE (upsert by composite PK) to preserve metadata.
+
+**M5 — Stub PDD from `build_draft()` leaks into production exports on processing failure (`job_logic.py:275`)**
+The fallback stub (actor "Unknown Speaker", anchor "00:00:00-00:00:10") is used verbatim if reviewing fires without a real draft. Users would receive an export with synthetic placeholder data. The reviewing agent should fail the job instead of proceeding with a stub.
+
+### Low Priority
+
+**L1 — `_utc_now()` defined in three modules with inconsistent return types**
+`job_logic.py` and `runner.py` return `str`; `servicebus.py` returns a `datetime` object. Consolidate in a shared utility.
+
+**L2 — Two env var names for the same OpenAI deployment (`job_logic.py:83-87`, `extraction.py:12`)**
+`AZURE_OPENAI_DEPLOYMENT_NAME` and `AZURE_OPENAI_DEPLOYMENT` both used. `REFERENCE.md` documents only `AZURE_OPENAI_DEPLOYMENT`; the GitHub secret is `AZURE_OPENAI_DEPLOYMENT_NAME`. Pick one canonical name.
+
+**L3 — `_extract_speaker` heuristic is too permissive (`transcript.py:300-307`)**
+`": " in content` with `len(candidate) <= 40` matches process step text like `"Invoice approval: the manager..."`. Produces false-positive speaker names. Needs a stricter heuristic (title case, known name list, or length ≤ 25).
+
+**L4 — `/dev/simulate` sets `user_saved_draft=True` unconditionally, hiding the "finalize without saving" error path in testing**
+The test suite cannot exercise that path via the simulate workflow. Separate concern from the auth issue (C1).
+
+### Test Gaps
+
+| Gap | Impact |
+|-----|--------|
+| No test that `/dev/simulate` is reachable without API key when auth is enabled | Auth bypass in prod goes undetected |
+| No test for `_should_skip` deduplication logic with phase ordering | Duplicate processing possible |
+| No test for cost cap enforcement | Dead config never detected |
+| `test_lifecycle.py` relies on `/dev/simulate` — no test for real 3-phase worker chain with mocked SK | Integration path untested |
+| No test for storage mode mismatch (created in blob, loaded in local) | Silent data loss risk |
+
+### Section 14 Implementation Notes (Merged)
+
+Implementation pass completed for Critical (`C1`, `C2`) and High (`H1`–`H7`) findings:
+
+- `C1` fixed: `/dev/jobs/{job_id}/simulate` now enforces API key auth when configured.
+- `C2` fixed: `finalize_job` export generation/storage operations are moved off the async event loop (`anyio.to_thread.run_sync(...)`).
+- `H1` fixed: phase lifecycle updates a single active `AgentRun` instead of creating duplicate success rows.
+- `H2` fixed (dual-mode): blob storage prefers `DefaultAzureCredential` with connection-string fallback.
+- `H3` fixed: Semantic Kernel instance creation is cached by `(endpoint, deployment)`.
+- `H4` fixed: Service Bus enqueue path reuses client/senders instead of opening a fresh AMQP connection per message.
+- `H5` implemented (warn-only): cumulative cost tracking and cap warning flagging.
+- `H6` fixed: token cost estimation is deployment-aware (not hardcoded mini pricing).
+- `H7` implemented: profile-specific deployment env vars supported with fallback chain.
+
+Code areas touched in the Section 14 implementation pass:
+
+- `backend/app/main.py`
+- `backend/app/job_logic.py`
+- `backend/app/workers/runner.py`
+- `backend/app/repository.py`
+- `backend/app/agents/kernel_factory.py`
+- `backend/app/agents/extraction.py`
+- `backend/app/agents/processing.py`
+- `backend/app/servicebus.py`
+- `backend/app/storage.py`
+
+Environment variable notes from Section 14 implementation:
+
+- New optional support:
+  - `AZURE_OPENAI_DEPLOYMENT_BALANCED`
+  - `AZURE_OPENAI_DEPLOYMENT_QUALITY`
+  - `AZURE_STORAGE_ACCOUNT_URL`
+- Existing vars retained (compatibility):
+  - `AZURE_OPENAI_DEPLOYMENT_NAME`
+  - `AZURE_OPENAI_DEPLOYMENT`
+  - `AZURE_STORAGE_CONNECTION_STRING`
+
+Section 14 pass test updates and validation:
+
+- Updated tests:
+  - `tests/integration/test_auth_enforcement.py`
+  - `tests/unit/test_job_logic.py`
+  - `tests/unit/test_worker.py`
+- Validation run:
+  - `pytest tests/unit tests/integration -q`
+  - Result at pass time: `211 passed`
+
+Follow-up scope not included in Section 14 implementation pass:
+
+- Medium/Low findings (`M1`–`M5`, `L1`–`L4`) remained open at that checkpoint.
+
+---
+
+## Section 15: Semantic Kernel Runtime Hardening (2026-04-11)
+
+Implemented the Semantic Kernel reliability/config hardening pass requested after architecture review.
+
+### Model/deployment resolution hardening
+
+- `job_logic.py` now treats `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME` as canonical.
+- Backward-compatible aliases retained:
+  - `AZURE_OPENAI_DEPLOYMENT_NAME`
+  - `AZURE_OPENAI_DEPLOYMENT`
+- Alias usage now logs deprecation warnings.
+- Removed silent model fallback; if no deployment is configured, `profile_config()` now raises `RuntimeError` with explicit env guidance.
+- Profile-specific overrides (`AZURE_OPENAI_DEPLOYMENT_BALANCED`, `AZURE_OPENAI_DEPLOYMENT_QUALITY`) remain intact.
+
+### Semantic Kernel API version pinning (env-driven)
+
+- `kernel_factory.py` now passes `api_version` explicitly to `AzureChatCompletion`.
+- Resolution order:
+  - `AZURE_OPENAI_API_VERSION` (if set)
+  - default `"2024-10-21"`
+- Existing kernel reuse/caching remains in place (`@lru_cache(maxsize=8)`).
+
+### Usage token parsing and cost reliability
+
+- Removed dead module-level `_DEPLOYMENT` env defaults from:
+  - `agents/extraction.py`
+  - `agents/processing.py`
+- Both agents now require `profile_conf["model"]` and fail explicitly if missing.
+- Replaced `usage.get("prompt_tokens")` style parsing with shape-safe logic that supports:
+  - dict metadata (`{"usage": {...}}`)
+  - object metadata (`usage.prompt_tokens`, `usage.completion_tokens`)
+  - missing usage metadata (defaults to zero tokens)
+
+### Ops/runtime visibility and config docs
+
+- Worker startup log now includes:
+  - `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME`
+  - legacy aliases
+  - `AZURE_OPENAI_API_VERSION`
+- `REFERENCE.md` updated with canonical OpenAI env vars and legacy alias status.
+- `infra/dev-bootstrap.sh` now sets:
+  - `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME`
+  - `AZURE_OPENAI_API_VERSION=2024-10-21`
+  - existing `AZURE_OPENAI_DEPLOYMENT_NAME` retained for compatibility.
+
+### Dependency pinning
+
+- `backend/requirements.txt` updated:
+  - `semantic-kernel>=1.41.1` -> `semantic-kernel==1.41.2`
+
+### Test coverage updates
+
+- `tests/unit/test_job_logic.py`
+  - canonical env preference
+  - fallback alias behavior
+  - profile-specific override behavior
+  - fail-fast when deployment env is missing
+- `tests/unit/test_kernel_factory.py` (new)
+  - default API version path
+  - env-driven API version path
+- `tests/unit/test_agents.py`
+  - extraction usage parsing with object-style usage metadata
+  - processing usage parsing with dict-style metadata
+  - missing-usage zero-token default path
+- `tests/conftest.py`
+  - test harness now sets `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME` default to keep fail-fast config deterministic in tests.
+
+### Validation results
+
+- Targeted tests:
+  - `pytest ../tests/unit/test_job_logic.py ../tests/unit/test_agents.py ../tests/unit/test_kernel_factory.py -q`
+  - **43 passed**
+- Full unit suite:
+  - `pytest ../tests/unit -q`
+  - **174 passed**
+- Full integration suite:
+  - `pytest ../tests/integration -q`
+  - **44 passed**
+
+---
+
+## Section 16: Section 14 Medium/Low Findings (2026-04-11)
+
+Architect review of deferred `M1`–`M5` and `L1`–`L4` findings from Section 14, plus residual dead code and two architectural gap notes. Full specifications are in `SECTION14_MEDIUM_LOW_FINDINGS_2026-04-11.md`. Codex is assigned to implement.
+
+### Summary of findings
+
+**M1 — Timestamp columns stored as `String(64)` (`models.py`, all tables)**
+DB-level date arithmetic and range queries are blocked. TTL comparisons work incidentally by ISO 8601 lexicographic ordering. Fix requires a new Alembic migration to change affected columns to `DateTime(timezone=True)` and repository layer adjustments for ORM serialization.
+
+**M2 — Anchor classification implemented three ways (`alignment.py`, `sipoc_validator.py`, `transcript.py`)**
+The three implementations return different type strings (`"unknown"` vs `"missing"`) and apply different regex patterns. A `frame_id` anchor is `"frame_id"` in the validator but `"unknown"` in alignment. Fix: create `backend/app/agents/anchor_utils.py` with canonical `classify_anchor()` and import it from all three callers.
+
+**M3 — `_transcript_text_inline` is non-persistent but silently depended on (`runner.py:131-133`, `extraction.py:129`)**
+Field is set by runner, read by extraction, never persisted to DB. It is correctly re-fetched from storage on retry today, but the implicit contract is undocumented. Fix: add explanatory comments in both files and explicitly delete the field from the job dict before `upsert_job` in the extracting phase.
+
+**M4 — `upsert_job` delete-then-recreates all Draft rows (`repository.py:174`)**
+`DELETE FROM drafts WHERE job_id=?` on every upsert resets `generated_at` / `user_reconciled_at` audit timestamps. Also a TOCTOU crash window between delete and insert. Fix: apply the same incremental upsert-by-PK pattern used for `AgentRun` (Section 7).
+
+**M5 — Stub PDD from `build_draft()` leaks into production exports (`runner.py:145-147`, `job_logic.py`)**
+Reviewing agent runs on a stub draft when processing fails, producing a syntactically valid but placeholder-filled export. Fix: add `"draft_source": "stub"` to `build_draft()` output; reviewing agent adds a BLOCKER flag when `draft_source == "stub"`.
+
+**L1 — `_utc_now()` defined three times with inconsistent return types**
+`job_logic.py` and `runner.py` return `str`; `servicebus.py` returns `datetime`. Fix: remove duplicate from `runner.py` (import from `job_logic`); rename `servicebus.py` version to `_utc_now_dt()`.
+
+**L2 — Deprecated deployment env var aliases produce noisy startup warnings**
+If Azure App Settings still contain the old `AZURE_OPENAI_DEPLOYMENT_NAME` var, a deprecation warning fires on every worker start. Fix: verify `deploy-workers.yml` uses canonical `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME`; trim startup log to canonical var only.
+
+**L3 — `_extract_speaker` heuristic too permissive (`transcript.py`)**
+`"Invoice approval: ..."` and `"Step 3: ..."` are misclassified as speakers. Fix: tighten length cap to 25, reject numeric-start candidates, add known-false-positive prefix list, prefer VTT `<v>` tags when present.
+
+**L4 — `/dev/simulate` sets `user_saved_draft=True` unconditionally (`main.py`)**
+Conflates admin tool with user intent. Prevents test coverage of the `409 Draft not saved` error path via simulate. Fix: remove `user_saved_draft = True` from simulate; callers must issue a separate save-draft call.
+
+### Residual dead code (delete alongside M/L pass)
+
+- `extraction.py:49-50` — `_cost_usd()` function (replaced by `estimate_cost_usd` in `job_logic.py`)
+- `processing.py:13` — `_DEPLOYMENT` module-level variable (unreferenced)
+- `extraction.py:12` (if still present) — same `_DEPLOYMENT` dead variable
+
+### Architectural gap notes (no code change required)
+
+- **Service Bus sender reconnect gap (`servicebus.py:87-88`):** Stale senders after AMQP disconnect cause unnecessary phase retries. Recommended: catch `AMQPConnectionError` in `enqueue()`, evict the cached sender, retry once with a fresh sender.
+- **Kernel log placement (`kernel_factory.py:39-45`):** `"Initializing Semantic Kernel"` log fires on every `get_kernel()` call including cache hits. Move inside `_cached_kernel()` so it fires only on cache miss.
+
+### Test gaps assigned for this pass
+
+| Gap | Target file |
+|---|---|
+| `_should_skip` phase ordering deduplication | `tests/unit/test_worker.py` |
+| Cost cap warn-only mode fires correctly | `tests/unit/test_job_logic.py` |
+| Storage mode mismatch (blob write, local read) | `tests/unit/test_storage.py` |
+| Simulate → finalize without save → 409 | `tests/integration/test_error_cases.py` (after L4 fix) |
+
+---
+
+## Section 17: Section 14 Medium/Low Backlog Implementation (2026-04-11)
+
+Implemented the prioritized Medium (`M1`–`M5`) and Low (`L1`–`L4`) backlog items, plus residual dead-code and test-gap coverage from Section 16.
+
+### Medium items delivered
+
+- **M1 (DateTime migration + ORM serialization + TTL compare)**
+  - `models.py`: converted timestamp columns from `String(64)` to `DateTime(timezone=True)` across `jobs`, `drafts`, `agent_runs`, `job_events`.
+  - Added Alembic migration: `backend/alembic/versions/20260411_0003_datetime_timestamps.py`.
+  - `repository.py`:
+    - Added datetime parse/format helpers for safe DB <-> payload conversion.
+    - Updated ORM payload serialization to emit ISO strings from datetime columns.
+    - Updated `upsert_job` timestamp writes to parse ISO strings into datetime values.
+    - Updated `find_expired_jobs` to accept a UTC datetime and compare typed datetimes.
+  - `workers/cleanup.py`: TTL scan now passes `datetime.now(timezone.utc)` into repository comparison.
+
+- **M2 (canonical anchor classifier)**
+  - Added `backend/app/agents/anchor_utils.py` with canonical `classify_anchor()` returning exactly:
+    - `timestamp_range`, `frame_id`, `section_label`, `missing`
+  - `sipoc_validator.py` now imports and uses shared `classify_anchor()`.
+  - `alignment.py` now imports and uses shared `classify_anchor()` for canonical anchor typing.
+  - `export_builder.py` anchor classification now delegates to the shared utility.
+
+- **M3 (`_transcript_text_inline` contract + pop before persistence)**
+  - `workers/runner.py`: documented `_transcript_text_inline` as ephemeral, extracting-phase-only working data.
+  - Added explicit `job.pop("_transcript_text_inline", None)` before `upsert_job` in extracting success path and extracting terminal-failure path.
+  - `agents/extraction.py`: added corresponding contract note in fallback path docs.
+
+- **M4 (Draft upsert by composite PK)**
+  - `repository.py`: replaced delete+reinsert draft behavior with incremental upsert-by-composite-key (`job_id`, `draft_kind`) preserving row continuity and audit timestamps.
+
+- **M5 (stub draft source + blocker)**
+  - `job_logic.py`: `build_draft()` now sets `draft_source: "stub"`.
+  - `agents/reviewing.py`: adds blocker flag `stub_draft_detected` when reviewing a stub draft.
+
+### Low items delivered
+
+- **L1 (`_utc_now` consolidation)**
+  - `workers/runner.py`: removed duplicate `_utc_now()` and now imports from `job_logic`.
+  - `servicebus.py`: renamed local datetime helper to `_utc_now_dt()`.
+  - `agents/processing.py`: replaced inline `datetime.now(...)` with shared `_utc_now()` for generated timestamp defaults.
+
+- **L2 (canonical deployment env var + startup log trim)**
+  - `.github/workflows/deploy-workers.yml`: switched worker app settings to `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME` (canonical).
+  - `workers/runner.py`: startup log now reports canonical deployment variable only (plus endpoint/API version).
+
+- **L3 (speaker extraction heuristic tightening)**
+  - `agents/adapters/transcript.py`:
+    - added VTT `<v ...>` speaker-tag preference,
+    - reduced speaker cap to 25 chars,
+    - rejects numeric-start speaker candidates,
+    - added false-positive prefix filters (`step`, `section`, `process`, `invoice`, `task`, `phase`, `action`),
+    - constrained candidates to short name-like tokens.
+
+- **L4 (`/dev/simulate` save-state behavior)**
+  - `main.py`: `/dev/jobs/{job_id}/simulate` no longer auto-saves drafts; now explicitly sets:
+    - `user_saved_draft = False`
+    - `user_saved_at = None`
+
+### Dead code cleanup
+
+- Removed obsolete `_cost_usd()` helper from `agents/extraction.py` (replaced by `estimate_cost_usd` flow).
+- Verified no remaining dead module-level `_DEPLOYMENT` variable in `agents/processing.py`.
+
+### Additional robustness adjustments during implementation
+
+- `storage.py`: `load_bytes()` now fails fast on storage-mode mismatch:
+  - blob metadata in local mode,
+  - local metadata in blob mode.
+- `main.py`: finalize save-check now accepts persisted draft reconciliation marker (`draft.user_reconciled_at`) in addition to `user_saved_draft` boolean, keeping save-gate deterministic after persistence roundtrips.
+
+### Test coverage updates
+
+Added/updated tests for assigned gaps and new behavior:
+
+- New: `tests/unit/test_anchor_utils.py` (M2 edge cases)
+- New: `tests/unit/test_storage.py` (storage mode mismatch)
+- Updated: `tests/unit/test_worker.py` (`_should_skip` phase-order dedup path)
+- Updated: `tests/unit/test_job_logic.py` (cost-cap warn-only behavior)
+- Updated: `tests/integration/test_error_cases.py` (simulate -> finalize without save returns 409)
+- Updated: integration fixtures/lifecycle/exports flows to explicitly save draft before finalize where required by gate.
+
+### Validation
+
+- Full suite run:
+  - `pytest tests/unit tests/integration -q`
+  - **231 passed**, 1 warning (`RequestsDependencyWarning` from local environment).
+
+---
+
+## Section 18: Claude Review — Section 17 M/L Backlog (2026-04-12)
+
+Architect review of all M1–M5, L1–L4, and DC1 items implemented in Section 17.
+
+### Review outcome: All items approved
+
+**M1 (DateTime migration):** `models.py` correctly uses `DateTime(timezone=True)` for all timestamp columns across `jobs`, `drafts`, `agent_runs`, `job_events`. Alembic migration `20260411_0003` covers all affected columns with proper `upgrade()`/`downgrade()` using `op.batch_alter_table` (required for SQLite). Repository layer adds `_to_datetime()`/`_to_iso()` helpers; `find_expired_jobs` now accepts a typed `datetime` argument. Cleanup worker passes `datetime.now(timezone.utc)`. Implementation is correct.
+
+**M2 (anchor_utils.py):** `classify_anchor()` returns exactly `{"timestamp_range", "frame_id", "section_label", "missing"}` with a regex that handles fractional seconds (`00:01:15.500-00:01:30.500`). All three callers (`sipoc_validator.py`, `alignment.py`, `export_builder.py`) delegate to the shared utility. Note: `export_builder.py` retains a thin `_classify_anchor_type()` wrapper for backwards-compat with existing tests — this is acceptable. No divergent classification paths remain.
+
+**M3 (`_transcript_text_inline` cleanup):** Runner documents the ephemeral field with a `NOTE:` comment and `pop`s it before `upsert_job` in both the success path (line ~179) and the terminal-failure path (line ~230). Extraction module documents the fallback reliance in a corresponding note. Contract is now explicit.
+
+**M4 (Draft upsert-by-PK):** `upsert_job` builds `existing_drafts` dict keyed by `draft_kind`, then conditionally creates or updates each draft row in-place. Audit timestamps (`generated_at`, `user_reconciled_at`, `finalized_at`) are preserved across upserts. Pattern is consistent with the AgentRun incremental-insert pattern from Section 7.
+
+**M5 (stub draft detection):** `build_draft()` in `job_logic.py` sets `"draft_source": "stub"` on the fallback payload. Reviewing agent checks `draft.get("draft_source") == "stub"` as the first gate, before PDD completeness or SIPOC validation. Blocker code is `stub_draft_detected`, severity `blocker`, `requires_user_action=True`. Correctly prevents stub exports from reaching finalize.
+
+**L1 (`_utc_now` consolidation):** `runner.py` imports `_utc_now` from `job_logic`. `servicebus.py` local helper renamed to `_utc_now_dt()`. `processing.py` imports `_utc_now` from `job_logic`. Three implementations are now two distinct functions with consistent semantics (str vs datetime).
+
+**L2 (canonical deployment var):** All three worker appsettings blocks in `deploy-workers.yml` use `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME`. Worker startup log reports only canonical var plus endpoint/api_version.
+
+**L3 (speaker heuristic):** `_extract_speaker` now prefers VTT `<v speaker>` tags, rejects candidates longer than 25 chars, rejects numeric-start candidates, and filters known false-positive prefixes (`step`, `section`, `process`, `invoice`, `task`, `phase`, `action`). Implementation in `_is_valid_speaker_candidate()` is clean.
+
+**L4 (`/dev/simulate` save state):** Endpoint now sets `user_saved_draft = False` and `user_saved_at = None`. The finalize gate at `main.py:268-270` checks `user_saved_draft or draft.get("user_reconciled_at")` — simulate no longer short-circuits the 409 path. Note: the mock draft injected by simulate does not set `user_reconciled_at`, so the 409 guard is properly exercisable via simulate → finalize-without-save.
+
+**DC1 (dead code):** `_cost_usd()` is absent from `extraction.py`. No `_DEPLOYMENT` module-level variable in `extraction.py` or `processing.py`. Both agents call `estimate_cost_usd` from `job_logic`. Confirmed clean.
+
+### One observation (non-blocking)
+
+The `export_builder.py` retains `_classify_anchor_type()` as a one-line wrapper around `classify_anchor()`. This is fine — removing it would require updating test imports. Leave as-is.
+
+### Suite verification
+
+- `pytest tests/unit tests/integration -q` → **231 passed**
+
+

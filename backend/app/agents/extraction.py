@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import Any, Dict, List, Tuple
 
 from app.agents.adapters.registry import AdapterRegistry
 
-_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
 _adapter_registry = AdapterRegistry()
 
 _SYSTEM_PROMPT = (
@@ -48,9 +46,22 @@ Rules:
 """
 
 
-def _cost_usd(prompt_tokens: int, completion_tokens: int) -> float:
-    # gpt-4o-mini pricing: $0.15/1M input, $0.60/1M output
-    return (prompt_tokens * 0.15 + completion_tokens * 0.60) / 1_000_000
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _extract_usage_tokens(metadata: Dict[str, Any]) -> Tuple[int, int]:
+    usage = metadata.get("usage")
+    if usage is None:
+        return 0, 0
+    if isinstance(usage, dict):
+        return _safe_int(usage.get("prompt_tokens")), _safe_int(usage.get("completion_tokens"))
+    return _safe_int(getattr(usage, "prompt_tokens", 0)), _safe_int(
+        getattr(usage, "completion_tokens", 0)
+    )
 
 
 async def _call_extraction(deployment: str, system_prompt: str, user_content: str):
@@ -67,11 +78,11 @@ async def _call_extraction(deployment: str, system_prompt: str, user_content: st
     )
     svc = kernel.get_service(type=AzureChatCompletion)  # type: ignore[arg-type]
     result = await svc.get_chat_message_content(chat, settings, kernel=kernel)
-    usage = result.metadata.get("usage", {})
+    prompt_tokens, completion_tokens = _extract_usage_tokens(result.metadata)
     return (
         str(result),
-        usage.get("prompt_tokens", 0),
-        usage.get("completion_tokens", 0),
+        prompt_tokens,
+        completion_tokens,
     )
 
 
@@ -109,7 +120,9 @@ def _normalize_input(job: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
         if ev.source_type == "transcript" and ev.content_text:
             content_text = ev.content_text
 
-    # Final fallback: raw inline text (used when source_types is empty or unknown)
+    # Final fallback: raw inline text (used when source_types is empty or unknown).
+    # NOTE: _transcript_text_inline is intentionally ephemeral (set by the worker
+    # during extracting and removed before persistence).
     if not content_text:
         content_text = job.get("_transcript_text_inline") or ""
 
@@ -135,7 +148,9 @@ def run_extraction(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
         job["agent_signals"]["transcript_parsed"] = False
         return 0.0
 
-    deployment = profile_conf.get("model", _DEPLOYMENT)
+    deployment = profile_conf.get("model")
+    if not deployment:
+        raise RuntimeError("profile_conf.model is required for extraction.")
     raw, pt, ct = asyncio.run(
         _call_extraction(
             deployment,
@@ -147,4 +162,5 @@ def run_extraction(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
     extracted = json.loads(raw)
     job["extracted_evidence"] = extracted
     job["agent_signals"]["transcript_parsed"] = True
-    return _cost_usd(pt, ct)
+    from app.job_logic import estimate_cost_usd
+    return estimate_cost_usd(deployment, pt, ct)

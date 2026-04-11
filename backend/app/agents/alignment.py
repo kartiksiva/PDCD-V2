@@ -23,11 +23,13 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.agents.anchor_utils import classify_anchor
+
 _VTT_CUE_RE = re.compile(
     r"(\d{2}:\d{2}:\d{2}[.,]\d+)\s*-->\s*(\d{2}:\d{2}:\d{2}[.,]\d+)"
 )
 _TS_RANGE_RE = re.compile(
-    r"^(\d{2}:\d{2}:\d{2})(?:[.,]\d+)?-(\d{2}:\d{2}:\d{2})(?:[.,]\d+)?$"
+    r"^(\d{2}:\d{2}:\d{2})(?:[.,]\d+)?(?:-(\d{2}:\d{2}:\d{2})(?:[.,]\d+)?)?$"
 )
 _SECTION_HEADING_RE = re.compile(
     r"^Section\s+\d+[:\.\s].+", re.MULTILINE
@@ -67,13 +69,15 @@ def parse_section_labels(transcript_text: str) -> list[str]:
 
 
 def normalize_timestamp_anchor(anchor: str) -> str | None:
-    """Normalize HH:MM:SS-HH:MM:SS (with optional sub-second) to HH:MM:SS-HH:MM:SS.
+    """Normalize HH:MM:SS[-HH:MM:SS] (with optional sub-second) to HH:MM:SS-HH:MM:SS.
     Returns None if the string cannot be parsed as a timestamp range.
     """
     match = _TS_RANGE_RE.match(anchor.strip())
     if not match:
         return None
-    return f"{match.group(1)}-{match.group(2)}"
+    start = match.group(1)
+    end = match.group(2) or start
+    return f"{start}-{end}"
 
 
 def validate_anchor(
@@ -85,30 +89,40 @@ def validate_anchor(
 
     Returns a dict with keys:
       valid: bool
-      anchor_type: "timestamp_range" | "section_label" | "unknown"
+      anchor_type: "timestamp_range" | "section_label" | "frame_id" | "missing"
       normalized: str | None
       confidence_penalty: float  (0.0 when valid, 0.1–0.3 when invalid)
       reason: str | None
     """
     anchor = (anchor or "").strip()
+    anchor_type = classify_anchor(anchor)
 
-    if not anchor:
+    if anchor_type == "missing":
         return {
             "valid": False,
-            "anchor_type": "unknown",
+            "anchor_type": "missing",
             "normalized": None,
             "confidence_penalty": 0.3,
             "reason": "Empty anchor string.",
         }
 
+    if anchor_type == "frame_id":
+        return {
+            "valid": False,
+            "anchor_type": "frame_id",
+            "normalized": anchor,
+            "confidence_penalty": 0.1,
+            "reason": "Frame ID anchors cannot be validated against transcript cues.",
+        }
+
     normalized = normalize_timestamp_anchor(anchor)
 
-    if normalized is not None:
+    if anchor_type == "timestamp_range" and normalized is not None:
         # Timestamp range anchor
         match = _TS_RANGE_RE.match(anchor)
         try:
             a_start = _ts_to_sec(match.group(1))
-            a_end = _ts_to_sec(match.group(2))
+            a_end = _ts_to_sec(match.group(2) or match.group(1))
         except (ValueError, AttributeError):
             return {
                 "valid": False,
@@ -170,7 +184,7 @@ def validate_anchor(
 
     return {
         "valid": False,
-        "anchor_type": "unknown",
+        "anchor_type": "section_label",
         "normalized": None,
         "confidence_penalty": 0.1,
         "reason": "No transcript structure available to validate anchor.",

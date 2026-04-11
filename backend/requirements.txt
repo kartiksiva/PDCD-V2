@@ -1,6 +1,6 @@
 fastapi==0.135.3
 python-multipart==0.0.20
-semantic-kernel>=1.41.1
+semantic-kernel==1.41.2
 azure-ai-agents>=1.2.0b3
 uvicorn[standard]==0.34.0
 pydantic>=2.11.0
