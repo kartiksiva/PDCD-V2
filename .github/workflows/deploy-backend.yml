@@ -72,10 +72,10 @@ jobs:
               echo "Health check passed on attempt $i"
               exit 0
             fi
-            echo "Health check not ready yet (attempt $i/60); waiting 20s..."
-            sleep 20
+            echo "Health check not ready yet (attempt $i/60); waiting 10s..."
+            sleep 10
           done
-          echo "ERROR: backend health check did not pass within 20 minutes"
+          echo "ERROR: backend health check did not pass within 10 minutes"
           exit 1
 
       - name: Apply post-deploy configuration
