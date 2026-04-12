@@ -1211,3 +1211,66 @@ Applied the `REPO-CLEANUP` handover item to reduce root-level noise and stop loc
 
 - checked `git status --short` to confirm the cleanup touched only the intended files plus the pre-existing unrelated `infra/dev-bootstrap.sh` modification
 - no application tests were run because this pass only reorganized repo files and ignore rules
+
+---
+
+## Section 26: Worker Deployment Race — Root Cause and Remediation Decision (2026-04-12)
+
+### Failure context
+
+GitHub Actions run `24310275264` (commit `5a57e16`, `fix: extend worker deploy timeout budget`) — all three worker deploy jobs failed inside `azure/webapps-deploy@v3`. Error message in each case:
+
+```
+Deployment has been stopped due to SCM container restart. The restart can happen due to a management operation on site. Do not perform a management operation and a deployment operation in quick succession.
+```
+
+### Root cause (Claude review)
+
+Each deploy job fires **two** sequential Azure control-plane mutations before calling `azure/webapps-deploy@v3`:
+
+1. `az webapp config appsettings set` — triggers Kudu/SCM container restart #1
+2. `az webapp config set --startup-file` — triggers restart #2, overlapping #1
+
+The settle guard (`sleep 15` → poll `az webapp show --query state` for `Running` → `sleep 30`) reads the **app container** state, not the SCM/Kudu container state. Azure returns `Running` once the app container stabilises; the Kudu container can still be mid-restart. `azure/webapps-deploy@v3` calls the Kudu OneDeploy API at that moment and is rejected.
+
+### Remediation decision
+
+Two-part fix assigned to Codex as `DEPLOY-FIX2`:
+
+**Part 1 (quickwin):** Remove `az webapp config set --startup-file` from `deploy-workers.yml`. The startup command (`python -m app.workers.runner`) is static and should be set once at provisioning time in `infra/dev-bootstrap.sh`, not on every deploy. This eliminates restart #2. Increase post-`Running` sleep from 30 s to 60 s to give Kudu time to recover from the single remaining restart.
+
+**Part 2 (proper fix, WEBSITE_RUN_FROM_PACKAGE):** Upload `worker.zip` to the `scratch` blob container; generate a short-lived SAS URL; include `WEBSITE_RUN_FROM_PACKAGE=<url>` in the `appsettings set` call alongside all other settings; replace `azure/webapps-deploy@v3` with `az webapp restart`. This consolidates all config into one control-plane operation, eliminates the Kudu OneDeploy call entirely, and removes the race condition by design.
+
+Pre-requisite for Part 2: verify worker managed identities have `Storage Blob Data Reader` on the scratch container (or the storage account).
+
+---
+
+## Section 27: Worker Deploy Race Quickwin (Part 1) (2026-04-12)
+
+Implemented Part 1 of `DEPLOY-FIX2` to reduce worker deployment restarts before the larger `WEBSITE_RUN_FROM_PACKAGE` change.
+
+### Changes
+
+- `.github/workflows/deploy-workers.yml`
+  - removed all three `az webapp config set --startup-file "python -m app.workers.runner"` calls from the worker deploy jobs
+  - increased the post-`Running` settle delay from `30` seconds to `60` seconds in the extracting, processing, and reviewing settle steps
+- `infra/dev-bootstrap.sh`
+  - added explicit worker app name defaults:
+    - `WORKER_EXTRACTING_NAME`
+    - `WORKER_PROCESSING_NAME`
+    - `WORKER_REVIEWING_NAME`
+  - extended `ensure_app_service()` to provision/configure the three worker App Services on the shared plan
+  - sets each worker startup command once at provisioning time to `python -m app.workers.runner`
+  - applies worker app settings including `PFCD_WORKER_ROLE`, queue names, Key Vault-backed connection strings, and `AZURE_OPENAI_ENDPOINT`
+  - grants each worker app identity `Key Vault Secrets User` on the vault, matching the backend app pattern
+
+### Validation
+
+- parsed `.github/workflows/deploy-workers.yml` successfully with the Ruby YAML loader
+- ran `bash -n infra/dev-bootstrap.sh` successfully
+- ran `git diff --check` on the modified workflow/bootstrap/log files with no whitespace issues
+- confirmed `deploy-workers.yml` no longer mutates worker startup files during CI and now uses `sleep 60` after `state == Running`
+
+### Remaining work
+
+- Part 2 of `DEPLOY-FIX2` is still pending: move workers to `WEBSITE_RUN_FROM_PACKAGE` so the deployment path no longer depends on Kudu OneDeploy timing

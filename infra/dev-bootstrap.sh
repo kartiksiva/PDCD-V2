@@ -12,6 +12,9 @@ BUDGET_NAME="${BUDGET_NAME:-${PROJECT}-${ENVIRONMENT}-budget}"
 
 APP_SERVICE_PLAN="${APP_SERVICE_PLAN:-${PROJECT}-${ENVIRONMENT}-asp}"
 WEBAPP_NAME="${WEBAPP_NAME:-${PROJECT}-${ENVIRONMENT}-api}"
+WORKER_EXTRACTING_NAME="${WORKER_EXTRACTING_NAME:-${PROJECT}-${ENVIRONMENT}-worker-extracting}"
+WORKER_PROCESSING_NAME="${WORKER_PROCESSING_NAME:-${PROJECT}-${ENVIRONMENT}-worker-processing}"
+WORKER_REVIEWING_NAME="${WORKER_REVIEWING_NAME:-${PROJECT}-${ENVIRONMENT}-worker-reviewing}"
 STORAGE_ACCOUNT="${STORAGE_ACCOUNT:-${PROJECT}${ENVIRONMENT}storage}"
 SERVICE_BUS_NAMESPACE="${SERVICE_BUS_NAMESPACE:-${PROJECT}-${ENVIRONMENT}-bus}"
 SERVICE_BUS_QUEUE="${SERVICE_BUS_QUEUE:-jobs}"
@@ -267,7 +270,9 @@ ensure_app_service() {
       AZURE_SQL_DATABASE_NAME="$SQL_DATABASE_NAME" \
       AZURE_OPENAI_ACCOUNT_NAME="$OPENAI_ACCOUNT_NAME" \
       AZURE_SPEECH_ACCOUNT_NAME="$SPEECH_ACCOUNT_NAME" \
+      AZURE_OPENAI_CHAT_DEPLOYMENT_NAME="$OPENAI_DEPLOYMENT_NAME" \
       AZURE_OPENAI_DEPLOYMENT_NAME="$OPENAI_DEPLOYMENT_NAME" \
+      AZURE_OPENAI_API_VERSION="2024-10-21" \
       AZURE_OPENAI_MODEL_NAME="$OPENAI_MODEL_NAME" \
       AZURE_OPENAI_MODEL_VERSION="$OPENAI_MODEL_VERSION" \
       AZURE_OPENAI_SKU_NAME="$OPENAI_SKU_NAME" \
@@ -288,6 +293,81 @@ ensure_app_service() {
       --output none \
       || true
   fi
+
+  local worker_name worker_role worker_principal_id
+  for worker_role in extracting processing reviewing; do
+    case "$worker_role" in
+      extracting)
+        worker_name="$WORKER_EXTRACTING_NAME"
+        ;;
+      processing)
+        worker_name="$WORKER_PROCESSING_NAME"
+        ;;
+      reviewing)
+        worker_name="$WORKER_REVIEWING_NAME"
+        ;;
+    esac
+
+    if ! az webapp show --name "$worker_name" --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
+      az webapp create \
+        --resource-group "$RESOURCE_GROUP" \
+        --plan "$APP_SERVICE_PLAN" \
+        --name "$worker_name" \
+        --runtime "PYTHON:3.11" \
+        --assign-identity \
+        --output none
+    fi
+
+    az webapp config set \
+      --name "$worker_name" \
+      --resource-group "$RESOURCE_GROUP" \
+      --startup-file "python -m app.workers.runner" \
+      --output none
+
+    az webapp config appsettings set \
+      --name "$worker_name" \
+      --resource-group "$RESOURCE_GROUP" \
+      --settings \
+        SCM_DO_BUILD_DURING_DEPLOYMENT=true \
+        ENVIRONMENT_NAME="$ENVIRONMENT" \
+        PFCD_WORKER_ROLE="$worker_role" \
+        AZURE_STORAGE_ACCOUNT_NAME="$STORAGE_ACCOUNT" \
+        AZURE_SERVICE_BUS_NAMESPACE="$SERVICE_BUS_NAMESPACE" \
+        AZURE_SERVICE_BUS_QUEUE="$SERVICE_BUS_QUEUE" \
+        AZURE_SERVICE_BUS_QUEUE_EXTRACTING="$SERVICE_BUS_QUEUE_EXTRACTING" \
+        AZURE_SERVICE_BUS_QUEUE_PROCESSING="$SERVICE_BUS_QUEUE_PROCESSING" \
+        AZURE_SERVICE_BUS_QUEUE_REVIEWING="$SERVICE_BUS_QUEUE_REVIEWING" \
+        KEYVAULT_NAME="$KEY_VAULT_NAME" \
+        AZURE_SQL_SERVER_NAME="$SQL_SERVER_NAME" \
+        AZURE_SQL_DATABASE_NAME="$SQL_DATABASE_NAME" \
+        AZURE_OPENAI_ACCOUNT_NAME="$OPENAI_ACCOUNT_NAME" \
+        AZURE_SPEECH_ACCOUNT_NAME="$SPEECH_ACCOUNT_NAME" \
+        AZURE_OPENAI_ENDPOINT="https://${OPENAI_ACCOUNT_NAME}.openai.azure.com/" \
+        AZURE_OPENAI_CHAT_DEPLOYMENT_NAME="$OPENAI_DEPLOYMENT_NAME" \
+        AZURE_OPENAI_DEPLOYMENT_NAME="$OPENAI_DEPLOYMENT_NAME" \
+        AZURE_OPENAI_API_VERSION="2024-10-21" \
+        AZURE_OPENAI_MODEL_NAME="$OPENAI_MODEL_NAME" \
+        AZURE_OPENAI_MODEL_VERSION="$OPENAI_MODEL_VERSION" \
+        AZURE_OPENAI_SKU_NAME="$OPENAI_SKU_NAME" \
+        APP_COST_PROFILE=development \
+        WEBSITES_CONTAINER_START_TIME_LIMIT=600 \
+        WEBSITES_PORT=8000 \
+        DATABASE_URL="@Microsoft.KeyVault(SecretUri=https://${KEY_VAULT_NAME}.vault.azure.net/secrets/sql-connection-string)" \
+        AZURE_STORAGE_CONNECTION_STRING="@Microsoft.KeyVault(SecretUri=https://${KEY_VAULT_NAME}.vault.azure.net/secrets/storage-connection-string)" \
+        AZURE_SERVICE_BUS_CONNECTION_STRING="@Microsoft.KeyVault(SecretUri=https://${KEY_VAULT_NAME}.vault.azure.net/secrets/service-bus-connection-string)" \
+        AZURE_STORAGE_CONTAINER_EXPORTS="exports" \
+      --output none
+
+    worker_principal_id="$(az webapp identity show --name "$worker_name" --resource-group "$RESOURCE_GROUP" --query principalId -o tsv 2>/dev/null || true)"
+    if [[ -n "$worker_principal_id" ]]; then
+      az role assignment create \
+        --assignee-object-id "$worker_principal_id" \
+        --role "Key Vault Secrets User" \
+        --scope "/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.KeyVault/vaults/$KEY_VAULT_NAME" \
+        --output none \
+        || true
+    fi
+  done
 }
 
 ensure_cognitive_services() {

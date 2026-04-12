@@ -11,108 +11,114 @@ Shared coordination board. Read and updated by both Claude and Codex at session 
 
 | ID | Task | Notes |
 |----|------|-------|
-| — | | |
+| DEPLOY-FIX2 (Part 2) | Switch workers to WEBSITE_RUN_FROM_PACKAGE | Details below; Part 1 approved |
 
-### REPO-CLEANUP — Repo organisation
+### DEPLOY-FIX2 — Fix worker SCM restart race (two-part)
 
-**Step 1 — Delete untracked artefacts:**
-```bash
-rm backend.zip worker.zip \
-   SECTION14_IMPLEMENTATION_NOTES_2026-04-11.md \
-   SECTION14_MEDIUM_LOW_FINDINGS_2026-04-11.md \
-   DEPLOYMENT_OPTIONS_2026-04-12.md
-```
+**Root cause confirmed (Claude review 2026-04-12):**
+Each deploy job fires two Azure control-plane mutations:
+1. `az webapp config appsettings set` → triggers Kudu/SCM restart #1
+2. `az webapp config set --startup-file` → triggers restart #2 before #1 finishes
 
-**Step 2 — Add to root `.gitignore`:**
-```
-# macOS / editor artefacts
-.DS_Store
-.Rhistory
+`az webapp show --query state` returns `Running` from the app container, not the Kudu/SCM container. So the deploy fires into a still-restarting Kudu and gets the `SCM container restart` error even after the settle guard passes.
 
-# Build artefacts (CI zip deploys)
-*.zip
+---
 
-# Frontend dependencies
-frontend/node_modules/
-```
+**Part 1 — Quickwin (unblocks CI immediately):**
 
-**Step 3 — Untrack system files:**
-```bash
-git rm --cached .DS_Store .Rhistory
-```
+The startup-file value (`python -m app.workers.runner`) is static — it never changes between deploys. Remove all three `az webapp config set --startup-file` calls from `deploy-workers.yml`. Set the startup command once at provisioning time in `infra/dev-bootstrap.sh` instead (where `az webapp create` / `az webapp config set` already runs). This eliminates restart #2.
 
-**Step 4 — Create `docs/archive/` and move historical docs:**
-```bash
-mkdir -p docs/archive
-git mv NEXT_IMPLEMENTATION.md docs/archive/
-git mv SUGGESTIONS_FOR_CODEX.md docs/archive/
-git mv prd-review-20032026.md docs/archive/
-git mv REVIEW_DOCUMENT_2026-03-21.md docs/archive/
-git mv SESSION_SUMMARY_2026-04-01.md docs/archive/
-```
-
-**Files that stay at root** (active or referenced in CLAUDE.md — do not move):
-`CLAUDE.md`, `AGENTS.md`, `HANDOVER.md`, `IMPLEMENTATION_SUMMARY.md`, `prd.md`, `REFERENCE.md`, `GEMINI.md`, `REVIEW_CLOSURE_2026-03-21.md`
-
-**Step 5 — Stage and commit HANDOVER.md** (currently untracked — excluded from S17-COMMIT intentionally, now ready to track):
-```bash
-git add HANDOVER.md
-```
-
-**Step 6 — Commit everything as one cleanup commit:**
-```
-chore: clean up repo — remove artefacts, fix .gitignore, archive historical docs
-
-- delete backend.zip, worker.zip (CI build artefacts)
-- delete SECTION14_*.md and DEPLOYMENT_OPTIONS*.md (session artefacts)
-- add .DS_Store, .Rhistory, *.zip, frontend/node_modules/ to .gitignore
-- git rm --cached .DS_Store .Rhistory
-- move 5 historical docs to docs/archive/
-- add HANDOVER.md to git tracking
-```
-
-**Do not touch:** `infra/dev-bootstrap.sh` (has local uncommitted changes — separate concern).
-
-### S20-FIX — Config-settle race fix
-
-In `deploy-workers.yml`, each "Wait for … worker config restart to settle" step polls `az webapp show --query "state"` immediately after `az webapp config appsettings set`. If the Azure control plane hasn't yet registered the restart, the first poll returns `"Running"` (pre-restart), the step exits after 30s, and `az webapp deploy` fires before the restart cycle has completed — the exact race it was meant to prevent.
-
-**Fix:** add `sleep 15` at the top of each of the three settle steps, before the `for` loop:
+Then increase the post-`Running` sleep from 30 s to 60 s to give Kudu time to recover from the single remaining restart:
 
 ```yaml
 - name: Wait for extracting worker config restart to settle
   run: |
     sleep 15
     for i in $(seq 1 30); do
-      ...
+      state=$(az webapp show \
+        --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+        --name ${{ secrets.AZURE_WORKER_EXTRACTING_NAME }} \
+        --query "state" -o tsv)
+      echo "extracting config settle $i/30: $state"
+      if [ "$state" = "Running" ]; then
+        sleep 60
+        exit 0
+      fi
+      sleep 10
+    done
+    echo "ERROR: extracting worker did not return to Running after config changes"
+    exit 1
 ```
 
-Apply identically to all three workers (`extracting`, `processing`, `reviewing`). No other changes needed.
+Apply identically to processing and reviewing settle steps.
+
+Also verify `infra/dev-bootstrap.sh` includes `az webapp config set --startup-file "python -m app.workers.runner"` for all three worker apps (or equivalent `COMMAND` appsetting). If it doesn't, add it there.
 
 ---
 
-### DEPLOY-OPT3 — Switch to `azure/webapps-deploy@v3` (Path A — no publish profile)
+**Part 2 — Proper fix (WEBSITE_RUN_FROM_PACKAGE):**
 
-Replace `az webapp deploy` with `azure/webapps-deploy@v3` in both workflows. **Do not use `publish-profile`** — SCM basic auth is disabled on this subscription and publish profiles are redacted. Instead, rely on the `azure/login@v2` step already in the workflow; the action will authenticate to Kudu using a bearer token from the logged-in service principal.
+Restructure so there is no `azure/webapps-deploy@v3` step at all. The zip is mounted from blob storage; Kudu OneDeploy is never called.
 
-**No new secrets required.**
-
-**Workflow change** — replace the `az webapp deploy` step with:
+**In the `build` job:**
 ```yaml
-- uses: azure/webapps-deploy@v3
+- name: Upload worker zip to scratch blob
+  run: |
+    az storage blob upload \
+      --account-name ${{ secrets.AZURE_STORAGE_ACCOUNT }} \
+      --container-name scratch \
+      --name worker-${{ github.sha }}.zip \
+      --file worker.zip \
+      --auth-mode login
+    expiry=$(date -u -d "+4 hours" +%Y-%m-%dT%H:%MZ 2>/dev/null || date -u -v+4H +%Y-%m-%dT%H:%MZ)
+    sas=$(az storage blob generate-sas \
+      --account-name ${{ secrets.AZURE_STORAGE_ACCOUNT }} \
+      --container-name scratch \
+      --name worker-${{ github.sha }}.zip \
+      --permissions r \
+      --expiry "$expiry" \
+      --auth-mode login \
+      --as-user \
+      -o tsv)
+    account=${{ secrets.AZURE_STORAGE_ACCOUNT }}
+    echo "PACKAGE_URL=https://${account}.blob.core.windows.net/scratch/worker-${{ github.sha }}.zip?${sas}" >> $GITHUB_ENV
+- uses: actions/upload-artifact@v4
   with:
-    app-name: ${{ secrets.AZURE_WEBAPP_NAME }}
-    package: ./backend.zip
+    name: package-url
+    path: /dev/null  # URL is passed via env; artifact is the zip already uploaded
 ```
-Apply equivalent blocks for each worker (substitute `AZURE_WORKER_EXTRACTING_NAME`, etc.).
 
-**Keep as-is:**
-- `azure/login@v2` step (still needed — provides credentials for both `az webapp config` calls and the deploy action)
-- S20-FIX `sleep 15` in config-settle steps
-- HTTP readiness probe and state poll steps
-- Concurrency groups and `timeout-minutes`
+Or simpler: write the URL to a file and upload that as an artifact, then download it in each deploy job.
 
-**Fallback if Option 3 still fails:** move to `WEBSITE_RUN_FROM_PACKAGE` (upload zip to blob, set appsetting, restart). Medium-term: move workers to Container Apps with KEDA Service Bus scaler.
+**In each deploy job** — replace the `Deploy extracting worker` step with:
+```yaml
+- name: Deploy extracting worker (WEBSITE_RUN_FROM_PACKAGE)
+  run: |
+    az webapp config appsettings set \
+      --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+      --name ${{ secrets.AZURE_WORKER_EXTRACTING_NAME }} \
+      --settings PFCD_WORKER_ROLE=extracting \
+        AZURE_OPENAI_ENDPOINT="${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
+        AZURE_OPENAI_CHAT_DEPLOYMENT_NAME="${AZURE_OPENAI_CHAT_DEPLOYMENT_NAME_RESOLVED}" \
+        WEBSITES_CONTAINER_START_TIME_LIMIT=600 \
+        WEBSITES_PORT=8000 \
+        WEBSITE_RUN_FROM_PACKAGE="<package-url>"
+    az webapp restart \
+      --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+      --name ${{ secrets.AZURE_WORKER_EXTRACTING_NAME }}
+```
+
+Remove `azure/webapps-deploy@v3` entirely from all three deploy jobs. Remove `az webapp config set --startup-file` (already removed in Part 1). The `appsettings set` now consolidates config + package reference into a single control-plane operation.
+
+**Pre-requisite:** the three worker App Services' system-assigned managed identities must have `Storage Blob Data Reader` on the scratch container (or on the storage account). Verify this in `infra/dev-bootstrap.sh` or add the role assignment there.
+
+**Constraints:**
+- Do not hardcode storage account names — use `${{ secrets.AZURE_STORAGE_ACCOUNT }}`
+- SAS token expiry must be long enough to cover deploy + verify steps (4 hours is safe)
+- Add `AZURE_STORAGE_ACCOUNT` to the secrets table in `REFERENCE.md` if not already present
+- Do not change `deploy-backend.yml` — this task is workers only
+
+Commit as: `fix: switch workers to WEBSITE_RUN_FROM_PACKAGE, remove startup-file mutation`
 
 ---
 
@@ -128,14 +134,17 @@ Apply equivalent blocks for each worker (substitute `AZURE_WORKER_EXTRACTING_NAM
 
 | ID | Task | PR / Commit |
 |----|------|-------------|
-| REPO-CLEANUP | Organise repo — delete artefacts, fix .gitignore, archive historical docs, commit HANDOVER.md | `chore: clean up repo - remove artefacts, fix .gitignore, archive historical docs` |
+| — | | |
 
 ---
 
 ## Recently Closed
 
 | ID | Task | Closed | Outcome |
-|----|------|--------|---------|
+|----|----- |--------|---------|
+| DEPLOY-FIX2 (Part 1) | Remove startup-file mutation from deploy workflow; widen settle sleep to 60 s; set startup in bootstrap | 2026-04-12 | Approved — `az webapp config set --startup-file` removed from all 3 deploy jobs; `sleep 60` in all settle steps; bootstrap sets startup at provision time |
+| WORKER-DEPLOY-FAIL-20260412 | Review latest worker deployment failure and decide next remediation path | 2026-04-12 | Reviewed — root cause: two-restart race (appsettings set + startup-file set); remedy: DEPLOY-FIX2 assigned |
+| REPO-CLEANUP | Delete artefacts, fix .gitignore, archive historical docs | 2026-04-12 | Approved — `dfb88ff`; clean working tree; 8 root docs; 5 archived to `docs/archive/` |
 | S20-FIX | Config-settle `sleep 15` in all three worker settle steps | 2026-04-12 | Approved — present in all three workers; race addressed |
 | DEPLOY-OPT3 + REVERT | Switch both workflows to `azure/webapps-deploy@v3`, no publish-profile | 2026-04-12 | Approved — bearer token auth via `azure/login`; no `az webapp deploy` remains; worker name validation added |
 | S17-COMMIT | Commit and push all Section 17 M/L changes | 2026-04-12 | Approved — `5c260bf` pushed to main; 231 tests passing |
