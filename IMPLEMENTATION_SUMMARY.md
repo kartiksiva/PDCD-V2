@@ -1161,3 +1161,29 @@ Applied follow-up item `DEPLOY-OPT3-REVERT` after confirming the subscription do
 
 - This section supersedes the operational dependency recorded in Section 22; no new GitHub publish-profile secrets are needed for the current workflow implementation.
 - No live GitHub Actions run was executed in this pass; this was a workflow/doc update only.
+
+---
+
+## Section 24: Worker Deploy Timeout Budget Increase (2026-04-12)
+
+Adjusted the worker deployment workflow after the first bearer-token deployment run hit the per-job `35` minute cap while backend deploy succeeded.
+
+### Change
+
+- increased `timeout-minutes` from `35` to `60` for:
+  - `deploy-extracting`
+  - `deploy-processing`
+  - `deploy-reviewing`
+
+### Rationale
+
+- the worker jobs already spend substantial time outside the deploy action itself:
+  - config-settle wait after appsettings/startup updates
+  - post-deploy control-plane `state == Running` polling
+  - post-deploy HTTP readiness probing
+- combined with App Service zip deployment latency, `35` minutes leaves too little headroom and can fail the job even when deployment is still progressing normally
+
+### Validation
+
+- workflow YAML still parses after the timeout update
+- no application code changed in this pass

@@ -37,7 +37,7 @@ jobs:
   deploy-extracting:
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 60
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -124,7 +124,7 @@ jobs:
   deploy-processing:
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 60
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -211,7 +211,7 @@ jobs:
   deploy-reviewing:
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 60
     steps:
       - uses: actions/download-artifact@v4
         with:
