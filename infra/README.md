@@ -39,8 +39,8 @@ SPEECH_ACCOUNT_LOCATION=eastus bash infra/dev-bootstrap.sh
 
 ## Deployment
 - App Service startup command is set to `uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}`.
-- GitHub Actions deploy uses the App Service publish profile stored as `AZURE_WEBAPP_PUBLISH_PROFILE`.
-  - Set repo secrets: `AZURE_WEBAPP_NAME` (e.g., `pfcd-dev-api`) and `AZURE_WEBAPP_PUBLISH_PROFILE`.
+- GitHub Actions deploys use `azure/webapps-deploy@v3` after `azure/login@v2`; the deploy action authenticates with the logged-in service principal bearer token rather than a publish profile.
+- No App Service publish-profile secrets are required for backend or worker deploys on this path.
 
 Key Vault-backed settings created by the script:
 - `DATABASE_URL` -> secret `sql-connection-string`

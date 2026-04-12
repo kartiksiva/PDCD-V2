@@ -52,7 +52,14 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Deploy to Azure App Service
+      - name: Validate backend deployment settings
+        run: |
+          if [ -z "${{ secrets.AZURE_WEBAPP_NAME }}" ]; then
+            echo "ERROR: Set AZURE_WEBAPP_NAME in GitHub secrets."
+            exit 1
+          fi
+
+      - name: Build backend package
         run: |
           cd backend
           zip -r ../backend.zip . \
@@ -62,16 +69,15 @@ jobs:
             -x "*.db" -x "*.sqlite3" \
             -x ".env" -x ".env.*" \
             -x "storage/*"
-          cd ..
-          az webapp deploy \
-            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --name ${{ secrets.AZURE_WEBAPP_NAME }} \
-            --src-path ./backend.zip \
-            --type zip \
-            --async true \
-            --enable-kudu-warmup false \
-            --timeout 1800000 \
-            --track-status false
+
+      - name: Deploy backend package
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ secrets.AZURE_WEBAPP_NAME }}
+          package: ./backend.zip
+
+      - name: Verify backend HTTP readiness
+        run: |
           url="https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net/health"
           echo "Polling health endpoint until backend is ready: $url"
           for i in $(seq 1 90); do

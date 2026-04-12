@@ -1071,3 +1071,93 @@ Hardened the GitHub Actions Azure deploy workflows after repeated App Service de
   - `backend workflow yaml ok`
   - `workers workflow yaml ok`
 - No application test suite run in this pass; changes are workflow-only.
+
+---
+
+## Section 21: Deployment Options Review (2026-04-12)
+
+Documented deployment remediation options in `DEPLOYMENT_OPTIONS_2026-04-12.md` after the hardened Azure CLI runs for commit `367d2db` still timed out in the actual App Service deploy step.
+
+### Findings captured
+
+- latest backend and worker runs reached the deploy step successfully, then were cancelled by workflow time limits
+- earlier worker `SCM container restart` conflicts were mitigated by the workflow hardening pass
+- remaining blocker is concentrated in the App Service deploy mechanism (`az webapp deploy` / Kudu / OneDeploy), not in tests or the pre-deploy workflow steps
+
+### Options documented
+
+- keep Azure CLI deploy and raise timeouts further
+- keep Azure CLI deploy but separate deploy from verification
+- switch to `azure/webapps-deploy` using publish profiles
+- move App Service deployments to Run-From-Package
+- medium-term move workers to Azure Container Apps
+
+### Recommendation
+
+- same-day recommendation: switch to `azure/webapps-deploy` with publish profiles for backend and all three worker apps
+- immediate fallback if that still inherits the same Kudu failure mode: move to Run-From-Package on App Service
+- medium-term architecture direction: Azure Container Apps for workers if App Service remains a poor fit for long-running consumers
+
+---
+
+## Section 22: Publish-Profile Deploy Migration (2026-04-12)
+
+Applied the approved deployment follow-up for `S20-FIX` and `DEPLOY-OPT3`.
+
+### Workflow changes
+
+- `deploy-workers.yml`
+  - added `sleep 15` at the top of all three config-settle steps (`extracting`, `processing`, `reviewing`) to avoid the pre-restart false-positive `Running` state race
+  - replaced all three `az webapp deploy` steps with `azure/webapps-deploy@v3`
+  - added explicit secret validation for each worker app name and publish profile before deploy
+- `deploy-backend.yml`
+  - split package build from deployment for clearer failure boundaries
+  - replaced backend `az webapp deploy` with `azure/webapps-deploy@v3`
+  - added explicit validation for `AZURE_WEBAPP_NAME` and `AZURE_WEBAPP_PUBLISH_PROFILE`
+- `infra/README.md`
+  - documented the worker publish-profile secrets and the Azure Portal `Get publish profile` step for each App Service
+
+### Validation
+
+- Parsed `.github/workflows/deploy-backend.yml` and `.github/workflows/deploy-workers.yml` successfully with Ruby YAML loader.
+- Ran `git diff --check` on the modified workflow/docs files with no whitespace or merge-marker issues.
+- Confirmed the modified workflow files now contain `azure/webapps-deploy@v3` and the worker settle guards, with no remaining `az webapp deploy` calls in those two workflow files.
+
+### Open operational dependency
+
+- GitHub still needs the three new worker publish-profile secrets before the worker workflow can run successfully:
+  - `AZURE_WORKER_EXTRACTING_PUBLISH_PROFILE`
+  - `AZURE_WORKER_PROCESSING_PUBLISH_PROFILE`
+  - `AZURE_WORKER_REVIEWING_PUBLISH_PROFILE`
+- No live GitHub Actions run was executed in this pass; this was a workflow/doc update only.
+
+---
+
+## Section 23: Deploy Auth Path Rework (2026-04-12)
+
+Applied follow-up item `DEPLOY-OPT3-REVERT` after confirming the subscription does not support the publish-profile path because SCM basic auth is disabled and publish profiles are redacted.
+
+### Workflow changes
+
+- `deploy-backend.yml`
+  - kept `azure/webapps-deploy@v3`
+  - removed `publish-profile` input usage
+  - removed the backend publish-profile secret validation, keeping only app-name validation
+- `deploy-workers.yml`
+  - kept the `S20-FIX` `sleep 15` settle guard in all three worker jobs
+  - kept `azure/webapps-deploy@v3` for all worker deploy steps
+  - removed worker publish-profile secret validation and `publish-profile` inputs
+- `infra/README.md`
+  - updated deployment guidance to state that `azure/login@v2` supplies the bearer token used by `azure/webapps-deploy@v3`
+  - documented that no publish-profile secrets are required on this path
+
+### Validation
+
+- Parsed both workflow files successfully with the Ruby YAML loader after the auth-path rework.
+- Ran `git diff --check` on the modified workflow/docs/log files with no whitespace issues.
+- Confirmed there are no remaining active `publish-profile` or `*_PUBLISH_PROFILE` references in the backend/worker workflow files.
+
+### Notes
+
+- This section supersedes the operational dependency recorded in Section 22; no new GitHub publish-profile secrets are needed for the current workflow implementation.
+- No live GitHub Actions run was executed in this pass; this was a workflow/doc update only.
