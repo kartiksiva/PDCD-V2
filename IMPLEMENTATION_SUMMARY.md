@@ -1187,3 +1187,27 @@ Adjusted the worker deployment workflow after the first bearer-token deployment 
 
 - workflow YAML still parses after the timeout update
 - no application code changed in this pass
+
+---
+
+## Section 25: Repository Cleanup Pass (2026-04-12)
+
+Applied the `REPO-CLEANUP` handover item to reduce root-level noise and stop local artefacts from reappearing in Git status.
+
+### Changes
+
+- root `.gitignore`
+  - added `.DS_Store` and `.Rhistory`
+  - added `*.zip` for CI/package artefacts
+  - added `frontend/node_modules/`
+- repository hygiene
+  - removed the local session artefacts `backend.zip`, `worker.zip`, `SECTION14_IMPLEMENTATION_NOTES_2026-04-11.md`, `SECTION14_MEDIUM_LOW_FINDINGS_2026-04-11.md`, and `DEPLOYMENT_OPTIONS_2026-04-12.md`
+  - untracked `.DS_Store` and `.Rhistory` while leaving the working-tree files in place
+- documentation layout
+  - created `docs/archive/`
+  - moved `NEXT_IMPLEMENTATION.md`, `SUGGESTIONS_FOR_CODEX.md`, `prd-review-20032026.md`, `REVIEW_DOCUMENT_2026-03-21.md`, and `SESSION_SUMMARY_2026-04-01.md` into the archive directory
+
+### Validation
+
+- checked `git status --short` to confirm the cleanup touched only the intended files plus the pre-existing unrelated `infra/dev-bootstrap.sh` modification
+- no application tests were run because this pass only reorganized repo files and ignore rules

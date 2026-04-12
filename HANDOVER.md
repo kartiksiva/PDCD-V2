@@ -13,6 +13,66 @@ Shared coordination board. Read and updated by both Claude and Codex at session 
 |----|------|-------|
 | — | | |
 
+### REPO-CLEANUP — Repo organisation
+
+**Step 1 — Delete untracked artefacts:**
+```bash
+rm backend.zip worker.zip \
+   SECTION14_IMPLEMENTATION_NOTES_2026-04-11.md \
+   SECTION14_MEDIUM_LOW_FINDINGS_2026-04-11.md \
+   DEPLOYMENT_OPTIONS_2026-04-12.md
+```
+
+**Step 2 — Add to root `.gitignore`:**
+```
+# macOS / editor artefacts
+.DS_Store
+.Rhistory
+
+# Build artefacts (CI zip deploys)
+*.zip
+
+# Frontend dependencies
+frontend/node_modules/
+```
+
+**Step 3 — Untrack system files:**
+```bash
+git rm --cached .DS_Store .Rhistory
+```
+
+**Step 4 — Create `docs/archive/` and move historical docs:**
+```bash
+mkdir -p docs/archive
+git mv NEXT_IMPLEMENTATION.md docs/archive/
+git mv SUGGESTIONS_FOR_CODEX.md docs/archive/
+git mv prd-review-20032026.md docs/archive/
+git mv REVIEW_DOCUMENT_2026-03-21.md docs/archive/
+git mv SESSION_SUMMARY_2026-04-01.md docs/archive/
+```
+
+**Files that stay at root** (active or referenced in CLAUDE.md — do not move):
+`CLAUDE.md`, `AGENTS.md`, `HANDOVER.md`, `IMPLEMENTATION_SUMMARY.md`, `prd.md`, `REFERENCE.md`, `GEMINI.md`, `REVIEW_CLOSURE_2026-03-21.md`
+
+**Step 5 — Stage and commit HANDOVER.md** (currently untracked — excluded from S17-COMMIT intentionally, now ready to track):
+```bash
+git add HANDOVER.md
+```
+
+**Step 6 — Commit everything as one cleanup commit:**
+```
+chore: clean up repo — remove artefacts, fix .gitignore, archive historical docs
+
+- delete backend.zip, worker.zip (CI build artefacts)
+- delete SECTION14_*.md and DEPLOYMENT_OPTIONS*.md (session artefacts)
+- add .DS_Store, .Rhistory, *.zip, frontend/node_modules/ to .gitignore
+- git rm --cached .DS_Store .Rhistory
+- move 5 historical docs to docs/archive/
+- add HANDOVER.md to git tracking
+```
+
+**Do not touch:** `infra/dev-bootstrap.sh` (has local uncommitted changes — separate concern).
+
 ### S20-FIX — Config-settle race fix
 
 In `deploy-workers.yml`, each "Wait for … worker config restart to settle" step polls `az webapp show --query "state"` immediately after `az webapp config appsettings set`. If the Azure control plane hasn't yet registered the restart, the first poll returns `"Running"` (pre-restart), the step exits after 30s, and `az webapp deploy` fires before the restart cycle has completed — the exact race it was meant to prevent.
@@ -68,7 +128,7 @@ Apply equivalent blocks for each worker (substitute `AZURE_WORKER_EXTRACTING_NAM
 
 | ID | Task | PR / Commit |
 |----|------|-------------|
-| — | | |
+| REPO-CLEANUP | Organise repo — delete artefacts, fix .gitignore, archive historical docs, commit HANDOVER.md | `chore: clean up repo - remove artefacts, fix .gitignore, archive historical docs` |
 
 ---
 

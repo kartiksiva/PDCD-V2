@@ -34,3 +34,13 @@ backend/storage/
 # IDEs
 .vscode/
 .idea/
+
+# macOS / editor artefacts
+.DS_Store
+.Rhistory
+
+# Build artefacts (CI zip deploys)
+*.zip
+
+# Frontend dependencies
+frontend/node_modules/
