@@ -65,18 +65,19 @@ def _extract_usage_tokens(metadata: Dict[str, Any]) -> Tuple[int, int]:
 
 
 async def _call_extraction(deployment: str, system_prompt: str, user_content: str):
-    """Invoke Azure OpenAI via Semantic Kernel; returns (raw_json, prompt_tokens, completion_tokens)."""
-    from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion, AzureChatPromptExecutionSettings
+    """Invoke chat completion via Semantic Kernel; returns (raw_json, prompt_tokens, completion_tokens)."""
+    from semantic_kernel.connectors.ai.open_ai import OpenAIChatPromptExecutionSettings
     from semantic_kernel.contents import ChatHistory
-    from app.agents.kernel_factory import get_kernel
+    from app.agents.kernel_factory import get_chat_service, get_kernel
+
     kernel = get_kernel(deployment)
     chat = ChatHistory()
     chat.add_system_message(system_prompt)
     chat.add_user_message(user_content)
-    settings = AzureChatPromptExecutionSettings(
+    settings = OpenAIChatPromptExecutionSettings(
         response_format={"type": "json_object"}
     )
-    svc = kernel.get_service(type=AzureChatCompletion)  # type: ignore[arg-type]
+    svc = get_chat_service(deployment)
     result = await svc.get_chat_message_content(chat, settings, kernel=kernel)
     prompt_tokens, completion_tokens = _extract_usage_tokens(result.metadata)
     return (
@@ -102,6 +103,8 @@ def _normalize_input(job: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
     adapters = _adapter_registry.get_adapters(source_types)
 
     content_text = ""
+    transcript_content = ""
+    video_content = ""
     manifests: List[Dict[str, Any]] = []
 
     for adapter in adapters:
@@ -114,11 +117,21 @@ def _normalize_input(job: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
             "anchor_count": len(ev.anchors),
             "provenance_notes": notes,
         })
-        # Only transcript drives LLM extraction content.
-        # Video adapter contributes manifests/provenance only — actual
-        # frame/audio extraction requires Azure Vision/Speech (pending).
         if ev.source_type == "transcript" and ev.content_text:
-            content_text = ev.content_text
+            transcript_content = ev.content_text
+        elif ev.source_type == "video" and ev.content_text and not ev.content_text.startswith("["):
+            video_content = ev.content_text
+
+    # Build content for LLM: prefer uploaded transcript; supplement with video transcription.
+    if transcript_content and video_content:
+        content_text = (
+            f"VIDEO TRANSCRIPT:\n{video_content}\n\n"
+            f"UPLOADED TRANSCRIPT:\n{transcript_content}"
+        )
+    elif transcript_content:
+        content_text = transcript_content
+    elif video_content:
+        content_text = video_content
 
     # Final fallback: raw inline text (used when source_types is empty or unknown).
     # NOTE: _transcript_text_inline is intentionally ephemeral (set by the worker

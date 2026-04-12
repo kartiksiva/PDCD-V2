@@ -6,6 +6,7 @@ import json
 import os
 import pathlib
 import sys
+import importlib
 from typing import Any, Dict
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
@@ -98,11 +99,10 @@ def test_extraction_agent_scenario_a(monkeypatch):
 
 
 def test_extraction_agent_no_transcript_graceful():
-    """Extraction agent returns empty evidence and cost=0 when no transcript is available."""
+    """Extraction agent returns empty evidence and cost=0 when no supported content is available."""
     from app.agents.extraction import run_extraction
 
-    job = _make_job(has_transcript=False)
-    # No _transcript_text_inline set
+    job = _make_job(has_video=False, has_transcript=False)
 
     cost = run_extraction(job, _balanced_profile())
 
@@ -183,6 +183,24 @@ def test_processing_agent_populates_draft(monkeypatch):
         assert key in pdd, f"PDD missing key: {key}"
     assert isinstance(job["draft"].get("sipoc"), list)
     assert cost >= 0.0
+
+
+def test_processing_agent_sipoc_rows_have_anchors(monkeypatch):
+    from app.agents.processing import run_processing
+
+    expected = _load_expected("scenario_a")
+    job = _make_job()
+    job["extracted_evidence"] = expected["extracted_evidence"]
+
+    with patch(
+        "app.agents.processing._call_processing",
+        side_effect=_async_sk_response(json.dumps(expected["draft"]), 100, 200),
+    ):
+        run_processing(job, _balanced_profile())
+
+    for row in job["draft"]["sipoc"]:
+        assert len(row["step_anchor"]) >= 1
+        assert row["source_anchor"] != ""
 
 
 def test_processing_agent_sets_defaults_on_minimal_response(monkeypatch):
@@ -435,6 +453,46 @@ def test_load_transcript_text_returns_none_when_no_transcript():
     assert result is None
 
 
+def test_normalize_input_video_only(monkeypatch):
+    from app.agents.extraction import _normalize_input
+
+    job = _make_job(has_video=True, has_audio=True, has_transcript=False)
+    job["input_manifest"]["video"]["storage_key"] = "/tmp/demo.mp4"
+
+    with patch(
+        "app.agents.adapters.video.transcribe_audio_blob",
+        return_value=(
+            "WEBVTT\n\n00:00:00.000 --> 00:00:03.000\nFinance Analyst: Open SAP.\n"
+        ),
+    ):
+        content_text, manifests = _normalize_input(job)
+
+    assert content_text.startswith("WEBVTT")
+    assert any(m["source_type"] == "video" for m in manifests)
+
+
+def test_normalize_input_video_and_transcript(monkeypatch):
+    from app.agents.extraction import _normalize_input
+
+    transcript = _load_fixture("scenario_a", "transcript.vtt")
+    job = _make_job(has_video=True, has_audio=True, has_transcript=True)
+    job["_transcript_text_inline"] = transcript
+    job["input_manifest"]["video"]["storage_key"] = "/tmp/demo.mp4"
+
+    with patch(
+        "app.agents.adapters.video.transcribe_audio_blob",
+        return_value=(
+            "WEBVTT\n\n00:00:00.000 --> 00:00:03.000\nFinance Analyst: Open SAP.\n"
+        ),
+    ):
+        content_text, manifests = _normalize_input(job)
+
+    assert content_text.startswith("VIDEO TRANSCRIPT:\nWEBVTT")
+    assert "\n\nUPLOADED TRANSCRIPT:\n" in content_text
+    assert any(m["source_type"] == "transcript" for m in manifests)
+    assert any(m["source_type"] == "video" for m in manifests)
+
+
 # ---------------------------------------------------------------------------
 # Anchor alignment tests
 # ---------------------------------------------------------------------------
@@ -618,6 +676,93 @@ def test_evidence_strength_degrades_on_low_confidence():
     from app.agents.evidence import compute_evidence_strength
     items = [{"confidence": 0.40}, {"confidence": 0.35}]
     assert compute_evidence_strength(True, True, True, evidence_items=items) == "medium"
+
+
+def test_text_similarity_score_identical():
+    from app.agents.alignment import _text_similarity_score
+
+    score = _text_similarity_score("Approve invoice in SAP", "Approve invoice in SAP")
+
+    assert score == 1.0
+
+
+def test_text_similarity_score_match():
+    from app.agents.alignment import _text_similarity_score
+
+    score = _text_similarity_score(
+        "Finance Analyst opens SAP and routes invoice for approval",
+        "The finance analyst opens sap then routes the invoice for approval",
+    )
+
+    assert score >= 0.65
+
+
+def test_text_similarity_score_mismatch():
+    from app.agents.alignment import _text_similarity_score
+
+    score = _text_similarity_score(
+        "Approve vendor invoice in SAP and schedule payment",
+        "Troubleshoot warehouse barcode scanner and reset mobile device",
+    )
+
+    assert score <= 0.3
+
+
+def test_run_anchor_alignment_uses_text_similarity_when_video_transcript_present():
+    from app.agents.alignment import run_anchor_alignment
+
+    transcript = _load_fixture("scenario_a", "transcript.vtt")
+    job = _make_job()
+    job["_transcript_text_inline"] = transcript
+    job["_video_transcript_inline"] = transcript
+    job["extracted_evidence"] = {
+        "evidence_items": [
+            {"id": "ev-01", "summary": "test", "anchor": "00:00:12-00:00:28", "confidence": 0.9}
+        ],
+        "speakers_detected": [],
+        "process_domain": "test",
+        "transcript_quality": "high",
+    }
+
+    run_anchor_alignment(job)
+
+    summary = job["agent_signals"]["anchor_alignment_summary"]
+    assert summary["consistency_method"] == "text_similarity"
+    assert summary["similarity_score"] >= 0.99
+
+
+def test_anchor_alignment_fallback_uses_configurable_inconclusive_threshold(monkeypatch):
+    import app.agents.alignment as alignment
+
+    monkeypatch.setenv("PFCD_CONSISTENCY_INCONCLUSIVE_THRESHOLD", "0.60")
+    alignment = importlib.reload(alignment)
+    try:
+        transcript = _load_fixture("scenario_a", "transcript.vtt")
+        job = _make_job()
+        job["_transcript_text_inline"] = transcript
+        job["extracted_evidence"] = {
+            "evidence_items": [
+                {"id": "ev-01", "summary": "test", "anchor": "00:00:12-00:00:28", "confidence": 0.9},
+            ],
+            "speakers_detected": [],
+            "process_domain": "test",
+            "transcript_quality": "high",
+        }
+        monkeypatch.setattr(
+            alignment,
+            "_consistency_score_from_anchors",
+            lambda evidence_items, window_sec: (0.5, 1, 2),
+        )
+
+        alignment.run_anchor_alignment(job)
+
+        summary = job["agent_signals"]["anchor_alignment_summary"]
+        assert summary["consistency_method"] == "anchor_validity_proxy"
+        assert summary["similarity_score"] == 0.5
+        assert summary["verdict"] == "suspected_mismatch"
+    finally:
+        monkeypatch.delenv("PFCD_CONSISTENCY_INCONCLUSIVE_THRESHOLD", raising=False)
+        importlib.reload(alignment)
 
 
 def test_evidence_strength_medium_degrades_on_low_confidence():

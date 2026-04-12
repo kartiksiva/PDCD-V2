@@ -79,7 +79,8 @@ def test_worker_extracting_phase(tmp_path, monkeypatch):
     worker.orchestrator.enqueue.side_effect = lambda phase, msg, **kw: enqueued.append((phase, msg))
 
     message = _make_message(job_id, "extracting")
-    worker._run_phase(job, message)
+    with patch("app.workers.runner.run_extraction", return_value=0.0):
+        worker._run_phase(job, message)
 
     updated = repository.get_job(job_id)
     assert updated["last_completed_phase"] == "extracting"

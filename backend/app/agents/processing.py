@@ -48,13 +48,13 @@ _SIPOC_SCHEMA = """\
 [
   {
     "step_anchor": ["step-01"],
-    "source_anchor": "HH:MM:SS-HH:MM:SS or section label",
+    "source_anchor": "00:01:23-00:02:45",
     "supplier": "string",
     "input": "string",
     "process_step": "string",
     "output": "string",
     "customer": "string",
-    "anchor_missing_reason": "string or null"
+    "anchor_missing_reason": null
   }
 ]"""
 
@@ -84,7 +84,10 @@ Generate a complete PDD and SIPOC from the evidence above. Return a JSON object 
 Rules:
 - Every evidence item must map to at least one PDD step
 - Every PDD step must appear in at least one SIPOC row
-- source_anchor must reference timestamps from evidence; set anchor_missing_reason if unavailable
+- step_anchor MUST be a non-empty JSON array with at least one PDD step ID from the steps list above (e.g. ["step-01"]). Never leave step_anchor as [] or null.
+- source_anchor MUST be a non-empty string copied verbatim from an evidence item anchor value above (timestamp range "HH:MM:SS-HH:MM:SS" or section label). Never leave source_anchor as "" or null.
+- If the closest available anchor is approximate, still use it and explain in anchor_missing_reason. Do not leave source_anchor blank as a way of signalling uncertainty.
+- anchor_missing_reason must be null when both anchors are present; a short explanation string when source_anchor is approximate or step_anchor coverage is partial.
 - confidence values are floats between 0.0 and 1.0
 """
 
@@ -108,18 +111,19 @@ def _extract_usage_tokens(metadata: Dict[str, Any]) -> tuple[int, int]:
 
 
 async def _call_processing(deployment: str, system_prompt: str, user_content: str):
-    """Invoke Azure OpenAI via Semantic Kernel; returns (raw_json, prompt_tokens, completion_tokens)."""
-    from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion, AzureChatPromptExecutionSettings
+    """Invoke chat completion via Semantic Kernel; returns (raw_json, prompt_tokens, completion_tokens)."""
+    from semantic_kernel.connectors.ai.open_ai import OpenAIChatPromptExecutionSettings
     from semantic_kernel.contents import ChatHistory
-    from app.agents.kernel_factory import get_kernel
+    from app.agents.kernel_factory import get_chat_service, get_kernel
+
     kernel = get_kernel(deployment)
     chat = ChatHistory()
     chat.add_system_message(system_prompt)
     chat.add_user_message(user_content)
-    settings = AzureChatPromptExecutionSettings(
+    settings = OpenAIChatPromptExecutionSettings(
         response_format={"type": "json_object"}
     )
-    svc = kernel.get_service(type=AzureChatCompletion)  # type: ignore[arg-type]
+    svc = get_chat_service(deployment)
     result = await svc.get_chat_message_content(chat, settings, kernel=kernel)
     prompt_tokens, completion_tokens = _extract_usage_tokens(result.metadata)
     return (

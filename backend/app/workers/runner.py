@@ -177,6 +177,7 @@ class Worker:
         if self.phase == "extracting":
             # Keep the persisted payload deterministic: drop ephemeral working data.
             job.pop("_transcript_text_inline", None)
+            job.pop("_video_transcript_inline", None)
         self.repo.upsert_job(job_id, job)
         logger.info("Completed phase %s for job %s", self.phase, job_id)
 
@@ -228,6 +229,7 @@ class Worker:
                 job["updated_at"] = _utc_now()
                 if self.phase == "extracting":
                     job.pop("_transcript_text_inline", None)
+                    job.pop("_video_transcript_inline", None)
                 self.repo.upsert_job(job_id, job)
                 self.repo.append_job_event(
                     job_id,

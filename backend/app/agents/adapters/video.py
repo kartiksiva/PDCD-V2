@@ -1,4 +1,9 @@
-"""VideoAdapter — normalizes video source metadata into canonical evidence."""
+"""VideoAdapter — normalizes video source metadata into canonical evidence.
+
+When a video transcript is successfully generated, the raw VTT text is stored in
+the in-memory job field ``_video_transcript_inline`` for downstream extraction
+and alignment. That field is ephemeral and must be removed before persistence.
+"""
 
 from __future__ import annotations
 
@@ -10,8 +15,18 @@ from app.agents.adapters.base import (
     FactItem,
     IProcessEvidenceAdapter,
 )
+from app.agents.alignment import parse_vtt_cues
+from app.agents.transcription import transcribe_audio_blob
 
 _VIDEO_MIME_PREFIXES = ("video/",)
+
+
+def _format_seconds(total_seconds: float) -> str:
+    total = max(int(total_seconds), 0)
+    hours = total // 3600
+    minutes = (total % 3600) // 60
+    seconds = total % 60
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 class VideoAdapter(IProcessEvidenceAdapter):
@@ -80,6 +95,30 @@ class VideoAdapter(IProcessEvidenceAdapter):
         video_meta = manifest.get("video") or {}
         has_audio = bool(video_meta.get("audio_detected") or video_meta.get("audio_declared"))
         frame_policy = video_meta.get("frame_extraction_policy") or {}
+
+        storage_key = video_meta.get("storage_key")
+
+        if has_audio and storage_key:
+            transcript_text = transcribe_audio_blob(storage_key)
+            if transcript_text and not transcript_text.startswith("[transcription"):
+                job["_video_transcript_inline"] = transcript_text
+                anchors = [
+                    f"{_format_seconds(start)}-{_format_seconds(end)}"
+                    for start, end in parse_vtt_cues(transcript_text)
+                ]
+                return EvidenceObject(
+                    source_type="video",
+                    document_type="video",
+                    content_text=transcript_text,
+                    anchors=anchors,
+                    confidence=0.85,
+                    metadata={
+                        "has_audio": has_audio,
+                        "frame_policy": frame_policy,
+                        "duration_hint_sec": manifest.get("duration_hint_sec"),
+                        "storage_key": storage_key,
+                    },
+                )
 
         # Build policy description
         interval = frame_policy.get("sample_interval_sec", 5)
@@ -161,9 +200,12 @@ class VideoAdapter(IProcessEvidenceAdapter):
                 f"OCR={'on' if frame_policy.get('ocr_enabled', True) else 'off'}."
             )
 
-        notes.append(
-            "Azure Vision / Speech integration pending — frame content is not "
-            "yet analyzed. Evidence strength is limited to manifest metadata."
-        )
+        if evidence_obj.metadata.get("storage_key"):
+            notes.append("Audio transcription complete. Frame-level visual analysis pending.")
+        else:
+            notes.append(
+                "Azure Vision / Speech integration pending — frame content is not "
+                "yet analyzed. Evidence strength is limited to manifest metadata."
+            )
 
         return notes

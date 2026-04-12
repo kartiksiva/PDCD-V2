@@ -1,4 +1,4 @@
-"""Semantic Kernel factory: builds a Kernel wired to Azure OpenAI via DefaultAzureCredential."""
+"""Semantic Kernel factory for Azure OpenAI and direct OpenAI providers."""
 
 from __future__ import annotations
 
@@ -6,13 +6,15 @@ import logging
 import os
 from functools import lru_cache
 
+from app.job_logic import _provider_name
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_AZURE_OPENAI_API_VERSION = "2024-10-21"
 
 
 @lru_cache(maxsize=8)
-def _cached_kernel(endpoint: str, deployment: str, api_version: str):
+def _cached_kernel_azure(endpoint: str, deployment: str, api_version: str):
     from azure.identity import DefaultAzureCredential, get_bearer_token_provider
     from semantic_kernel import Kernel
     from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion
@@ -33,7 +35,25 @@ def _cached_kernel(endpoint: str, deployment: str, api_version: str):
     return kernel
 
 
+@lru_cache(maxsize=8)
+def _cached_kernel_openai(api_key: str, model: str):
+    from semantic_kernel import Kernel
+    from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion
+
+    kernel = Kernel()
+    kernel.add_service(OpenAIChatCompletion(ai_model_id=model, api_key=api_key))
+    return kernel
+
+
 def get_kernel(deployment: str):
+    provider = _provider_name()
+    if provider == "openai":
+        logger.info(
+            "Initializing Semantic Kernel OpenAIChatCompletion with model=%s",
+            deployment,
+        )
+        return _cached_kernel_openai(os.environ["OPENAI_API_KEY"], deployment)
+
     endpoint = os.environ["AZURE_OPENAI_ENDPOINT"]
     api_version = os.environ.get("AZURE_OPENAI_API_VERSION", _DEFAULT_AZURE_OPENAI_API_VERSION)
     logger.info(
@@ -42,4 +62,14 @@ def get_kernel(deployment: str):
         deployment,
         api_version,
     )
-    return _cached_kernel(endpoint, deployment, api_version)
+    return _cached_kernel_azure(endpoint, deployment, api_version)
+
+
+def get_chat_service(deployment: str):
+    """Return the chat completion service for the active provider."""
+    from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion, OpenAIChatCompletion
+
+    kernel = get_kernel(deployment)
+    if _provider_name() == "openai":
+        return kernel.get_service(type=OpenAIChatCompletion)  # type: ignore[arg-type]
+    return kernel.get_service(type=AzureChatCompletion)  # type: ignore[arg-type]

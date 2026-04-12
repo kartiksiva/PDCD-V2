@@ -15,6 +15,7 @@ from app.job_logic import (
 
 
 def test_profile_config_prefers_azure_openai_deployment_name(monkeypatch):
+    monkeypatch.delenv("PFCD_PROVIDER", raising=False)
     monkeypatch.setenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", "gpt-4.1")
     monkeypatch.delenv("AZURE_OPENAI_DEPLOYMENT_BALANCED", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_DEPLOYMENT_QUALITY", raising=False)
@@ -29,6 +30,7 @@ def test_profile_config_prefers_azure_openai_deployment_name(monkeypatch):
 
 
 def test_profile_config_falls_back_to_azure_openai_deployment(monkeypatch):
+    monkeypatch.delenv("PFCD_PROVIDER", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_DEPLOYMENT_BALANCED", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_DEPLOYMENT_QUALITY", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", raising=False)
@@ -40,6 +42,7 @@ def test_profile_config_falls_back_to_azure_openai_deployment(monkeypatch):
 
 
 def test_profile_config_falls_back_to_deployment_name_alias(monkeypatch):
+    monkeypatch.delenv("PFCD_PROVIDER", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_DEPLOYMENT_BALANCED", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_DEPLOYMENT_QUALITY", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", raising=False)
@@ -51,6 +54,7 @@ def test_profile_config_falls_back_to_deployment_name_alias(monkeypatch):
 
 
 def test_profile_config_prefers_profile_specific_env(monkeypatch):
+    monkeypatch.delenv("PFCD_PROVIDER", raising=False)
     monkeypatch.setenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", "generic-deployment")
     monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT_BALANCED", "balanced-deployment")
     monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT_QUALITY", "quality-deployment")
@@ -63,6 +67,7 @@ def test_profile_config_prefers_profile_specific_env(monkeypatch):
 
 
 def test_profile_config_raises_when_deployment_not_configured(monkeypatch):
+    monkeypatch.delenv("PFCD_PROVIDER", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_DEPLOYMENT_BALANCED", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_DEPLOYMENT_QUALITY", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", raising=False)
@@ -71,6 +76,35 @@ def test_profile_config_raises_when_deployment_not_configured(monkeypatch):
 
     with pytest.raises(RuntimeError, match="AZURE_OPENAI_CHAT_DEPLOYMENT_NAME"):
         profile_config(Profile.BALANCED)
+
+
+def test_profile_config_openai_provider_uses_openai_chat_models(monkeypatch):
+    monkeypatch.setenv("PFCD_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_CHAT_MODEL_BALANCED", "gpt-4o-mini")
+    monkeypatch.setenv("OPENAI_CHAT_MODEL_QUALITY", "gpt-4o")
+
+    balanced = profile_config(Profile.BALANCED)
+    quality = profile_config(Profile.QUALITY)
+
+    assert balanced["provider"] == "openai"
+    assert balanced["model"] == "gpt-4o-mini"
+    assert quality["provider"] == "openai"
+    assert quality["model"] == "gpt-4o"
+
+
+def test_default_job_payload_uses_provider_effective_from_profile(monkeypatch):
+    monkeypatch.setenv("PFCD_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_CHAT_MODEL_BALANCED", "gpt-4o-mini")
+
+    job = default_job_payload(
+        JobCreateRequest(
+            profile=Profile.BALANCED,
+            input_files=[InputFile(source_type="video", size_bytes=100)],
+        )
+    )
+
+    assert job["provider_effective"]["provider"] == "openai"
+    assert job["provider_effective"]["deployment"] == "gpt-4o-mini"
 
 
 def test_cost_cap_warn_only_adds_warning_flag(monkeypatch):

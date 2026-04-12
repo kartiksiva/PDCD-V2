@@ -359,6 +359,23 @@ def test_video_adapter_normalize_metadata_includes_audio_flag():
     assert ev.metadata.get("has_audio") is True
 
 
+def test_video_adapter_normalize_with_transcription(monkeypatch):
+    from app.agents.adapters.video import VideoAdapter
+
+    adapter = VideoAdapter()
+    job = _make_job(has_video=True, has_audio=True, has_transcript=False)
+    job["input_manifest"]["video"]["storage_key"] = "/tmp/demo.mp4"
+    vtt_text = "WEBVTT\n\n00:00:00.000 --> 00:00:03.000\nFinance Analyst: Open SAP.\n"
+
+    with patch("app.agents.adapters.video.transcribe_audio_blob", return_value=vtt_text):
+        ev = adapter.normalize(job)
+
+    assert ev.content_text == vtt_text
+    assert ev.confidence == 0.85
+    assert ev.anchors == ["00:00:00-00:00:03"]
+    assert job["_video_transcript_inline"] == vtt_text
+
+
 # ---------------------------------------------------------------------------
 # VideoAdapter — render_review_notes()
 # ---------------------------------------------------------------------------
@@ -387,6 +404,22 @@ def test_video_adapter_render_review_notes_without_audio():
     notes = adapter.render_review_notes(ev)
 
     assert any("No audio" in n or "frame" in n.lower() for n in notes)
+
+
+def test_video_adapter_render_review_notes_with_transcription_complete_note():
+    from app.agents.adapters.video import VideoAdapter
+
+    adapter = VideoAdapter()
+    job = _make_job(has_video=True, has_audio=True, has_transcript=False)
+    job["input_manifest"]["video"]["storage_key"] = "/tmp/demo.mp4"
+    vtt_text = "WEBVTT\n\n00:00:00.000 --> 00:00:03.000\nFinance Analyst: Open SAP.\n"
+
+    with patch("app.agents.adapters.video.transcribe_audio_blob", return_value=vtt_text):
+        ev = adapter.normalize(job)
+
+    notes = adapter.render_review_notes(ev)
+
+    assert "Audio transcription complete. Frame-level visual analysis pending." in notes
 
 
 # ---------------------------------------------------------------------------
@@ -519,8 +552,7 @@ def test_extraction_document_manifests_populated_on_graceful_degradation():
     """document_type_manifests is set even when no content is available."""
     from app.agents.extraction import run_extraction
 
-    job = _make_job(has_transcript=False)
-    # No _transcript_text_inline
+    job = _make_job(has_video=False, has_transcript=False)
 
     run_extraction(job, {"profile": "balanced", "model": "gpt-4o-mini", "cost_cap_usd": 4.0})
 

@@ -1,26 +1,22 @@
-"""Anchor alignment engine: validates LLM-extracted anchor strings against transcript cues.
+"""Anchor alignment engine: validates anchors and computes transcript/media consistency.
 
 PRD §8.5 requires transcript/media consistency via "first N seconds overlap and
-token/sequence similarity on normalized text."  Full implementation requires
-Azure Speech to transcribe video audio into comparable text — that path is blocked
-until VideoAdapter completes its Azure Vision/Speech integration.
+token/sequence similarity on normalized text."
 
-Current approximation (used until Azure Speech is available):
-  - For VTT transcripts: compute the valid-anchor ratio among evidence items whose
-    timestamp anchors fall within the first CONSISTENCY_WINDOW_SEC of the recording.
-    This exercises the "first N seconds" scope specified by the PRD and produces a
-    numeric similarity_score (0.0–1.0) written to transcript_media_consistency.
-  - For plain-text transcripts: fall back to full-corpus section-label validity ratio;
-    similarity_score is None (no timestamps to window on).
-
-When Azure Speech integration is complete, replace _consistency_score_from_anchors
-with a function that tokenises both the audio-derived text and the uploaded transcript
-text for the first N seconds and returns the Jaccard/BLEU score.
+Current behavior:
+  - Anchor validation still runs against transcript cues/section labels and lowers
+    evidence-item confidence when anchors are invalid.
+  - The existing first-N-seconds anchor-validity proxy remains as a fallback score.
+  - When both uploaded transcript text and a real video transcript are available,
+    text similarity overrides the proxy and becomes the authoritative consistency
+    signal written to transcript_media_consistency.
 """
 
 from __future__ import annotations
 
+import os
 import re
+from difflib import SequenceMatcher
 from typing import Any
 
 from app.agents.anchor_utils import classify_anchor
@@ -34,9 +30,25 @@ _TS_RANGE_RE = re.compile(
 _SECTION_HEADING_RE = re.compile(
     r"^Section\s+\d+[:\.\s].+", re.MULTILINE
 )
+_SPEAKER_LABEL_RE = re.compile(
+    r"^(?:\*{0,2})?(?:[A-Z][A-Za-z'`.\-]+(?:\s+[A-Z][A-Za-z'`.&()/:\-]+){0,5})"
+    r"(?:\s*\([^)]+\))?\s*:\s*",
+    re.MULTILINE,
+)
+_VTT_CUE_LINE_RE = re.compile(
+    r"^(?:WEBVTT|\d+|\d{2,}:\d{2}(?::\d{2})?\.\d{3}\s+-->\s+.*)$",
+    re.IGNORECASE | re.MULTILINE,
+)
 _TOLERANCE_SEC = 2.0
 # PRD §8.5 "first N seconds" window for consistency scoring.
 CONSISTENCY_WINDOW_SEC = 60.0
+_CONSISTENCY_MATCH_THRESHOLD = float(os.environ.get("PFCD_CONSISTENCY_MATCH_THRESHOLD", "0.80"))
+_CONSISTENCY_INCONCLUSIVE_THRESHOLD = float(
+    os.environ.get("PFCD_CONSISTENCY_INCONCLUSIVE_THRESHOLD", "0.50")
+)
+_CONSISTENCY_MISMATCH_THRESHOLD = float(
+    os.environ.get("PFCD_CONSISTENCY_MISMATCH_THRESHOLD", "0.30")
+)
 
 
 def _ts_to_sec(ts: str) -> float:
@@ -66,6 +78,34 @@ def parse_section_labels(transcript_text: str) -> list[str]:
         match.group(0).strip().lower()
         for match in _SECTION_HEADING_RE.finditer(transcript_text)
     ]
+
+
+def _normalize_for_similarity(text: str, max_chars: int = 2000) -> str:
+    """Strip VTT noise and speaker labels; lowercase; truncate."""
+    cleaned = _VTT_CUE_LINE_RE.sub("", str(text or ""))
+    cleaned = _SPEAKER_LABEL_RE.sub("", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip().lower()
+    if len(cleaned) > max_chars:
+        cleaned = cleaned[:max_chars].rsplit(" ", 1)[0].strip()
+    return cleaned
+
+
+def _tokenize(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", text))
+
+
+def _text_similarity_score(text_a: str, text_b: str) -> float:
+    """Jaccard token overlap (0.4) + SequenceMatcher ratio (0.6). Returns 0.0-1.0."""
+    a = _normalize_for_similarity(text_a)
+    b = _normalize_for_similarity(text_b, max_chars=max(len(a), 1))
+    if not a or not b:
+        return 0.0
+    tokens_a, tokens_b = _tokenize(a), _tokenize(b)
+    if not tokens_a or not tokens_b:
+        return 0.0
+    jaccard = len(tokens_a & tokens_b) / max(len(tokens_a | tokens_b), 1)
+    seq = SequenceMatcher(a=a, b=b).ratio()
+    return round(jaccard * 0.4 + seq * 0.6, 3)
 
 
 def normalize_timestamp_anchor(anchor: str) -> str | None:
@@ -281,18 +321,19 @@ def run_anchor_alignment(job: dict[str, Any]) -> None:
                 current = float(item.get("confidence", 1.0))
                 item["confidence"] = max(0.0, round(current - penalty, 4))
 
-    # PRD §8.5: derive verdict + similarity_score from the first-N-seconds window.
-    # _consistency_score_from_anchors reads anchor_alignment results written above.
+    # PRD §8.5 fallback: derive verdict + similarity_score from the first-N-seconds
+    # anchor-validity window when text similarity is unavailable.
     similarity_score, win_valid, win_total = _consistency_score_from_anchors(
         evidence_items, CONSISTENCY_WINDOW_SEC
     )
+    consistency_method = "anchor_validity_proxy"
 
     if similarity_score is None:
         # No timestamp anchors — section-label-only transcript; can't score.
         verdict = "inconclusive"
-    elif similarity_score >= 0.8:
+    elif similarity_score >= _CONSISTENCY_MATCH_THRESHOLD:
         verdict = "match"
-    elif similarity_score >= 0.5:
+    elif similarity_score >= _CONSISTENCY_INCONCLUSIVE_THRESHOLD:
         verdict = "inconclusive"
     else:
         verdict = "suspected_mismatch"
@@ -300,6 +341,19 @@ def run_anchor_alignment(job: dict[str, Any]) -> None:
     # PRD §8.5: consistency is only meaningful when both media and transcript exist.
     # For transcript-only jobs leave the seeded "inconclusive" intact.
     has_media = job.get("has_video") or job.get("has_audio")
+    video_transcript: str = job.get("_video_transcript_inline") or ""
+    uploaded_transcript: str = job.get("_transcript_text_inline") or transcript_text
+
+    if has_media and video_transcript and uploaded_transcript:
+        similarity_score = _text_similarity_score(video_transcript, uploaded_transcript)
+        if similarity_score >= _CONSISTENCY_MATCH_THRESHOLD:
+            verdict = "match"
+        elif similarity_score <= _CONSISTENCY_MISMATCH_THRESHOLD:
+            verdict = "suspected_mismatch"
+        else:
+            verdict = "inconclusive"
+        consistency_method = "text_similarity"
+
     if has_media:
         job["transcript_media_consistency"]["verdict"] = verdict
         job["transcript_media_consistency"]["similarity_score"] = similarity_score
@@ -313,8 +367,5 @@ def run_anchor_alignment(job: dict[str, Any]) -> None:
         "similarity_score": similarity_score if has_media else None,
         "window_sec": CONSISTENCY_WINDOW_SEC,
         "window_anchors_checked": win_total,
-        "consistency_method": (
-            "anchor_validity_proxy"
-            # Replace with "token_similarity" once Azure Speech integration is complete.
-        ),
+        "consistency_method": consistency_method,
     }

@@ -24,11 +24,12 @@ PDCD-V2/
 │   │   │   ├── alignment.py       # Anchor validation engine (VTT + section label)
 │   │   │   ├── evidence.py        # Evidence strength computation
 │   │   │   ├── extraction.py      # SK-based extraction agent (uses AdapterRegistry)
-│   │   │   ├── kernel_factory.py  # SK Kernel factory (DefaultAzureCredential)
+│   │   │   ├── kernel_factory.py  # SK Kernel factory (Azure OpenAI + direct OpenAI)
 │   │   │   ├── openai_client.py   # (legacy — kept for reference, unused)
 │   │   │   ├── processing.py      # SK-based processing agent
 │   │   │   ├── reviewing.py       # Pure-Python reviewing agent (uses SIPOCValidator)
 │   │   │   ├── sipoc_validator.py # SIPOC schema validation (PRD §8.8 + §10)
+│   │   │   ├── transcription.py   # Whisper transcription helper for local media blobs
 │   │   │   └── adapters/
 │   │   │       ├── __init__.py
 │   │   │       ├── base.py        # IProcessEvidenceAdapter ABC + dataclasses
@@ -127,11 +128,20 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 | `PFCD_WORKER_ROLE` | Worker phase (`extracting`/`processing`/`reviewing`) | — |
 | `PFCD_CLEANUP_INTERVAL_SECONDS` | Cleanup worker poll interval | `300` |
 | `PFCD_API_KEY` | Static API key for `X-API-Key` header | `""` (auth disabled if unset) |
+| `PFCD_PROVIDER` | Chat/transcription provider (`azure_openai` or `openai`) | `azure_openai` |
 | `AZURE_OPENAI_ENDPOINT` | Azure OpenAI REST endpoint | required for agents |
 | `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME` | Chat model deployment name (canonical) | required for agents |
 | `AZURE_OPENAI_API_VERSION` | Azure OpenAI API version for Semantic Kernel | `2024-10-21` |
+| `AZURE_OPENAI_WHISPER_DEPLOYMENT` | Azure OpenAI Whisper deployment name | `whisper` |
 | `AZURE_OPENAI_DEPLOYMENT_NAME` | Legacy deployment alias (deprecated) | fallback only |
 | `AZURE_OPENAI_DEPLOYMENT` | Legacy deployment alias (deprecated) | fallback only |
+| `OPENAI_API_KEY` | Direct OpenAI API key | required when `PFCD_PROVIDER=openai` |
+| `OPENAI_CHAT_MODEL_BALANCED` | Direct OpenAI balanced chat model | `gpt-4o-mini` |
+| `OPENAI_CHAT_MODEL_QUALITY` | Direct OpenAI quality chat model | `gpt-4o` |
+| `OPENAI_TRANSCRIPTION_MODEL` | Direct OpenAI transcription model | `whisper-1` |
+| `PFCD_CONSISTENCY_MATCH_THRESHOLD` | Transcript/media consistency threshold for `match` | `0.80` |
+| `PFCD_CONSISTENCY_INCONCLUSIVE_THRESHOLD` | Anchor-fallback consistency threshold for `inconclusive` | `0.50` |
+| `PFCD_CONSISTENCY_MISMATCH_THRESHOLD` | Transcript/media consistency threshold for `suspected_mismatch` | `0.30` |
 
 ### Starting Workers (Service Bus Phases)
 
@@ -233,8 +243,15 @@ The script is idempotent — safe to re-run.
 **File:** `.github/workflows/deploy-workers.yml`
 
 - Triggers on push to `main` with changes under `backend/**`
-- Builds one zip artifact then deploys in parallel to `pfcd-dev-worker-extracting`, `pfcd-dev-worker-processing`, `pfcd-dev-worker-reviewing`
+- Builds one worker zip, uploads it to the storage account `scratch` container, writes a SAS-backed package URL artifact, then deploys in parallel to `pfcd-dev-worker-extracting`, `pfcd-dev-worker-processing`, `pfcd-dev-worker-reviewing` via `WEBSITE_RUN_FROM_PACKAGE`
 - Required secrets: `AZURE_CREDENTIALS`, `AZURE_RESOURCE_GROUP`, `AZURE_WORKER_EXTRACTING_NAME`, `AZURE_WORKER_PROCESSING_NAME`, `AZURE_WORKER_REVIEWING_NAME`
+- Required GitHub Actions variable: `AZURE_STORAGE_ACCOUNT`
+
+### GitHub Variables
+
+| Variable | Used by | Purpose |
+|----------|---------|---------|
+| `AZURE_STORAGE_ACCOUNT` | `deploy-workers.yml` | Storage account resource name used to upload `worker.zip` to `scratch` and generate the `WEBSITE_RUN_FROM_PACKAGE` SAS URL |
 
 ---
 
@@ -260,7 +277,8 @@ The script is idempotent — safe to re-run.
 | `tests/unit/test_agents.py` | 61-test suite covering all agent modules |
 | `tests/unit/test_adapters.py` | 36-test suite for adapters and extraction integration |
 | `tests/unit/test_sipoc_validator.py` | 21-test suite for SIPOC validation and reviewing integration |
-| `backend/app/agents/kernel_factory.py` | SK Kernel factory — change auth or model deployment here |
+| `backend/app/agents/kernel_factory.py` | SK Kernel factory — change provider auth or chat model routing here |
+| `backend/app/agents/transcription.py` | Whisper transcription helper for local video/audio blobs |
 | `backend/app/agents/extraction.py` | `_call_extraction` async + `run_extraction` + `_normalize_input` (adapter-backed) |
 | `backend/app/agents/processing.py` | `_call_processing` async + `run_processing` SK wrapper |
 | `backend/app/agents/alignment.py` | `run_anchor_alignment` — validates VTT/section-label anchors post-extraction |

@@ -260,6 +260,92 @@ Resolved issues from Codex + Gemini review. No new features — all changes are 
 
 ---
 
+## Section 8: Provider Flex + Video Transcription + Real Similarity (2026-04-13)
+
+Implemented the full Codex handoff chain: prompt anchoring fix, provider routing flexibility, Whisper-backed video transcription, and transcript/media text similarity.
+
+### Processing Prompt Anchors
+
+- `processing.py` SIPOC schema now uses concrete anchor examples instead of abstract placeholders.
+- Prompt rules now explicitly require non-empty `step_anchor`, verbatim non-empty `source_anchor`, and correct `anchor_missing_reason` behavior.
+- Added unit coverage asserting all mocked SIPOC rows contain anchors so prompt regressions hit tests before review-time quality gates.
+
+### Provider Routing
+
+- `kernel_factory.py` now supports both `azure_openai` (default) and direct `openai` via `PFCD_PROVIDER`.
+- Added `get_chat_service(deployment)` so extraction/processing no longer hard-code Azure service lookup.
+- `job_logic.py` now resolves provider-specific chat models and writes the active provider into `provider_effective`.
+- `REFERENCE.md` env var table now documents `PFCD_PROVIDER`, direct OpenAI chat model vars, Whisper deployment/model vars, and the new transcription helper module.
+
+### Video Transcription + Extraction Input
+
+- Added `agents/transcription.py` with synchronous Whisper helpers for Azure OpenAI and direct OpenAI.
+- `VideoAdapter.normalize()` now upgrades to real VTT content when `storage_key` is available and transcription succeeds; it also writes `_video_transcript_inline` as an ephemeral worker-only field and derives timestamp anchors from VTT cues.
+- Extraction input normalization now supports:
+  - uploaded transcript only
+  - video transcript only
+  - combined video transcript + uploaded transcript with explicit labels for cross-reference
+- Worker extracting-phase cleanup now removes `_video_transcript_inline` anywhere `_transcript_text_inline` was already being dropped.
+
+### Alignment Similarity
+
+- `alignment.py` keeps the existing anchor-validity proxy as fallback.
+- Added normalized text similarity helpers using token overlap + `SequenceMatcher`.
+- When both uploaded transcript text and video transcript text are present, `run_anchor_alignment(job)` now overwrites the fallback score with real text similarity and records `consistency_method="text_similarity"`.
+
+### Validation
+
+- Added/updated unit coverage in:
+  - `test_agents.py`
+  - `test_adapters.py`
+  - `test_job_logic.py`
+  - `test_kernel_factory.py`
+  - `test_worker.py`
+- Validation run:
+  - `cd backend && .venv/bin/pytest ../tests/unit/test_kernel_factory.py ../tests/unit/test_job_logic.py -v`
+  - `cd backend && .venv/bin/pytest ../tests/unit/test_agents.py ../tests/unit/test_adapters.py -v`
+  - `cd backend && .venv/bin/pytest ../tests/ -q`
+- Result: 243 tests passed.
+
+### Decisions / Notes
+
+- Provider selection is resolved from environment at call time instead of module import time so tests and runtime overrides behave predictably.
+- The extracting worker test now stubs `run_extraction` directly; it no longer relies on missing Azure env vars to avoid entering the chat path.
+- No migration or review-gate logic changes were made beyond the prompt/schema tightening requested in the handoff.
+
+---
+
+## Section 9: Review Cleanup L1/L2/L3 (2026-04-13)
+
+Completed the low-severity follow-up bundle raised during Claude review of Section 8.
+
+### Completed
+
+- Deduplicated `_provider_name()` by importing the shared helper from `job_logic.py` in:
+  - `agents/kernel_factory.py`
+  - `agents/transcription.py`
+- Tightened `VideoAdapter.render_review_notes()` so successful transcription evidence now reports:
+  - `"Audio transcription complete. Frame-level visual analysis pending."`
+- Kept the old "pending" note for metadata-only video fallback paths.
+- Added `_CONSISTENCY_INCONCLUSIVE_THRESHOLD` in `alignment.py` and removed hardcoded fallback verdict thresholds.
+- Documented all three transcript/media consistency env vars in `REFERENCE.md`.
+
+### Validation
+
+- Added unit coverage for:
+  - transcription-complete review notes in `test_adapters.py`
+  - configurable fallback inconclusive threshold behavior in `test_agents.py`
+- Validation run:
+  - `cd backend && .venv/bin/pytest ../tests/unit/test_adapters.py ../tests/unit/test_agents.py -v`
+  - `cd backend && .venv/bin/pytest ../tests/ -q`
+- Result: 245 tests passed.
+
+### Notes
+
+- `VideoAdapter.normalize()` now includes `storage_key` only on the successful transcription path so review-note messaging reflects actual behavior instead of attempted fallback.
+
+---
+
 ## Section 8: Azure End-to-End Deployment (2026-04-07)
 
 Validated full Azure deployment. All four App Services are running and the job pipeline is live. A series of infrastructure bugs were found and fixed during the first real end-to-end run.
@@ -1274,3 +1360,71 @@ Implemented Part 1 of `DEPLOY-FIX2` to reduce worker deployment restarts before 
 ### Remaining work
 
 - Part 2 of `DEPLOY-FIX2` is still pending: move workers to `WEBSITE_RUN_FROM_PACKAGE` so the deployment path no longer depends on Kudu OneDeploy timing
+
+---
+
+## Section 28: Worker Package-URL Deploy (Part 2) (2026-04-12)
+
+Implemented Part 2 of `DEPLOY-FIX2` to remove Kudu OneDeploy from the worker deployment path and switch workers to `WEBSITE_RUN_FROM_PACKAGE`.
+
+### Changes
+
+- `.github/workflows/deploy-workers.yml`
+  - `build` job now logs into Azure, validates the `AZURE_STORAGE_ACCOUNT` GitHub Actions variable, uploads `worker.zip` to the `scratch` container, generates a 4-hour read SAS, and writes the package URL to `package-url.txt`
+  - uploads `package-url.txt` as a new `package-url` workflow artifact
+  - each worker deploy job now downloads `package-url`, reads it into `PACKAGE_URL`, and validates it before deployment
+  - removed all three `azure/webapps-deploy@v3` steps from the worker workflow
+  - each worker deploy now sets `WEBSITE_RUN_FROM_PACKAGE="$PACKAGE_URL"` in the same `az webapp config appsettings set` call as the role/config settings, then forces `az webapp restart`
+  - retained the post-restart settle loop plus running/HTTP readiness verification for extracting, processing, and reviewing
+- `infra/dev-bootstrap.sh`
+  - `ensure_storage_account()` now optionally accepts `SP_CLIENT_ID` and grants that service principal `Storage Blob Data Contributor` on the storage account so CI can upload the package blob
+  - `ensure_app_service()` now grants each worker managed identity `Storage Blob Data Reader` on the storage account in addition to `Key Vault Secrets User`
+- `REFERENCE.md`
+  - documented that `deploy-workers.yml` now deploys through `WEBSITE_RUN_FROM_PACKAGE`
+  - added `AZURE_STORAGE_ACCOUNT` under a new GitHub Actions variables table
+- `infra/README.md`
+  - updated deployment notes to distinguish backend zip deploys from worker package-URL deploys
+  - documented the new worker/storage RBAC expectations and the optional `SP_CLIENT_ID` bootstrap override
+
+### Validation
+
+- ran `python3 - <<'PY'` with `yaml.safe_load()` against `.github/workflows/deploy-workers.yml`
+- ran `bash -n infra/dev-bootstrap.sh`
+- ran `git diff --check -- .github/workflows/deploy-workers.yml infra/dev-bootstrap.sh REFERENCE.md infra/README.md IMPLEMENTATION_SUMMARY.md HANDOVER.md`
+- verified by source inspection that worker deploy jobs no longer reference `azure/webapps-deploy@v3` or mutate startup files during CI
+
+### Open question / residual risk
+
+- `WEBSITE_RUN_FROM_PACKAGE` removes the Kudu/Oryx deployment build step. The current worker artifact is still a source zip, so if App Service does not provide all required Python dependencies at runtime, workers may require a follow-up packaging change to include runtime dependencies in the mounted package.
+
+---
+
+## Architecture Decision: Provider Strategy (2026-04-13)
+
+### Decision
+
+V2 will support two LLM provider paths — **Azure OpenAI** (default) and **direct OpenAI** — selected via `PFCD_PROVIDER` env var. Google/Gemini support is dropped.
+
+### Rationale
+
+Individual Azure accounts face model provisioning restrictions (quota approval required for gpt-4o, gpt-4.1, etc.). Direct OpenAI API provides identical models without those constraints. Both providers use the same OpenAI API contract and Semantic Kernel connectors (`AzureChatCompletion` vs `OpenAIChatCompletion`) — no prompt or schema changes required.
+
+Azure remains the deployment and orchestration platform (App Service, Service Bus, Blob Storage, Azure SQL). Provider flexibility applies only to the LLM inference call path.
+
+### V1 Feature Analysis and Port Plan
+
+A full comparison of PFCD V1 (`/Users/karthicks/kAgents/Projects/PFCD`) against V2 was completed (2026-04-13). Key finding: V1 has a working transcript-first pipeline but the wrong architecture for video-first. Porting V2 from V1 is cheaper than rebuilding V1 as video-first.
+
+Four capabilities ported from V1 into V2 as tasks PROC-PROMPT-FIX → PROVIDER-FLEX → VIDEO-TRANSCRIPTION → TEXT-SIMILARITY (see HANDOVER.md for specs):
+
+1. **PROC-PROMPT-FIX** — fix `sipoc_no_anchor` BLOCKER on transcript-only jobs
+2. **PROVIDER-FLEX** — `PFCD_PROVIDER` env var; `OpenAIChatCompletion` path in kernel_factory, extraction, processing, job_logic
+3. **VIDEO-TRANSCRIPTION** — new `transcription.py`; real Whisper call in `VideoAdapter.normalize()`; update `_normalize_input()` to use video content when no uploaded transcript
+4. **TEXT-SIMILARITY** — Jaccard + SequenceMatcher in `alignment.py`; replaces anchor-ratio proxy; reads `_video_transcript_inline` ephemeral field set by VideoAdapter
+
+### Future phases (not yet assigned)
+
+- **MediaPreprocessor** — ffmpeg audio extraction + 10-min chunked Whisper transcription + keyframe selection; unblocks videos > 25 MB and genuine video-first frame evidence
+- **Docker workers** — required for ffmpeg availability on Azure App Service
+- **Frontend wiring** — adapt V1 Next.js frontend to V2 API contract
+- **Job list endpoint** (`GET /api/jobs`) + provider health endpoint

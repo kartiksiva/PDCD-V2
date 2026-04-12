@@ -80,7 +80,11 @@ def _safe_dict(value: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _default_openai_deployment() -> str:
+def _provider_name() -> str:
+    return os.environ.get("PFCD_PROVIDER", "azure_openai").strip().lower() or "azure_openai"
+
+
+def _default_chat_model() -> str:
     deployment = os.environ.get("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME")
     if deployment:
         return deployment
@@ -105,30 +109,37 @@ def _default_openai_deployment() -> str:
     )
 
 
-def _profile_openai_deployment(profile: Profile) -> str:
+def _profile_chat_model(profile: Profile) -> str:
+    provider = _provider_name()
+    if provider == "openai":
+        if profile == Profile.QUALITY:
+            return os.environ.get("OPENAI_CHAT_MODEL_QUALITY", "gpt-4o")
+        return os.environ.get("OPENAI_CHAT_MODEL_BALANCED", "gpt-4o-mini")
+
     if profile == Profile.QUALITY:
         return (
             os.environ.get("AZURE_OPENAI_DEPLOYMENT_QUALITY")
-            or _default_openai_deployment()
+            or _default_chat_model()
         )
     return (
         os.environ.get("AZURE_OPENAI_DEPLOYMENT_BALANCED")
-        or _default_openai_deployment()
+        or _default_chat_model()
     )
 
 
 def profile_config(profile: Profile) -> Dict[str, Any]:
-    deployment = _profile_openai_deployment(profile)
+    provider = _provider_name()
+    deployment = _profile_chat_model(profile)
     if profile == Profile.QUALITY:
         return {
             "profile": profile.value,
-            "provider": "azure_openai",
+            "provider": provider,
             "model": deployment,
             "cost_cap_usd": 8.0,
         }
     return {
         "profile": profile.value,
-        "provider": "azure_openai",
+        "provider": provider,
         "model": deployment,
         "cost_cap_usd": 4.0,
     }
@@ -151,7 +162,7 @@ def default_job_payload(payload: JobCreateRequest) -> Dict[str, Any]:
         "updated_at": _utc_now(),
         "profile_requested": payload.profile.value,
         "provider_effective": {
-            "provider": "azure_openai",
+            "provider": profile_conf["provider"],
             "deployment": profile_conf["model"],
             "profile": profile_conf["profile"],
             "cost_cap_usd": profile_conf["cost_cap_usd"],
