@@ -9,6 +9,10 @@ on:
       - '.github/workflows/deploy-backend.yml'
   workflow_dispatch:
 
+concurrency:
+  group: deploy-backend-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   id-token: write
   contents: read
@@ -38,6 +42,7 @@ jobs:
   deploy:
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -63,19 +68,21 @@ jobs:
             --name ${{ secrets.AZURE_WEBAPP_NAME }} \
             --src-path ./backend.zip \
             --type zip \
-            --async \
+            --async true \
+            --enable-kudu-warmup false \
+            --timeout 1800000 \
             --track-status false
           url="https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net/health"
           echo "Polling health endpoint until backend is ready: $url"
-          for i in $(seq 1 60); do
+          for i in $(seq 1 90); do
             if curl -fsS --max-time 10 "$url" >/dev/null; then
               echo "Health check passed on attempt $i"
               exit 0
             fi
-            echo "Health check not ready yet (attempt $i/60); waiting 10s..."
+            echo "Health check not ready yet (attempt $i/90); waiting 10s..."
             sleep 10
           done
-          echo "ERROR: backend health check did not pass within 10 minutes"
+          echo "ERROR: backend health check did not pass within 15 minutes"
           exit 1
 
       - name: Apply post-deploy configuration

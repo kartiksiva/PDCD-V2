@@ -8,6 +8,13 @@ on:
       - '.github/workflows/deploy-workers.yml'
   workflow_dispatch:
 
+concurrency:
+  group: deploy-workers-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AZURE_OPENAI_CHAT_DEPLOYMENT_NAME_RESOLVED: ${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME != '' && secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME || secrets.AZURE_OPENAI_DEPLOYMENT_NAME }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -30,6 +37,7 @@ jobs:
   deploy-extracting:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -37,6 +45,12 @@ jobs:
       - uses: azure/login@v2
         with:
           creds: '${{ secrets.AZURE_CREDENTIALS }}'
+      - name: Validate worker deployment settings
+        run: |
+          if [ -z "${AZURE_OPENAI_CHAT_DEPLOYMENT_NAME_RESOLVED}" ]; then
+            echo "ERROR: Set AZURE_OPENAI_CHAT_DEPLOYMENT_NAME (preferred) or AZURE_OPENAI_DEPLOYMENT_NAME in GitHub secrets."
+            exit 1
+          fi
       - name: Configure extracting worker
         run: |
           az webapp config appsettings set \
@@ -44,19 +58,40 @@ jobs:
             --name ${{ secrets.AZURE_WORKER_EXTRACTING_NAME }} \
             --settings PFCD_WORKER_ROLE=extracting \
               AZURE_OPENAI_ENDPOINT="${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
-              AZURE_OPENAI_CHAT_DEPLOYMENT_NAME="${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME }}" \
+              AZURE_OPENAI_CHAT_DEPLOYMENT_NAME="${AZURE_OPENAI_CHAT_DEPLOYMENT_NAME_RESOLVED}" \
               WEBSITES_CONTAINER_START_TIME_LIMIT=600 \
               WEBSITES_PORT=8000
           az webapp config set \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_EXTRACTING_NAME }} \
             --startup-file "python -m app.workers.runner"
+      - name: Wait for extracting worker config restart to settle
+        run: |
+          for i in $(seq 1 30); do
+            state=$(az webapp show \
+              --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+              --name ${{ secrets.AZURE_WORKER_EXTRACTING_NAME }} \
+              --query "state" -o tsv)
+            echo "extracting config settle $i/30: $state"
+            if [ "$state" = "Running" ]; then
+              sleep 30
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "ERROR: extracting worker did not return to Running after config changes"
+          exit 1
       - name: Deploy extracting worker
         run: |
           az webapp deploy \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_EXTRACTING_NAME }} \
-            --src-path worker.zip --type zip --async true --track-status false
+            --src-path worker.zip \
+            --type zip \
+            --async true \
+            --enable-kudu-warmup false \
+            --timeout 1800000 \
+            --track-status false
       - name: Verify extracting worker is running
         run: |
           for i in $(seq 1 90); do
@@ -73,10 +108,24 @@ jobs:
           done
           echo "ERROR: extracting worker did not reach Running state within 15 minutes"
           exit 1
+      - name: Verify extracting worker HTTP readiness
+        run: |
+          url="https://${{ secrets.AZURE_WORKER_EXTRACTING_NAME }}.azurewebsites.net/"
+          for i in $(seq 1 60); do
+            if curl -fsS --max-time 10 "$url" >/dev/null; then
+              echo "Extracting worker HTTP probe passed on attempt $i"
+              exit 0
+            fi
+            echo "Extracting worker HTTP probe not ready yet (attempt $i/60); waiting 10s..."
+            sleep 10
+          done
+          echo "ERROR: extracting worker HTTP probe did not pass within 10 minutes"
+          exit 1
 
   deploy-processing:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -84,6 +133,12 @@ jobs:
       - uses: azure/login@v2
         with:
           creds: '${{ secrets.AZURE_CREDENTIALS }}'
+      - name: Validate worker deployment settings
+        run: |
+          if [ -z "${AZURE_OPENAI_CHAT_DEPLOYMENT_NAME_RESOLVED}" ]; then
+            echo "ERROR: Set AZURE_OPENAI_CHAT_DEPLOYMENT_NAME (preferred) or AZURE_OPENAI_DEPLOYMENT_NAME in GitHub secrets."
+            exit 1
+          fi
       - name: Configure processing worker
         run: |
           az webapp config appsettings set \
@@ -91,19 +146,40 @@ jobs:
             --name ${{ secrets.AZURE_WORKER_PROCESSING_NAME }} \
             --settings PFCD_WORKER_ROLE=processing \
               AZURE_OPENAI_ENDPOINT="${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
-              AZURE_OPENAI_CHAT_DEPLOYMENT_NAME="${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME }}" \
+              AZURE_OPENAI_CHAT_DEPLOYMENT_NAME="${AZURE_OPENAI_CHAT_DEPLOYMENT_NAME_RESOLVED}" \
               WEBSITES_CONTAINER_START_TIME_LIMIT=600 \
               WEBSITES_PORT=8000
           az webapp config set \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_PROCESSING_NAME }} \
             --startup-file "python -m app.workers.runner"
+      - name: Wait for processing worker config restart to settle
+        run: |
+          for i in $(seq 1 30); do
+            state=$(az webapp show \
+              --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+              --name ${{ secrets.AZURE_WORKER_PROCESSING_NAME }} \
+              --query "state" -o tsv)
+            echo "processing config settle $i/30: $state"
+            if [ "$state" = "Running" ]; then
+              sleep 30
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "ERROR: processing worker did not return to Running after config changes"
+          exit 1
       - name: Deploy processing worker
         run: |
           az webapp deploy \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_PROCESSING_NAME }} \
-            --src-path worker.zip --type zip --async true --track-status false
+            --src-path worker.zip \
+            --type zip \
+            --async true \
+            --enable-kudu-warmup false \
+            --timeout 1800000 \
+            --track-status false
       - name: Verify processing worker is running
         run: |
           for i in $(seq 1 90); do
@@ -120,10 +196,24 @@ jobs:
           done
           echo "ERROR: processing worker did not reach Running state within 15 minutes"
           exit 1
+      - name: Verify processing worker HTTP readiness
+        run: |
+          url="https://${{ secrets.AZURE_WORKER_PROCESSING_NAME }}.azurewebsites.net/"
+          for i in $(seq 1 60); do
+            if curl -fsS --max-time 10 "$url" >/dev/null; then
+              echo "Processing worker HTTP probe passed on attempt $i"
+              exit 0
+            fi
+            echo "Processing worker HTTP probe not ready yet (attempt $i/60); waiting 10s..."
+            sleep 10
+          done
+          echo "ERROR: processing worker HTTP probe did not pass within 10 minutes"
+          exit 1
 
   deploy-reviewing:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -131,6 +221,12 @@ jobs:
       - uses: azure/login@v2
         with:
           creds: '${{ secrets.AZURE_CREDENTIALS }}'
+      - name: Validate worker deployment settings
+        run: |
+          if [ -z "${AZURE_OPENAI_CHAT_DEPLOYMENT_NAME_RESOLVED}" ]; then
+            echo "ERROR: Set AZURE_OPENAI_CHAT_DEPLOYMENT_NAME (preferred) or AZURE_OPENAI_DEPLOYMENT_NAME in GitHub secrets."
+            exit 1
+          fi
       - name: Configure reviewing worker
         run: |
           az webapp config appsettings set \
@@ -138,19 +234,40 @@ jobs:
             --name ${{ secrets.AZURE_WORKER_REVIEWING_NAME }} \
             --settings PFCD_WORKER_ROLE=reviewing \
               AZURE_OPENAI_ENDPOINT="${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
-              AZURE_OPENAI_CHAT_DEPLOYMENT_NAME="${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME }}" \
+              AZURE_OPENAI_CHAT_DEPLOYMENT_NAME="${AZURE_OPENAI_CHAT_DEPLOYMENT_NAME_RESOLVED}" \
               WEBSITES_CONTAINER_START_TIME_LIMIT=600 \
               WEBSITES_PORT=8000
           az webapp config set \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_REVIEWING_NAME }} \
             --startup-file "python -m app.workers.runner"
+      - name: Wait for reviewing worker config restart to settle
+        run: |
+          for i in $(seq 1 30); do
+            state=$(az webapp show \
+              --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+              --name ${{ secrets.AZURE_WORKER_REVIEWING_NAME }} \
+              --query "state" -o tsv)
+            echo "reviewing config settle $i/30: $state"
+            if [ "$state" = "Running" ]; then
+              sleep 30
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "ERROR: reviewing worker did not return to Running after config changes"
+          exit 1
       - name: Deploy reviewing worker
         run: |
           az webapp deploy \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WORKER_REVIEWING_NAME }} \
-            --src-path worker.zip --type zip --async true --track-status false
+            --src-path worker.zip \
+            --type zip \
+            --async true \
+            --enable-kudu-warmup false \
+            --timeout 1800000 \
+            --track-status false
       - name: Verify reviewing worker is running
         run: |
           for i in $(seq 1 90); do
@@ -166,4 +283,17 @@ jobs:
             sleep 10
           done
           echo "ERROR: reviewing worker did not reach Running state within 15 minutes"
+          exit 1
+      - name: Verify reviewing worker HTTP readiness
+        run: |
+          url="https://${{ secrets.AZURE_WORKER_REVIEWING_NAME }}.azurewebsites.net/"
+          for i in $(seq 1 60); do
+            if curl -fsS --max-time 10 "$url" >/dev/null; then
+              echo "Reviewing worker HTTP probe passed on attempt $i"
+              exit 0
+            fi
+            echo "Reviewing worker HTTP probe not ready yet (attempt $i/60); waiting 10s..."
+            sleep 10
+          done
+          echo "ERROR: reviewing worker HTTP probe did not pass within 10 minutes"
           exit 1

@@ -1011,4 +1011,63 @@ The `export_builder.py` retains `_classify_anchor_type()` as a one-line wrapper 
 
 - `pytest tests/unit tests/integration -q` → **231 passed**
 
+---
 
+## Section 19: Section 17 Publish (2026-04-12)
+
+Published the approved Section 17 Medium/Low backlog changes to `main`.
+
+### Delivery
+
+- Commit: `5c260bf`
+- Branch: `main`
+- Remote: `origin`
+- Scope: single commit containing the approved M1–M5, L1–L4, and DC1 changes plus associated tests and docs updates listed in `HANDOVER.md` assignment `S17-COMMIT`.
+
+### Notes
+
+- Excluded from commit as instructed: `HANDOVER.md`, `backend.zip`, `worker.zip`, `SECTION14_*.md`, and `frontend/node_modules/`.
+- Unrelated local workspace changes (for example `.DS_Store`, `infra/dev-bootstrap.sh`) were intentionally left untouched.
+
+---
+
+## Section 20: Deployment Workflow Hardening (2026-04-12)
+
+Hardened the GitHub Actions Azure deploy workflows after repeated App Service deployment failures caused by Kudu/OneDeploy timeouts and worker config/deploy restart conflicts.
+
+### Backend workflow (`deploy-backend.yml`)
+
+- Added workflow `concurrency` to cancel older in-flight backend deploy runs on the same ref before they overlap with newer pushes.
+- Added `timeout-minutes: 30` to the deploy job so the workflow fails deterministically instead of hanging.
+- Hardened `az webapp deploy` flags:
+  - `--async true`
+  - `--enable-kudu-warmup false`
+  - `--timeout 1800000`
+- Extended backend readiness polling window from 10 minutes to 15 minutes while keeping `/health` as the readiness source of truth.
+
+### Worker workflow (`deploy-workers.yml`)
+
+- Added workflow `concurrency` to prevent overlapping worker deploy workflows from fighting over the same three App Services.
+- Added fallback resolution for the worker chat deployment secret:
+  - prefer `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME`
+  - fall back to legacy `AZURE_OPENAI_DEPLOYMENT_NAME`
+- Added explicit validation step to fail fast when neither deployment secret is configured.
+- Added per-job `timeout-minutes: 35`.
+- Added a config-settle step after `az webapp config appsettings set` / `az webapp config set`:
+  - waits for the site to return to `Running`
+  - then sleeps an additional 30 seconds before `az webapp deploy`
+  - this avoids the Azure-reported `SCM container restart` conflict between management and deploy operations
+- Hardened worker `az webapp deploy` flags:
+  - `--async true`
+  - `--enable-kudu-warmup false`
+  - `--timeout 1800000`
+- Strengthened worker verification:
+  - keep control-plane `state == Running` check
+  - add HTTP readiness probe against the worker root endpoint so a deploy only passes when the health server is actually responding
+
+### Validation
+
+- Parsed both workflow files successfully with Ruby YAML loader:
+  - `backend workflow yaml ok`
+  - `workers workflow yaml ok`
+- No application test suite run in this pass; changes are workflow-only.
