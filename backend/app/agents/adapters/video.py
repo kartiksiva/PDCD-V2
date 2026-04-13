@@ -1,12 +1,15 @@
 """VideoAdapter — normalizes video source metadata into canonical evidence.
 
-When a video transcript is successfully generated, the raw VTT text is stored in
-the in-memory job field ``_video_transcript_inline`` for downstream extraction
-and alignment. That field is ephemeral and must be removed before persistence.
+When video-derived text is successfully generated, the raw VTT transcript is
+stored in ``_video_transcript_inline`` and frame descriptions are stored in
+``_frame_descriptions_inline`` for downstream extraction/alignment only. Both
+fields are ephemeral and must be removed before persistence.
 """
 
 from __future__ import annotations
 
+import shutil
+import tempfile
 from typing import Any, Dict, List
 
 from app.agents.adapters.base import (
@@ -16,7 +19,10 @@ from app.agents.adapters.base import (
     IProcessEvidenceAdapter,
 )
 from app.agents.alignment import parse_vtt_cues
+from app.agents.media_preprocessor import extract_keyframes, is_ffmpeg_available
 from app.agents.transcription import transcribe_audio_blob
+from app.agents.vision import analyze_frames
+from app.storage import upload_frame
 
 _VIDEO_MIME_PREFIXES = ("video/",)
 
@@ -86,42 +92,86 @@ class VideoAdapter(IProcessEvidenceAdapter):
         """
         Build a canonical EvidenceObject from video manifest metadata.
 
-        Since actual Azure Vision / Speech processing is not yet integrated,
-        this adapter produces a structured metadata description suitable for
-        providing context to the extraction LLM. Frame anchors will be empty
-        until the Azure Vision integration is added.
+        The adapter combines transcript and frame-derived evidence when
+        available. If neither can be produced, it falls back to metadata-only
+        evidence suitable for graceful degradation.
         """
         manifest = job.get("input_manifest") or {}
         video_meta = manifest.get("video") or {}
+        job_id = job.get("job_id", "unknown")
         has_audio = bool(video_meta.get("audio_detected") or video_meta.get("audio_declared"))
         frame_policy = video_meta.get("frame_extraction_policy") or {}
 
         storage_key = video_meta.get("storage_key")
+        interval = frame_policy.get("sample_interval_sec", 5)
+        transcript_text = ""
 
         if has_audio and storage_key:
-            transcript_text = transcribe_audio_blob(storage_key)
-            if transcript_text and not transcript_text.startswith("[transcription"):
-                job["_video_transcript_inline"] = transcript_text
-                anchors = [
+            raw = transcribe_audio_blob(storage_key)
+            if raw and not raw.startswith("[transcription"):
+                transcript_text = raw
+                job["_video_transcript_inline"] = raw
+
+        frame_descriptions = ""
+        frame_storage_keys: list[tuple[str, float]] = []
+        if storage_key and is_ffmpeg_available():
+            tmp_dir = tempfile.mkdtemp(prefix="pfcd_frames_")
+            try:
+                frames = extract_keyframes(storage_key, tmp_dir, interval)
+                if frames:
+                    for index, (frame_path, timestamp_sec) in enumerate(frames):
+                        try:
+                            with open(frame_path, "rb") as handle:
+                                jpg_bytes = handle.read()
+                        except OSError:
+                            continue
+                        persisted_key = upload_frame(job_id, index, jpg_bytes)
+                        if persisted_key:
+                            frame_storage_keys.append((persisted_key, timestamp_sec))
+                    job.setdefault("agent_signals", {})["frame_storage_keys"] = frame_storage_keys
+                    frame_descriptions = analyze_frames(frames, frame_policy)
+                    if frame_descriptions:
+                        job["_frame_descriptions_inline"] = frame_descriptions
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        if transcript_text or frame_descriptions:
+            anchors = (
+                [
                     f"{_format_seconds(start)}-{_format_seconds(end)}"
                     for start, end in parse_vtt_cues(transcript_text)
                 ]
-                return EvidenceObject(
-                    source_type="video",
-                    document_type="video",
-                    content_text=transcript_text,
-                    anchors=anchors,
-                    confidence=0.85,
-                    metadata={
-                        "has_audio": has_audio,
-                        "frame_policy": frame_policy,
-                        "duration_hint_sec": manifest.get("duration_hint_sec"),
-                        "storage_key": storage_key,
-                    },
+                if transcript_text
+                else []
+            )
+            confidence = 0.90 if (transcript_text and frame_descriptions) else 0.85
+            if transcript_text and frame_descriptions:
+                content_text = (
+                    f"AUDIO TRANSCRIPT:\n{transcript_text}\n\n"
+                    f"FRAME ANALYSIS:\n{frame_descriptions}"
                 )
+            elif transcript_text:
+                content_text = transcript_text
+            else:
+                content_text = f"FRAME ANALYSIS:\n{frame_descriptions}"
+
+            return EvidenceObject(
+                source_type="video",
+                document_type="video",
+                content_text=content_text,
+                anchors=anchors,
+                confidence=confidence,
+                metadata={
+                    "has_audio": has_audio,
+                    "frame_policy": frame_policy,
+                    "duration_hint_sec": manifest.get("duration_hint_sec"),
+                    "storage_key": storage_key,
+                    "has_frame_analysis": bool(frame_descriptions),
+                    "frame_storage_keys": frame_storage_keys,
+                },
+            )
 
         # Build policy description
-        interval = frame_policy.get("sample_interval_sec", 5)
         threshold = frame_policy.get("scene_change_threshold", 0.68)
         ocr_enabled = frame_policy.get("ocr_enabled", True)
         ocr_trigger = frame_policy.get("ocr_trigger", "scene_change_only")
@@ -165,6 +215,8 @@ class VideoAdapter(IProcessEvidenceAdapter):
                 "has_audio": has_audio,
                 "frame_policy": frame_policy,
                 "duration_hint_sec": duration,
+                "has_frame_analysis": False,
+                "frame_storage_keys": [],
             },
         )
 
@@ -200,7 +252,9 @@ class VideoAdapter(IProcessEvidenceAdapter):
                 f"OCR={'on' if frame_policy.get('ocr_enabled', True) else 'off'}."
             )
 
-        if evidence_obj.metadata.get("storage_key"):
+        if evidence_obj.metadata.get("has_frame_analysis"):
+            notes.append("Frame-level visual analysis complete.")
+        elif evidence_obj.metadata.get("storage_key"):
             notes.append("Audio transcription complete. Frame-level visual analysis pending.")
         else:
             notes.append(

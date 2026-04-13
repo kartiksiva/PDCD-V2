@@ -125,6 +125,7 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 |----------|---------|---------|
 | `DATABASE_URL` | SQLAlchemy connection string | `sqlite:///./pfcd.db` |
 | `AZURE_STORAGE_CONNECTION_STRING` | Blob storage | local fallback if unset |
+| `AZURE_STORAGE_CONTAINER_EVIDENCE` | Blob container for frame captures/evidence assets | `evidence` |
 | `AZURE_SERVICE_BUS_CONNECTION_STRING` | Service Bus namespace | `""` (skips queue dispatch) |
 | `AZURE_SERVICE_BUS_QUEUE_EXTRACTING` | Queue name | `extracting` |
 | `AZURE_SERVICE_BUS_QUEUE_PROCESSING` | Queue name | `processing` |

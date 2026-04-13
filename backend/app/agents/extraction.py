@@ -46,6 +46,16 @@ Rules:
 """
 
 
+def _build_speaker_hint(job: Dict[str, Any]) -> str:
+    """Return a speaker-hint block from teams_metadata.transcript_speaker_map, or ''."""
+    teams = job.get("teams_metadata") or {}
+    speaker_map = teams.get("transcript_speaker_map") or {}
+    if not speaker_map:
+        return ""
+    lines = "\n".join(f"  - {speaker_id}: {name}" for speaker_id, name in speaker_map.items())
+    return f"\nKnown speaker identities (use these for actor assignment):\n{lines}\n"
+
+
 def _safe_int(value: Any) -> int:
     try:
         return int(value or 0)
@@ -168,12 +178,13 @@ def run_extraction(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
         _call_extraction(
             deployment,
             _SYSTEM_PROMPT,
-            _USER_PROMPT_TEMPLATE.format(transcript_text=content_text),
+            _USER_PROMPT_TEMPLATE.format(transcript_text=content_text) + _build_speaker_hint(job),
         )
     )
 
     extracted = json.loads(raw)
     job["extracted_evidence"] = extracted
     job["agent_signals"]["transcript_parsed"] = True
+    job["agent_signals"]["speakers_detected"] = extracted.get("speakers_detected") or []
     from app.job_logic import estimate_cost_usd
     return estimate_cost_usd(deployment, pt, ct)

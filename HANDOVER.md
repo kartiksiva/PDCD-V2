@@ -616,6 +616,613 @@ Commit as: `feat: Phase 6 frontend integration — job list, save-draft fix, API
 
 ---
 
+### DRAFT-EDIT — Editable PDD/SIPOC + re-review on save
+
+**Context:**
+`DraftReview.jsx` is read-only. When the reviewing agent emits a `blocker` flag (e.g. `pdd_incomplete` for a missing PDD field, or `sipoc_no_anchor` for missing anchors), the Finalize button is disabled and the user has no way to fix the problem. PRD §6 requires "User edits/saves draft"; PRD §8.9 requires blockers to be user-resolvable before finalize. This task makes PDD fields and SIPOC rows inline-editable and ensures that after a save the reviewing quality gate is re-evaluated against the updated content.
+
+**Changes — 3 files:**
+
+---
+
+**1. `backend/app/main.py` — re-run reviewing in `update_draft`, extend response**
+
+After `await _repo_upsert_job(job_id, job)` and before the `return`, add:
+
+```python
+# Re-run the pure-Python reviewing gate so flags reflect the edited draft.
+from app.agents.reviewing import run_reviewing
+run_reviewing(job, {})
+await _repo_upsert_job(job_id, job)
+```
+
+Change the `return` statement to also include `review_notes` and `agent_review`:
+
+```python
+return {
+    "job_id": job_id,
+    "status": job["status"],
+    "draft": job["draft"],
+    "review_notes": job["review_notes"],
+    "agent_review": job["agent_review"],
+    "speaker_resolutions": job["speaker_resolutions"],
+    "user_saved_draft": True,
+}
+```
+
+`run_reviewing` is pure-Python (no LLM), so this is synchronous and fast (< 5 ms). No timeout risk.
+
+---
+
+**2. `frontend/src/components/DraftReview.jsx` — editable fields + debounced auto-save**
+
+**State additions at top of `DraftReview` component:**
+```jsx
+const [editedDraft, setEditedDraft] = useState(() => job?.draft ?? {})
+const [liveFlags, setLiveFlags]     = useState(() => job?.review_notes?.flags ?? [])
+const [saveState, setSaveState]     = useState('idle') // 'idle' | 'saving' | 'saved' | 'error'
+const saveTimer = useRef(null)
+```
+
+Sync on prop change:
+```jsx
+useEffect(() => {
+  setEditedDraft(job?.draft ?? {})
+  setLiveFlags(job?.review_notes?.flags ?? [])
+}, [job?.job_id])
+```
+
+**Debounced auto-save helper:**
+```jsx
+function scheduleSave(nextDraft) {
+  clearTimeout(saveTimer.current)
+  setSaveState('saving')
+  saveTimer.current = setTimeout(async () => {
+    try {
+      const result = await saveDraft(job.job_id, nextDraft)
+      setLiveFlags(result.review_notes?.flags ?? liveFlags)
+      setSaveState('saved')
+    } catch {
+      setSaveState('error')
+    }
+  }, 1500)
+}
+```
+
+**Field update helpers:**
+```jsx
+function setPddField(key, value) {
+  const next = { ...editedDraft, pdd: { ...(editedDraft.pdd ?? {}), [key]: value } }
+  setEditedDraft(next)
+  scheduleSave(next)
+}
+
+function setSipocRow(idx, field, value) {
+  const rows = [...(editedDraft.sipoc ?? [])]
+  rows[idx] = { ...rows[idx], [field]: value }
+  const next = { ...editedDraft, sipoc: rows }
+  setEditedDraft(next)
+  scheduleSave(next)
+}
+```
+
+**Replace `PddSection` with `EditablePddSection`** — a new private component inside the same file. For all PDD keys except `steps` (which stays read-only), render:
+- A small label showing the field name
+- A `<textarea>` or `<input>` depending on value type
+- For array fields (`roles`, `systems`): display as comma-separated text input, parse back to array on save
+
+```jsx
+const _PDD_STRING_KEYS = ['purpose','scope','triggers','preconditions','business_rules','exceptions','outputs','metrics','risks']
+const _PDD_LIST_KEYS   = ['roles','systems']
+
+function EditablePddSection({ pdd, onChange }) {
+  const pddObj = pdd ?? {}
+  return (
+    <div className="space-y-3">
+      {_PDD_STRING_KEYS.map(key => (
+        <div key={key}>
+          <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide block mb-1">{key.replace(/_/g,' ')}</label>
+          <textarea
+            className="w-full border rounded p-2 text-sm resize-y min-h-[48px] focus:ring-1 focus:ring-indigo-400 outline-none"
+            value={pddObj[key] ?? ''}
+            onChange={e => onChange(key, e.target.value)}
+            placeholder={`Enter ${key.replace(/_/g,' ')}…`}
+          />
+        </div>
+      ))}
+      {_PDD_LIST_KEYS.map(key => (
+        <div key={key}>
+          <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide block mb-1">{key.replace(/_/g,' ')} (comma-separated)</label>
+          <input
+            type="text"
+            className="w-full border rounded p-2 text-sm focus:ring-1 focus:ring-indigo-400 outline-none"
+            value={Array.isArray(pddObj[key]) ? pddObj[key].join(', ') : (pddObj[key] ?? '')}
+            onChange={e => onChange(key, e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
+            placeholder={`e.g. Analyst, Manager`}
+          />
+        </div>
+      ))}
+      {/* Steps remain read-only */}
+      {(pddObj.steps ?? []).length > 0 && (
+        <div>
+          <h4 className="text-sm font-semibold text-gray-700 mb-2">Process Steps (read-only)</h4>
+          <ol className="space-y-2">
+            {(pddObj.steps ?? []).map((step, idx) => (
+              <li key={idx} className="bg-gray-50 rounded p-3 text-sm">
+                <div className="flex items-start gap-2">
+                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-indigo-100 text-indigo-700 text-xs font-bold flex items-center justify-center">{idx+1}</span>
+                  <div>
+                    <p className="font-medium">{step.summary ?? step.id}</p>
+                    <div className="flex flex-wrap gap-3 mt-1 text-xs text-gray-500">
+                      {step.actor && <span>Actor: <strong>{step.actor}</strong></span>}
+                      {step.system && <span>System: <strong>{step.system}</strong></span>}
+                      {step.source_anchor && <span className="font-mono">@ {step.source_anchor}</span>}
+                    </div>
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+    </div>
+  )
+}
+```
+
+**Replace `SipocTable` call with inline editable table.** Keep `SipocTable.jsx` unchanged for read-only uses elsewhere. Inline the editable version directly in `DraftReview`:
+
+```jsx
+function EditableSipocTable({ sipoc, onRowChange }) {
+  if (!sipoc || sipoc.length === 0) return <p className="text-sm text-gray-400 italic">No SIPOC rows.</p>
+  const EDITABLE = ['supplier','input','process_step','output','customer','source_anchor']
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-full text-sm border-collapse">
+        <thead>
+          <tr className="bg-indigo-50">
+            {[...EDITABLE, 'step_anchor', 'anchor_missing_reason'].map(h => (
+              <th key={h} className="border border-indigo-100 px-2 py-1 text-left text-xs font-semibold text-indigo-700 whitespace-nowrap">
+                {h.replace(/_/g,' ')}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {sipoc.map((row, idx) => (
+            <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+              {EDITABLE.map(field => (
+                <td key={field} className="border border-gray-200 px-1 py-1">
+                  <input
+                    type="text"
+                    className="w-full bg-transparent text-sm outline-none focus:ring-1 focus:ring-indigo-300 rounded px-1"
+                    value={row[field] ?? ''}
+                    onChange={e => onRowChange(idx, field, e.target.value)}
+                  />
+                </td>
+              ))}
+              <td className="border border-gray-200 px-1 py-1">
+                <input
+                  type="text"
+                  className="w-full bg-transparent text-sm outline-none focus:ring-1 focus:ring-indigo-300 rounded px-1 font-mono"
+                  value={Array.isArray(row.step_anchor) ? row.step_anchor.join(', ') : (row.step_anchor ?? '')}
+                  onChange={e => onRowChange(idx, 'step_anchor', e.target.value.split(',').map(s=>s.trim()).filter(Boolean))}
+                  placeholder="ev-01, ev-02"
+                />
+              </td>
+              <td className="border border-gray-200 px-1 py-1">
+                <input
+                  type="text"
+                  className="w-full bg-transparent text-sm outline-none focus:ring-1 focus:ring-indigo-300 rounded px-1 italic text-gray-400"
+                  value={row.anchor_missing_reason ?? ''}
+                  onChange={e => onRowChange(idx, 'anchor_missing_reason', e.target.value)}
+                />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+```
+
+**Render body changes:**
+- Replace `<PddSection pdd={pdd} />` with `<EditablePddSection pdd={editedDraft.pdd} onChange={setPddField} />`
+- Replace `<SipocTable sipoc={sipoc} />` with `<EditableSipocTable sipoc={editedDraft.sipoc} onRowChange={setSipocRow} />`
+- Replace `<FlagPanel flags={flags} />` with `<FlagPanel flags={liveFlags} />`
+- Replace `blockers` computation with `const blockers = liveFlags.filter(f => f.severity?.toLowerCase() === 'blocker')`
+- Add save state indicator below flags panel:
+```jsx
+{saveState === 'saving' && <p className="text-xs text-gray-400 animate-pulse">Saving…</p>}
+{saveState === 'saved'  && <p className="text-xs text-green-600">Draft saved.</p>}
+{saveState === 'error'  && <p className="text-xs text-red-500">Save failed — changes not persisted.</p>}
+```
+- `handleFinalize` uses `editedDraft`:
+```jsx
+await saveDraft(job.job_id, editedDraft)
+const data = await finalizeJob(job.job_id)
+```
+
+---
+
+**3. `tests/unit/test_draft_edit.py` (new) — 3 tests**
+
+Use the `TestClient`/monkeypatch pattern from other unit tests (reload main with SQLite tmp DB, no API key).
+
+- `test_update_draft_response_includes_review_notes` — POST a job, simulate to `needs_review`, PUT /draft with valid pdd+sipoc; assert response contains `review_notes` and `agent_review` keys.
+- `test_update_draft_re_review_clears_pdd_blocker` — Insert a job whose draft has `pdd.purpose = None`; PUT /draft with `pdd.purpose = "Test Purpose"` (all other required keys present); assert response `review_notes.flags` contains no flag with `code == "pdd_incomplete"`.
+- `test_update_draft_re_review_triggers_pdd_blocker` — Insert a job with a complete draft; PUT /draft with `pdd.purpose = ""` (empty string); assert response `review_notes.flags` contains a flag with `code == "pdd_incomplete"` and `severity == "blocker"`.
+
+**Do not change:** `SipocTable.jsx` (still used in `JobList` context), existing test files.
+
+---
+
+**Verification:**
+```bash
+cd backend && .venv/bin/pytest ../tests/unit/test_draft_edit.py -v
+.venv/bin/pytest ../tests/ -q   # full suite green
+```
+
+Also test manually: start dev server + frontend, submit a job, simulate, open DraftReview — verify fields are editable, saving shows "Draft saved.", flags update after editing.
+
+Commit as: `feat: editable PDD/SIPOC in DraftReview with re-review on save (PRD §8.9)`
+
+---
+
+### SPEAKER-RESOLVE — Speaker resolution UI + teams_metadata in extraction
+
+**Context:**
+PRD §8.1 explicitly requires: "Review UI must allow manual resolution of `Unknown Speaker` to existing role/team participants before finalize." The backend already has `speaker_resolutions` in the DB schema and `PUT /draft` accepts it. The reviewing agent emits an `unknown_speaker` warning when `"Unknown" in speakers_detected`. Two gaps: (1) the extraction prompt doesn't use `teams_metadata.transcript_speaker_map` to pre-assign speakers, so "Unknown" fires more than necessary; (2) the DraftReview UI never surfaces speakers or provides resolution inputs. This task fixes both.
+
+**Changes — 4 files:**
+
+---
+
+**1. `backend/app/agents/extraction.py` — inject speaker map into extraction prompt**
+
+In `_USER_PROMPT_TEMPLATE`, add a conditional speaker map section. Modify `run_extraction` (or the function that builds the user content) to inject the map when present.
+
+Add a private helper after the template:
+
+```python
+def _build_speaker_hint(job: Dict[str, Any]) -> str:
+    """Return a speaker-hint block from teams_metadata.transcript_speaker_map, or ''."""
+    teams = job.get("teams_metadata") or {}
+    speaker_map = teams.get("transcript_speaker_map") or {}
+    if not speaker_map:
+        return ""
+    lines = "\n".join(f"  - {sid}: {name}" for sid, name in speaker_map.items())
+    return f"\nKnown speaker identities (use these for actor assignment):\n{lines}\n"
+```
+
+In the function that constructs the user prompt content (where `_USER_PROMPT_TEMPLATE.format(transcript_text=...)` is called), append the speaker hint:
+
+```python
+speaker_hint = _build_speaker_hint(job)
+user_content = _USER_PROMPT_TEMPLATE.format(transcript_text=content_text) + speaker_hint
+```
+
+Find the exact call site — it's in `run_extraction` where `_USER_PROMPT_TEMPLATE` is formatted. Replace the `.format(transcript_text=content_text)` call with the above two lines.
+
+---
+
+**2. `frontend/src/api.js` — include `speaker_resolutions` in `saveDraft`**
+
+Change the `saveDraft` signature and body to accept an optional `speakerResolutions` argument:
+
+```js
+export async function saveDraft(jobId, draft, speakerResolutions = null) {
+  const body = { pdd: draft.pdd, sipoc: draft.sipoc, assumptions: draft.assumptions }
+  if (speakerResolutions !== null) body.speaker_resolutions = speakerResolutions
+  const res = await _fetch(`/jobs/${jobId}/draft`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  })
+  return res.json()
+}
+```
+
+---
+
+**3. `frontend/src/components/DraftReview.jsx` — add `SpeakerResolutionPanel`**
+
+Add a new private component at the top of the file (before `DraftReview`):
+
+```jsx
+const _UNKNOWN_PATTERN = /unknown/i
+
+function SpeakerResolutionPanel({ speakers, resolutions, onChange }) {
+  const unknown = (speakers ?? []).filter(s => _UNKNOWN_PATTERN.test(s))
+  if (unknown.length === 0) return null
+  return (
+    <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 space-y-3">
+      <p className="text-sm font-medium text-amber-800">
+        {unknown.length} unknown speaker{unknown.length > 1 ? 's' : ''} — assign roles before finalizing.
+      </p>
+      {unknown.map(speaker => (
+        <div key={speaker} className="flex items-center gap-3">
+          <span className="text-sm text-amber-700 font-mono flex-shrink-0 w-32 truncate" title={speaker}>{speaker}</span>
+          <input
+            type="text"
+            placeholder="e.g. Process Analyst, Manager"
+            value={resolutions?.[speaker] ?? ''}
+            onChange={e => onChange({ ...(resolutions ?? {}), [speaker]: e.target.value })}
+            className="flex-1 border rounded px-2 py-1 text-sm focus:ring-1 focus:ring-indigo-400 outline-none"
+          />
+        </div>
+      ))}
+    </div>
+  )
+}
+```
+
+In the `DraftReview` component body, add:
+```jsx
+const [speakerResolutions, setSpeakerResolutions] = useState(() => job?.speaker_resolutions ?? {})
+const detectedSpeakers = (job?.extracted_evidence ?? job?.agent_signals ?? {})?.speakers_detected
+  ?? []
+```
+
+Add a `scheduleResolutionSave` that calls `scheduleSave(editedDraft, speakerResolutions)` — or modify `scheduleSave` to always pass the current `speakerResolutions`. The simplest: adjust `scheduleSave` to take optional speaker resolutions, defaulting to current state:
+
+```jsx
+function scheduleSave(nextDraft, nextResolutions) {
+  clearTimeout(saveTimer.current)
+  setSaveState('saving')
+  saveTimer.current = setTimeout(async () => {
+    try {
+      const result = await saveDraft(job.job_id, nextDraft, nextResolutions ?? speakerResolutions)
+      setLiveFlags(result.review_notes?.flags ?? liveFlags)
+      setSaveState('saved')
+    } catch {
+      setSaveState('error')
+    }
+  }, 1500)
+}
+```
+
+Render the `SpeakerResolutionPanel` after `FlagPanel` in the review card:
+```jsx
+<SpeakerResolutionPanel
+  speakers={detectedSpeakers}
+  resolutions={speakerResolutions}
+  onChange={res => { setSpeakerResolutions(res); scheduleSave(editedDraft, res) }}
+/>
+```
+
+Update `handleFinalize` to pass `speakerResolutions`:
+```jsx
+await saveDraft(job.job_id, editedDraft, speakerResolutions)
+```
+
+**Note:** `speakers_detected` is in `job.extracted_evidence.speakers_detected` (set by the extraction agent). If not present, the panel is hidden. This is correct — it only appears when the pipeline ran and found unknown speakers.
+
+---
+
+**4. `tests/unit/test_speaker_resolve.py` (new) — 2 tests (backend only)**
+
+- `test_extraction_prompt_includes_speaker_map_when_teams_metadata_present` — build a job dict with `teams_metadata.transcript_speaker_map = {"spk_001": "Alice (Manager)", "spk_002": "Bob"}`, call `_build_speaker_hint(job)`, assert result contains `"Alice (Manager)"` and `"Bob"`.
+- `test_extraction_prompt_empty_when_no_teams_metadata` — call `_build_speaker_hint({})`, assert returns `""`.
+
+**Do not change:** `reviewing.py` (unknown_speaker flag already works correctly), `sipoc_validator.py`, existing test files.
+
+---
+
+**Verification:**
+```bash
+cd backend && .venv/bin/pytest ../tests/unit/test_speaker_resolve.py -v
+.venv/bin/pytest ../tests/ -q
+```
+
+Manual: submit a job with teams_metadata including transcript_speaker_map; verify speaker names appear as actors in extraction output rather than "Unknown".
+
+Commit as: `feat: speaker resolution UI + inject teams speaker map into extraction (PRD §8.1)`
+
+---
+
+### FRAME-PERSIST — Persist frame captures to storage; surface in export bundle
+
+**Context:**
+PRD §8.10: "PDF/DOCX exports include referenced frame captures… only when they are linked to at least one PDD step or SIPOC row." Currently, extracted JPG frames are deleted immediately after `analyze_frames` returns (in the `finally: shutil.rmtree` block of `VideoAdapter.normalize()`). No image bytes reach the export layer. This task persists frames to the `evidence` blob container (or local `evidence/` path in dev mode) and threads the storage keys through to `export_builder`, which can then embed images in PDF/DOCX when they are anchor-linked.
+
+**Changes — 4 files:**
+
+---
+
+**1. `backend/app/storage.py` — add `upload_frame` function**
+
+Add a module-level function (not a method on `ExportStorage`) that uploads a single frame JPG. It constructs its own storage client using the `evidence` container:
+
+```python
+_EVIDENCE_CONTAINER = os.environ.get("AZURE_STORAGE_CONTAINER_EVIDENCE", "evidence")
+
+def upload_frame(job_id: str, frame_index: int, jpg_bytes: bytes) -> str | None:
+    """Upload a frame JPEG to the evidence container.
+
+    Returns the storage key (blob path or local file path) on success, None on any failure.
+    Never raises.
+    """
+    try:
+        account_url = os.environ.get("AZURE_STORAGE_ACCOUNT_URL")
+        if not account_url:
+            account_name = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
+            if account_name:
+                account_url = f"https://{account_name}.blob.core.windows.net"
+        connection_string = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
+
+        blob_name = f"{job_id}/frames/frame_{frame_index:04d}.jpg"
+
+        if account_url:
+            from azure.identity import DefaultAzureCredential
+            client = BlobServiceClient(account_url=account_url, credential=DefaultAzureCredential())
+            blob_client = client.get_blob_client(_EVIDENCE_CONTAINER, blob_name)
+            blob_client.upload_blob(
+                jpg_bytes,
+                overwrite=True,
+                content_settings=ContentSettings(content_type="image/jpeg"),
+            )
+            return blob_name
+        if connection_string:
+            client = BlobServiceClient.from_connection_string(connection_string)
+            blob_client = client.get_blob_client(_EVIDENCE_CONTAINER, blob_name)
+            blob_client.upload_blob(
+                jpg_bytes,
+                overwrite=True,
+                content_settings=ContentSettings(content_type="image/jpeg"),
+            )
+            return blob_name
+
+        # Local fallback
+        base = os.environ.get("EXPORTS_BASE_PATH", DEFAULT_EXPORT_BASE_PATH)
+        local_path = os.path.join(base, job_id, "frames", f"frame_{frame_index:04d}.jpg")
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        with open(local_path, "wb") as fh:
+            fh.write(jpg_bytes)
+        return local_path
+
+    except Exception as exc:
+        logger.warning("Frame upload failed for job %s frame %d: %s", job_id, frame_index, exc)
+        return None
+```
+
+---
+
+**2. `backend/app/agents/adapters/video.py` — upload frames before temp dir cleanup**
+
+Import at top:
+```python
+from app.storage import upload_frame
+```
+
+In `normalize()`, after `frames = extract_keyframes(...)` and before `analyze_frames`, upload each frame. Insert this block:
+
+```python
+frame_storage_keys: list[tuple[str, float]] = []
+for i, (frame_path, ts) in enumerate(frames):
+    try:
+        with open(frame_path, "rb") as fh:
+            jpg_bytes = fh.read()
+    except OSError:
+        continue
+    storage_key = upload_frame(job_id, i, jpg_bytes)
+    if storage_key:
+        frame_storage_keys.append((storage_key, ts))
+```
+
+Get `job_id` from `job.get("job_id", "unknown")` (add this near the top of `normalize()` alongside existing field reads).
+
+After `analyze_frames` runs, include `frame_storage_keys` in the `EvidenceObject.metadata`:
+
+```python
+"has_frame_analysis": bool(frame_descriptions),
+"frame_storage_keys": frame_storage_keys,   # list of (storage_key, timestamp_sec)
+```
+
+The `shutil.rmtree` in the `finally` block is unchanged — local temp files are still cleaned up; the uploaded copies are now in persistent storage.
+
+---
+
+**3. `backend/app/export_builder.py` — include frame captures in evidence bundle**
+
+In `build_evidence_bundle`, after the OCR snippet loop, add a frame capture collection pass:
+
+```python
+# Collect frame captures from video evidence metadata
+frame_captures: list[dict] = []
+for item in evidence_items:
+    frame_keys = (item.get("metadata") or {}).get("frame_storage_keys") or []
+    for storage_key, ts in frame_keys:
+        frame_captures.append({"storage_key": storage_key, "timestamp_sec": ts})
+
+# Link frame captures to anchors where timestamp falls within anchor range
+# Anchors with timestamp_range type have values like "00:01:30-00:01:35"
+for capture in frame_captures:
+    ts = capture["timestamp_sec"]
+    for anchor_val, entry in anchor_map.items():
+        if entry.anchor_type == "timestamp_range":
+            # Simple check: if capture timestamp is within ±10s of anchor midpoint
+            parts = anchor_val.replace("-", " ").split()
+            if len(parts) >= 2:
+                def _to_sec(t):
+                    p = t.split(":")
+                    try:
+                        return sum(float(x) * (60 ** (len(p)-1-i)) for i, x in enumerate(p))
+                    except (ValueError, TypeError):
+                        return -1
+                mid = (_to_sec(parts[0]) + _to_sec(parts[-1])) / 2
+                if abs(ts - mid) <= 10:
+                    capture.setdefault("linked_anchor_ids", []).append(entry.anchor_id)
+```
+
+Change the return dict:
+```python
+return {
+    ...existing fields...,
+    "frame_captures": frame_captures,           # replaces the hard-coded "pending" note
+    "frame_captures_note": (
+        "Frame captures embedded above."
+        if frame_captures else
+        "No frame captures available for this job."
+    ),
+    ...
+}
+```
+
+Remove the old hard-coded `"frame_captures_note": "Frame captures are not embedded in this export (pending Azure Vision integration)."` line.
+
+In `build_export_pdf` and `build_export_docx`: if `evidence_bundle.get("frame_captures")` is non-empty and storage is local (key starts with `/` or `./`), attempt to read and embed the image bytes. For blob keys, include a text reference line `Frame capture: {storage_key} @ {timestamp_sec}s` instead of embedding — do not attempt blob download at export time.
+
+Specifically in PDF (using `fpdf2`): after the evidence section loop, if `frame_captures` is non-empty:
+```python
+for cap in evidence_bundle.get("frame_captures") or []:
+    key = cap.get("storage_key", "")
+    ts  = cap.get("timestamp_sec", 0)
+    if key.startswith("/") or (key.startswith(".") and os.path.exists(key)):
+        try:
+            pdf.image(key, w=120)
+            pdf.set_font("Helvetica", size=8)
+            pdf.cell(0, 5, f"Frame @ {ts:.1f}s — {key}", ln=True)
+        except Exception:
+            pdf.set_font("Helvetica", size=8)
+            pdf.cell(0, 5, f"Frame @ {ts:.1f}s (image unreadable)", ln=True)
+    else:
+        pdf.set_font("Helvetica", size=8)
+        pdf.cell(0, 5, f"Frame @ {ts:.1f}s: {key}", ln=True)
+```
+
+In DOCX (using `python-docx`): same logic — `doc.add_picture(key)` for local paths, a plain paragraph for blob keys.
+
+---
+
+**4. `tests/unit/test_frame_persist.py` (new) — 4 tests**
+
+- `test_upload_frame_local_fallback_writes_file` — monkeypatch env to clear AZURE_STORAGE_ACCOUNT_URL and AZURE_STORAGE_CONNECTION_STRING; call `upload_frame("job-1", 0, b"JPEG")` with `EXPORTS_BASE_PATH = tmp_path`; assert returned path exists and contains `b"JPEG"`.
+- `test_upload_frame_returns_none_on_exception` — monkeypatch `open` to raise `OSError`; call `upload_frame(...)`; assert returns `None`.
+- `test_video_adapter_sets_frame_storage_keys_in_metadata` — monkeypatch `is_ffmpeg_available → True`, `extract_keyframes → [("/tmp/f.jpg", 0.0)]`, `open` in video.py to return stub bytes, `upload_frame → "evidence/job/0.jpg"`, `analyze_frames → "desc"`; call `VideoAdapter().normalize(job)`; assert `ev.metadata["frame_storage_keys"] == [("evidence/job/0.jpg", 0.0)]`.
+- `test_export_builder_includes_frame_captures_in_bundle` — build a minimal job dict with `extracted_evidence.evidence_items[0].metadata.frame_storage_keys = [("key", 1.5)]`; call `build_evidence_bundle(draft, job)`; assert `bundle["frame_captures"]` is a list with one entry whose `storage_key == "key"`.
+
+**Do not change:** existing test files, `sipoc_validator.py`, `reviewing.py`, `processing.py`, `extraction.py`.
+
+---
+
+**New env var — document in `REFERENCE.md`:**
+```
+AZURE_STORAGE_CONTAINER_EVIDENCE=evidence   # blob container for frame captures and evidence assets
+```
+
+---
+
+**Verification:**
+```bash
+cd backend && .venv/bin/pytest ../tests/unit/test_frame_persist.py -v
+.venv/bin/pytest ../tests/ -q   # full suite green (270+ tests)
+```
+
+Commit as: `feat: persist frame captures to storage and surface in export bundle (PRD §8.10)`
+
+---
+
 ## On Hold
 
 | ID | Task | Reason |
@@ -706,6 +1313,9 @@ Commit as: `fix: switch workers to WEBSITE_RUN_FROM_PACKAGE, remove startup-file
 
 | ID | Task | Closed | Outcome |
 |----|----- |--------|---------|
+| FRAME-PERSIST | Persist frame captures to storage; surface in export bundle | 2026-04-13 | Approved — `upload_frame()` in storage.py; keys in VideoAdapter metadata + agent_signals; `_timestamp_to_seconds` + anchor-linking in export_builder; "pending" note removed; 273 tests pass |
+| SPEAKER-RESOLVE | Speaker resolution UI + teams_metadata in extraction prompt | 2026-04-13 | Approved — `_build_speaker_hint` injected into extraction prompt; `SpeakerResolutionPanel` in DraftReview; `saveDraft` extended with speakerResolutions; 269 tests |
+| DRAFT-EDIT | Editable PDD/SIPOC in DraftReview + re-review on save | 2026-04-13 | Approved — `rerunnable_codes` pre-filter + `run_reviewing` re-run in `update_draft`; `review_notes`/`agent_review` in response; `EditablePddSection`, `EditableSipocTable`, debounced auto-save, `liveFlags` in DraftReview; 267 tests |
 | FRONTEND-COMPLETE | Phase 6 frontend integration — API key header, save-draft fix, job list | 2026-04-13 | Approved — `X-API-Key` header in `_fetch` + upload; `saveDraft` before finalize; `GET /api/jobs` + `list_jobs()`; `JobList.jsx`; `ExportLinks` switched to `downloadExport` (auth on downloads); 264 tests pass |
 | KEYFRAME-VISION | Keyframe extraction + multimodal LLM frame analysis | 2026-04-13 | Approved — `vision.py` added; `extract_keyframes` in preprocessor; VideoAdapter combines AUDIO TRANSCRIPT + FRAME ANALYSIS; confidence 0.90 when both; 260 tests pass |
 | MEDIA-PREPROCESSOR | ffmpeg audio extraction + chunked Whisper transcription | 2026-04-13 | Approved — `media_preprocessor.py` added; `transcription.py` refactored with `_transcribe_single` + pipeline; temp dir cleanup in `finally`; 253 tests pass |

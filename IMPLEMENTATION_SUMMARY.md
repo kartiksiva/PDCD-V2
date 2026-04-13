@@ -1651,3 +1651,157 @@ Implemented `FRONTEND-COMPLETE` to make the React/Vite frontend usable across re
 ### Open question / residual risk
 
 - The frontend still has no dedicated automated UI/component test coverage. The integration here is validated via backend tests and a production build, but browser-flow regressions would currently be caught only through manual testing.
+
+---
+
+## Section 10: PRD Compliance Gap Analysis + Phase 7 Assignment (2026-04-13)
+
+Full PRD review performed by Claude. Three high-priority gaps identified and specced for Codex.
+
+### Gaps confirmed
+
+**High (blocks v1 acceptance):**
+1. **Draft editing UI absent** (§6, §8.9) — DraftReview read-only; `blocked` decision is a dead end in the UI since users can't fix PDD/SIPOC issues that caused blockers.
+2. **Speaker resolution UI missing** (§8.1) — no component to resolve `Unknown Speaker` flags; `speaker_resolutions` persists to DB but is never surfaced.
+3. **Frame captures not persisted** (§8.10) — frames deleted in `finally` block after vision analysis; export builder has hard-coded "pending Azure Vision integration" note.
+
+**Medium:**
+4. Teams metadata (`transcript_speaker_map`) not injected into extraction prompt.
+5. OCR not executed — `ocr_enabled` stored but no OCR step runs.
+6. `confidence_delta` always 0.0 in agent_runs.
+
+**Confirmed compliant:** all 12 PDD key validators, `requires_user_action` on blockers, SIPOC quality gate, retry/DLQ, `audio_detected`/`frame_extraction_policy` in manifest, `provider_effective` fields, all §9 API contracts.
+
+### Assigned to Codex
+
+| Task | Key change | PRD section |
+|------|-----------|-------------|
+| `DRAFT-EDIT` | Editable PDD/SIPOC fields; `update_draft` re-runs reviewing + returns updated flags | §6, §8.9 |
+| `SPEAKER-RESOLVE` | `SpeakerResolutionPanel` in DraftReview; `_build_speaker_hint` injected into extraction prompt | §8.1 |
+| `FRAME-PERSIST` | `upload_frame()` in storage.py; frame keys in VideoAdapter metadata; frame captures in export bundle | §8.10 |
+
+---
+
+## Section 32: Draft Editing + Re-Review on Save (2026-04-13)
+
+Implemented `DRAFT-EDIT` so users can correct blocker-causing PDD/SIPOC fields in the review UI and immediately refresh the deterministic reviewing gate on save.
+
+### Changes
+
+- `backend/app/main.py`
+  - `PUT /api/jobs/{job_id}/draft` now persists `user_saved_draft=True` and `user_saved_at`
+  - re-runs the pure-Python reviewing gate after each draft save
+  - refreshes rerunnable reviewing/SIPOC flags before re-review so resolved blockers actually clear instead of accumulating stale codes
+  - extends the save response with updated `review_notes` and `agent_review`
+  - updates the dev simulate draft seed to a structurally complete PDD/SIPOC so lifecycle/export tests that save assumptions-only remain valid under the new re-review behavior
+- `frontend/src/components/DraftReview.jsx`
+  - replaced the read-only PDD/SIPOC display with inline-editable controls
+  - added debounced auto-save with live save status (`saving` / `saved` / `error`)
+  - updates live flags from the save response so blocker state changes immediately after edits
+  - finalization now saves the latest edited draft before posting finalize
+  - keeps process steps read-only while making top-level PDD fields and SIPOC cells editable
+- `tests/unit/test_draft_edit.py`
+  - added coverage for save response shape, blocker clearing after fixing a required field, and blocker re-appearance after blanking a required field
+
+### Validation
+
+- ran `.venv/bin/pytest ../tests/unit/test_draft_edit.py -v`
+- ran `.venv/bin/pytest ../tests/ -q`
+- ran `cd frontend && npm run build`
+- final suite result: `267 passed, 1 warning`
+
+### Open question / residual risk
+
+- `metrics` and other non-string PDD values are editable through generic text controls in the current UI. This satisfies the blocker-resolution workflow, but richer type-aware editing could improve usability in a later pass.
+
+---
+
+## Section 33: Speaker Resolution UI + Teams Speaker Map Hints (2026-04-13)
+
+Implemented `SPEAKER-RESOLVE` to reduce unnecessary `Unknown` actor assignments during extraction and expose persisted speaker-resolution inputs in the review UI.
+
+### Changes
+
+- `backend/app/agents/extraction.py`
+  - added `_build_speaker_hint(job)` to format `teams_metadata.transcript_speaker_map` into a prompt hint block
+  - appends the hint block to the extraction user prompt when Teams speaker metadata is present
+  - stores `speakers_detected` into persisted `agent_signals` so the frontend can surface unknown speakers after API reloads
+- `frontend/src/api.js`
+  - extended `saveDraft(jobId, draft, speakerResolutions)` to optionally persist `speaker_resolutions`
+- `frontend/src/components/DraftReview.jsx`
+  - added `SpeakerResolutionPanel` for `Unknown` speakers
+  - tracks `speakerResolutions` state separately from the edited draft
+  - includes speaker resolutions in debounced saves and finalize-time save
+  - sources detected speakers from `job.extracted_evidence.speakers_detected` with `job.agent_signals.speakers_detected` as the persisted fallback
+- `tests/unit/test_speaker_resolve.py`
+  - added coverage for speaker-hint rendering with and without Teams metadata
+
+### Validation
+
+- ran `.venv/bin/pytest ../tests/unit/test_speaker_resolve.py -v`
+- ran `.venv/bin/pytest ../tests/ -q`
+- ran `cd frontend && npm run build`
+- final suite result: `269 passed, 1 warning`
+
+### Open question / residual risk
+
+- The current speaker-resolution UI uses free-text role assignment, which satisfies PRD §8.1 persistence and editability but does not yet constrain values to known participants/roles from Teams metadata.
+
+---
+
+## Section 34: Frame Capture Persistence + Export Bundle Wiring (2026-04-13)
+
+Implemented `FRAME-PERSIST` so extracted video frames survive temp-dir cleanup, are persisted to evidence storage, and appear in the export bundle metadata for PDF/DOCX/Markdown output.
+
+### Changes
+
+- `backend/app/storage.py`
+  - added `upload_frame(job_id, frame_index, jpg_bytes)` with blob upload support and local fallback
+  - added `AZURE_STORAGE_CONTAINER_EVIDENCE` support for evidence asset routing
+- `backend/app/agents/adapters/video.py`
+  - uploads extracted frame JPGs before temp-dir cleanup
+  - stores persisted frame keys in both `EvidenceObject.metadata.frame_storage_keys` and persisted `agent_signals.frame_storage_keys`
+  - keeps temp-frame cleanup unchanged after persistence
+- `backend/app/export_builder.py`
+  - collects frame captures from evidence metadata and persisted agent signals
+  - links captures to timestamp anchors by midpoint proximity
+  - surfaces `frame_captures` in the evidence bundle instead of the old hard-coded pending note
+  - adds frame-capture sections to Markdown/PDF/DOCX exports
+  - embeds local images when available and falls back to textual storage-key references for blob-backed captures
+- `tests/unit/test_frame_persist.py`
+  - added coverage for local fallback writes, exception fallback, video-adapter frame key metadata, and bundle inclusion
+- `REFERENCE.md`
+  - documented `AZURE_STORAGE_CONTAINER_EVIDENCE`
+
+### Validation
+
+- ran `.venv/bin/pytest ../tests/unit/test_frame_persist.py -v`
+- ran `.venv/bin/pytest ../tests/ -q`
+- final suite result: `273 passed, 1 warning`
+
+### Open question / residual risk
+
+- Export-time image embedding is intentionally local-path-only. Blob-backed frame captures are referenced textually at export time rather than downloaded inline, which keeps export generation simple and deterministic but does not yet embed remote evidence assets directly.
+- `rerunnable_codes` in `main.py update_draft` is a hardcoded set that must be kept in sync with `run_reviewing`'s flag output. If new flag codes are added to that function, the set must be updated or stale flags will accumulate on re-edit.
+
+---
+
+## Section 11: Claude PRD Review Outcome (2026-04-13)
+
+All three high-priority PRD gaps from the gap analysis are now resolved. Remaining gaps are medium/low priority.
+
+### Resolved
+| Gap | Task | PRD section |
+|-----|------|-------------|
+| Draft editing + blocker resolution | DRAFT-EDIT | §6, §8.9 |
+| Speaker resolution UI + extraction speaker hint | SPEAKER-RESOLVE | §8.1 |
+| Frame capture persistence + export bundle | FRAME-PERSIST | §8.10 |
+
+### Still open (medium/low)
+| Gap | PRD section | Notes |
+|-----|-------------|-------|
+| OCR not executed | §8.1, §8.6 | `ocr_enabled` stored but no OCR step runs; vision does LLM description only |
+| `confidence_delta` always 0.0 | §8.11 | Column + serialization exist; agents never populate it |
+| Application Insights not wired | §8.4, §11 | Python logging only; no telemetry SDK |
+| Azure Key Vault at runtime | §8.4, §11 | Env vars used directly; Key Vault provisioned but not read at runtime |
+| Pre-processing cost estimate warning | §8.13 | Warning for high-cost quality runs not surfaced before processing starts |

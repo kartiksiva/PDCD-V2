@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_EXPORT_CONTAINER = "exports"
 DEFAULT_EXPORT_BASE_PATH = "./storage/exports"
+_EVIDENCE_CONTAINER = os.environ.get("AZURE_STORAGE_CONTAINER_EVIDENCE", "evidence")
 
 
 @dataclass(frozen=True)
@@ -136,3 +137,52 @@ class ExportStorage:
             job_dir = os.path.join(self.base_path, job_id)
             if os.path.isdir(job_dir):
                 shutil.rmtree(job_dir)
+
+
+def upload_frame(job_id: str, frame_index: int, jpg_bytes: bytes) -> str | None:
+    """Upload a frame JPEG to the evidence container.
+
+    Returns the storage key (blob path or local file path) on success, None on any
+    failure. Never raises.
+    """
+    try:
+        account_url = os.environ.get("AZURE_STORAGE_ACCOUNT_URL")
+        if not account_url:
+            account_name = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
+            if account_name:
+                account_url = f"https://{account_name}.blob.core.windows.net"
+        connection_string = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
+
+        blob_name = f"{job_id}/frames/frame_{frame_index:04d}.jpg"
+
+        if account_url:
+            from azure.identity import DefaultAzureCredential
+
+            client = BlobServiceClient(account_url=account_url, credential=DefaultAzureCredential())
+            blob_client = client.get_blob_client(_EVIDENCE_CONTAINER, blob_name)
+            blob_client.upload_blob(
+                jpg_bytes,
+                overwrite=True,
+                content_settings=ContentSettings(content_type="image/jpeg"),
+            )
+            return blob_name
+
+        if connection_string:
+            client = BlobServiceClient.from_connection_string(connection_string)
+            blob_client = client.get_blob_client(_EVIDENCE_CONTAINER, blob_name)
+            blob_client.upload_blob(
+                jpg_bytes,
+                overwrite=True,
+                content_settings=ContentSettings(content_type="image/jpeg"),
+            )
+            return blob_name
+
+        base = os.environ.get("EXPORTS_BASE_PATH", DEFAULT_EXPORT_BASE_PATH)
+        local_path = os.path.join(base, job_id, "frames", f"frame_{frame_index:04d}.jpg")
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        with open(local_path, "wb") as handle:
+            handle.write(jpg_bytes)
+        return local_path
+    except Exception as exc:
+        logger.warning("Frame upload failed for job %s frame %d: %s", job_id, frame_index, exc)
+        return None

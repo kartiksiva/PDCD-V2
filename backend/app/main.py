@@ -244,7 +244,29 @@ async def update_draft(job_id: str, payload: DraftUpdateRequest) -> Dict[str, An
     if payload.speaker_resolutions is not None:
         job["speaker_resolutions"].update(payload.speaker_resolutions)
     job["updated_at"] = _utc_now()
+    job["user_saved_draft"] = True
+    job["user_saved_at"] = job["updated_at"]
     job["draft"]["user_reconciled_at"] = _utc_now()
+    await _repo_upsert_job(job_id, job)
+    # Re-run the pure-Python reviewing gate so flags reflect the edited draft.
+    from app.agents.reviewing import run_reviewing
+
+    rerunnable_codes = {
+        "stub_draft_detected",
+        "pdd_incomplete",
+        "frame_first_evidence",
+        "transcript_fallback",
+        "insufficient_evidence",
+        "transcript_mismatch",
+        "unknown_speaker",
+    }
+    job["review_notes"]["flags"] = [
+        flag
+        for flag in job["review_notes"]["flags"]
+        if flag.get("code") not in rerunnable_codes
+        and not str(flag.get("code", "")).startswith("sipoc_")
+    ]
+    run_reviewing(job, {})
     await _repo_upsert_job(job_id, job)
     await anyio.to_thread.run_sync(
         JOB_REPO.append_job_event,
@@ -256,6 +278,8 @@ async def update_draft(job_id: str, payload: DraftUpdateRequest) -> Dict[str, An
         "job_id": job_id,
         "status": job["status"],
         "draft": job["draft"],
+        "review_notes": job["review_notes"],
+        "agent_review": job["agent_review"],
         "speaker_resolutions": job["speaker_resolutions"],
         "user_saved_draft": True,
     }
@@ -447,8 +471,15 @@ async def dev_simulate(job_id: str) -> Dict[str, Any]:
         "pdd": {
             "purpose": "Demonstrate the PFCD review workflow end-to-end.",
             "scope": "Single process from intake to approval.",
+            "triggers": ["User submits a new intake request."],
+            "preconditions": ["Required documents are available."],
             "roles": ["Analyst", "Reviewer", "Approver"],
             "systems": ["CRM", "Document Store"],
+            "business_rules": ["Requests must be validated before approval."],
+            "exceptions": [],
+            "outputs": ["Approved record"],
+            "metrics": {"coverage": "good", "confidence": 0.82},
+            "risks": ["Step 3 confidence below threshold (0.65)."],
             "steps": [
                 {
                     "id": "step-1",
@@ -486,7 +517,9 @@ async def dev_simulate(job_id: str) -> Dict[str, Any]:
                 "process_step": "Log intake",
                 "output": "Ticket",
                 "customer": "Analyst",
+                "step_anchor": ["step-1"],
                 "source_anchor": "00:00:30",
+                "anchor_missing_reason": None,
             },
             {
                 "supplier": "Analyst",
@@ -494,7 +527,9 @@ async def dev_simulate(job_id: str) -> Dict[str, Any]:
                 "process_step": "Validate completeness",
                 "output": "Validated doc",
                 "customer": "Reviewer",
+                "step_anchor": ["step-2"],
                 "source_anchor": "00:01:15",
+                "anchor_missing_reason": None,
             },
             {
                 "supplier": "Reviewer",
@@ -502,7 +537,9 @@ async def dev_simulate(job_id: str) -> Dict[str, Any]:
                 "process_step": "Approve and close",
                 "output": "Approved record",
                 "customer": "Approver",
+                "step_anchor": ["step-3"],
                 "source_anchor": "00:02:45",
+                "anchor_missing_reason": None,
             },
         ],
         "confidence_summary": {

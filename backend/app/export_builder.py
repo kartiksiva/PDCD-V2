@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -23,6 +24,17 @@ class _AnchorEntry:
 def _classify_anchor_type(anchor: str) -> str:
     """Classify anchor string into a type label."""
     return classify_anchor(anchor)
+
+
+def _timestamp_to_seconds(value: str) -> float:
+    parts = value.split(":")
+    try:
+        total = 0.0
+        for index, part in enumerate(parts):
+            total += float(part) * (60 ** (len(parts) - 1 - index))
+        return total
+    except (TypeError, ValueError):
+        return -1.0
 
 
 def build_evidence_bundle(finalized_draft: Dict[str, Any], job: Dict[str, Any]) -> Dict[str, Any]:
@@ -84,6 +96,37 @@ def build_evidence_bundle(finalized_draft: Dict[str, Any], job: Dict[str, Any]) 
                 item.get("ocr_text") or item.get("content_snippet")
             )
 
+    # Collect frame captures from evidence metadata or persisted agent signals.
+    frame_captures: list[dict] = []
+    for item in evidence_items:
+        frame_keys = (item.get("metadata") or {}).get("frame_storage_keys") or []
+        for storage_key, timestamp_sec in frame_keys:
+            frame_captures.append({"storage_key": storage_key, "timestamp_sec": timestamp_sec})
+    for storage_key, timestamp_sec in (job.get("agent_signals") or {}).get("frame_storage_keys") or []:
+        if not any(
+            existing["storage_key"] == storage_key and existing["timestamp_sec"] == timestamp_sec
+            for existing in frame_captures
+        ):
+            frame_captures.append({"storage_key": storage_key, "timestamp_sec": timestamp_sec})
+
+    # Link frame captures to timestamp anchors by midpoint proximity.
+    for capture in frame_captures:
+        timestamp_sec = capture["timestamp_sec"]
+        for anchor_val, entry in anchor_map.items():
+            if entry.anchor_type != "timestamp_range":
+                continue
+            parts = anchor_val.split("-")
+            if len(parts) == 1:
+                midpoint = _timestamp_to_seconds(parts[0])
+            else:
+                start = _timestamp_to_seconds(parts[0])
+                end = _timestamp_to_seconds(parts[-1])
+                if start < 0 or end < 0:
+                    continue
+                midpoint = (start + end) / 2
+            if midpoint >= 0 and abs(timestamp_sec - midpoint) <= 10:
+                capture.setdefault("linked_anchor_ids", []).append(entry.anchor_id)
+
     # PRD §8.10: only include anchors linked to at least one step or SIPOC row
     linked_anchors = [
         {
@@ -106,9 +149,11 @@ def build_evidence_bundle(finalized_draft: Dict[str, Any], job: Dict[str, Any]) 
         ),
         "linked_anchors": linked_anchors,
         "total_linked_anchors": len(linked_anchors),
+        "frame_captures": frame_captures,
         "frame_captures_note": (
-            "Frame captures are not embedded in this export "
-            "(pending Azure Vision integration)."
+            "Frame captures embedded above."
+            if frame_captures
+            else "No frame captures available for this job."
         ),
         "unlinked_note": "Evidence not included in this export format",
     }
@@ -173,6 +218,17 @@ def build_export_markdown(draft: Dict[str, Any], evidence_bundle: Dict[str, Any]
     note = evidence_bundle.get("frame_captures_note", "")
     if note:
         parts.extend(["", f"> {note}"])
+    frame_captures = evidence_bundle.get("frame_captures") or []
+    parts.extend(["", "### Frame captures", ""])
+    if frame_captures:
+        for capture in frame_captures:
+            anchor_ids = ", ".join(capture.get("linked_anchor_ids") or []) or "unlinked"
+            parts.append(
+                f"- `{capture.get('storage_key')}` @ {capture.get('timestamp_sec', 0):.1f}s "
+                f"(anchors: {anchor_ids})"
+            )
+    else:
+        parts.append("- No frame captures available.")
 
     return "\n".join(parts)
 
@@ -255,6 +311,28 @@ def build_export_pdf(draft: Dict[str, Any], evidence_bundle: Dict[str, Any]) -> 
         pdf.ln(2)
         _row(f"Note: {note}")
 
+    frame_captures = evidence_bundle.get("frame_captures") or []
+    if frame_captures:
+        pdf.ln(3)
+        _heading("Frame Captures", bold=True)
+        for capture in frame_captures:
+            key = capture.get("storage_key", "")
+            timestamp_sec = capture.get("timestamp_sec", 0.0)
+            if key.startswith("/") or (key.startswith(".") and os.path.exists(key)):
+                try:
+                    pdf.image(key, w=120)
+                    pdf.set_font("Helvetica", size=8)
+                    pdf.cell(0, 5, f"Frame @ {timestamp_sec:.1f}s — {key}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.set_font("Helvetica", size=11)
+                except Exception:
+                    pdf.set_font("Helvetica", size=8)
+                    pdf.cell(0, 5, f"Frame @ {timestamp_sec:.1f}s (image unreadable)", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.set_font("Helvetica", size=11)
+            else:
+                pdf.set_font("Helvetica", size=8)
+                pdf.cell(0, 5, f"Frame @ {timestamp_sec:.1f}s: {key}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.set_font("Helvetica", size=11)
+
     return bytes(pdf.output())
 
 
@@ -327,6 +405,21 @@ def build_export_docx(
     note = evidence_bundle.get("frame_captures_note", "")
     if note:
         doc.add_paragraph(note)
+
+    frame_captures = evidence_bundle.get("frame_captures") or []
+    if frame_captures:
+        doc.add_heading("Frame Captures", level=1)
+        for capture in frame_captures:
+            key = capture.get("storage_key", "")
+            timestamp_sec = capture.get("timestamp_sec", 0.0)
+            if os.path.isabs(key) or (key.startswith(".") and os.path.exists(key)):
+                try:
+                    doc.add_picture(key)
+                    doc.add_paragraph(f"Frame @ {timestamp_sec:.1f}s — {key}")
+                except Exception:
+                    doc.add_paragraph(f"Frame @ {timestamp_sec:.1f}s (image unreadable)")
+            else:
+                doc.add_paragraph(f"Frame capture: {key} @ {timestamp_sec:.1f}s")
 
     buf = io.BytesIO()
     doc.save(buf)

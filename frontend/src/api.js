@@ -38,10 +38,12 @@ export async function finalizeJob(jobId) {
   return res.json()
 }
 
-export async function saveDraft(jobId, draft) {
+export async function saveDraft(jobId, draft, speakerResolutions = null) {
+  const body = { pdd: draft.pdd, sipoc: draft.sipoc, assumptions: draft.assumptions }
+  if (speakerResolutions !== null) body.speaker_resolutions = speakerResolutions
   const res = await _fetch(`/jobs/${jobId}/draft`, {
     method: 'PUT',
-    body: JSON.stringify({ pdd: draft.pdd, sipoc: draft.sipoc, assumptions: draft.assumptions }),
+    body: JSON.stringify(body),
   })
   return res.json()
 }
