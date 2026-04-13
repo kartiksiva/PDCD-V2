@@ -29,6 +29,41 @@ jobs:
             -x "*.db" -x "*.sqlite3" \
             -x ".env" -x ".env.*" \
             -x "storage/*"
+      - uses: azure/login@v2
+        with:
+          creds: '${{ secrets.AZURE_CREDENTIALS }}'
+      - name: Validate package upload settings
+        run: |
+          if [ -z "${{ vars.AZURE_STORAGE_ACCOUNT }}" ]; then
+            echo "ERROR: Set AZURE_STORAGE_ACCOUNT as a GitHub Actions variable."
+            exit 1
+          fi
+      - name: Upload worker zip to scratch blob and write package URL
+        run: |
+          account="${{ vars.AZURE_STORAGE_ACCOUNT }}"
+          blob_name="worker-${{ github.sha }}.zip"
+          az storage blob upload \
+            --account-name "$account" \
+            --container-name scratch \
+            --name "$blob_name" \
+            --file worker.zip \
+            --auth-mode login \
+            --overwrite true
+          expiry=$(date -u -d "+4 hours" +%Y-%m-%dT%H:%MZ 2>/dev/null || date -u -v+4H +%Y-%m-%dT%H:%MZ)
+          sas=$(az storage blob generate-sas \
+            --account-name "$account" \
+            --container-name scratch \
+            --name "$blob_name" \
+            --permissions r \
+            --expiry "$expiry" \
+            --auth-mode login \
+            --as-user \
+            -o tsv)
+          printf '%s\n' "https://${account}.blob.core.windows.net/scratch/${blob_name}?${sas}" > package-url.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-url
+          path: package-url.txt
       - uses: actions/upload-artifact@v4
         with:
           name: worker-zip
@@ -42,6 +77,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: worker-zip
+      - uses: actions/download-artifact@v4
+        with:
+          name: package-url
+      - name: Read package URL
+        run: echo "PACKAGE_URL=$(cat package-url.txt)" >> $GITHUB_ENV
       - uses: azure/login@v2
         with:
           creds: '${{ secrets.AZURE_CREDENTIALS }}'
@@ -55,7 +95,11 @@ jobs:
             echo "ERROR: Set AZURE_WORKER_EXTRACTING_NAME in GitHub secrets."
             exit 1
           fi
-      - name: Configure extracting worker
+          if [ -z "${PACKAGE_URL}" ]; then
+            echo "ERROR: package-url artifact did not produce a package URL."
+            exit 1
+          fi
+      - name: Deploy extracting worker (WEBSITE_RUN_FROM_PACKAGE)
         run: |
           az webapp config appsettings set \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
@@ -64,8 +108,12 @@ jobs:
               AZURE_OPENAI_ENDPOINT="${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
               AZURE_OPENAI_CHAT_DEPLOYMENT_NAME="${AZURE_OPENAI_CHAT_DEPLOYMENT_NAME_RESOLVED}" \
               WEBSITES_CONTAINER_START_TIME_LIMIT=600 \
-              WEBSITES_PORT=8000
-      - name: Wait for extracting worker config restart to settle
+              WEBSITES_PORT=8000 \
+              WEBSITE_RUN_FROM_PACKAGE="$PACKAGE_URL"
+          az webapp restart \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WORKER_EXTRACTING_NAME }}
+      - name: Wait for extracting worker package restart to settle
         run: |
           sleep 15
           for i in $(seq 1 30); do
@@ -80,13 +128,8 @@ jobs:
             fi
             sleep 10
           done
-          echo "ERROR: extracting worker did not return to Running after config changes"
+          echo "ERROR: extracting worker did not return to Running after package deployment"
           exit 1
-      - name: Deploy extracting worker
-        uses: azure/webapps-deploy@v3
-        with:
-          app-name: ${{ secrets.AZURE_WORKER_EXTRACTING_NAME }}
-          package: worker.zip
       - name: Verify extracting worker is running
         run: |
           for i in $(seq 1 90); do
@@ -125,6 +168,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: worker-zip
+      - uses: actions/download-artifact@v4
+        with:
+          name: package-url
+      - name: Read package URL
+        run: echo "PACKAGE_URL=$(cat package-url.txt)" >> $GITHUB_ENV
       - uses: azure/login@v2
         with:
           creds: '${{ secrets.AZURE_CREDENTIALS }}'
@@ -138,7 +186,11 @@ jobs:
             echo "ERROR: Set AZURE_WORKER_PROCESSING_NAME in GitHub secrets."
             exit 1
           fi
-      - name: Configure processing worker
+          if [ -z "${PACKAGE_URL}" ]; then
+            echo "ERROR: package-url artifact did not produce a package URL."
+            exit 1
+          fi
+      - name: Deploy processing worker (WEBSITE_RUN_FROM_PACKAGE)
         run: |
           az webapp config appsettings set \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
@@ -147,8 +199,12 @@ jobs:
               AZURE_OPENAI_ENDPOINT="${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
               AZURE_OPENAI_CHAT_DEPLOYMENT_NAME="${AZURE_OPENAI_CHAT_DEPLOYMENT_NAME_RESOLVED}" \
               WEBSITES_CONTAINER_START_TIME_LIMIT=600 \
-              WEBSITES_PORT=8000
-      - name: Wait for processing worker config restart to settle
+              WEBSITES_PORT=8000 \
+              WEBSITE_RUN_FROM_PACKAGE="$PACKAGE_URL"
+          az webapp restart \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WORKER_PROCESSING_NAME }}
+      - name: Wait for processing worker package restart to settle
         run: |
           sleep 15
           for i in $(seq 1 30); do
@@ -163,13 +219,8 @@ jobs:
             fi
             sleep 10
           done
-          echo "ERROR: processing worker did not return to Running after config changes"
+          echo "ERROR: processing worker did not return to Running after package deployment"
           exit 1
-      - name: Deploy processing worker
-        uses: azure/webapps-deploy@v3
-        with:
-          app-name: ${{ secrets.AZURE_WORKER_PROCESSING_NAME }}
-          package: worker.zip
       - name: Verify processing worker is running
         run: |
           for i in $(seq 1 90); do
@@ -208,6 +259,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: worker-zip
+      - uses: actions/download-artifact@v4
+        with:
+          name: package-url
+      - name: Read package URL
+        run: echo "PACKAGE_URL=$(cat package-url.txt)" >> $GITHUB_ENV
       - uses: azure/login@v2
         with:
           creds: '${{ secrets.AZURE_CREDENTIALS }}'
@@ -221,7 +277,11 @@ jobs:
             echo "ERROR: Set AZURE_WORKER_REVIEWING_NAME in GitHub secrets."
             exit 1
           fi
-      - name: Configure reviewing worker
+          if [ -z "${PACKAGE_URL}" ]; then
+            echo "ERROR: package-url artifact did not produce a package URL."
+            exit 1
+          fi
+      - name: Deploy reviewing worker (WEBSITE_RUN_FROM_PACKAGE)
         run: |
           az webapp config appsettings set \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
@@ -230,8 +290,12 @@ jobs:
               AZURE_OPENAI_ENDPOINT="${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
               AZURE_OPENAI_CHAT_DEPLOYMENT_NAME="${AZURE_OPENAI_CHAT_DEPLOYMENT_NAME_RESOLVED}" \
               WEBSITES_CONTAINER_START_TIME_LIMIT=600 \
-              WEBSITES_PORT=8000
-      - name: Wait for reviewing worker config restart to settle
+              WEBSITES_PORT=8000 \
+              WEBSITE_RUN_FROM_PACKAGE="$PACKAGE_URL"
+          az webapp restart \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WORKER_REVIEWING_NAME }}
+      - name: Wait for reviewing worker package restart to settle
         run: |
           sleep 15
           for i in $(seq 1 30); do
@@ -246,13 +310,8 @@ jobs:
             fi
             sleep 10
           done
-          echo "ERROR: reviewing worker did not return to Running after config changes"
+          echo "ERROR: reviewing worker did not return to Running after package deployment"
           exit 1
-      - name: Deploy reviewing worker
-        uses: azure/webapps-deploy@v3
-        with:
-          app-name: ${{ secrets.AZURE_WORKER_REVIEWING_NAME }}
-          package: worker.zip
       - name: Verify reviewing worker is running
         run: |
           for i in $(seq 1 90); do

@@ -91,6 +91,20 @@ ensure_storage_account() {
     --output none >/dev/null \
     || true
 
+  # Grant the CI service principal blob write access when its client ID is provided.
+  if [[ -n "${SP_CLIENT_ID:-}" ]]; then
+    local sp_object_id
+    sp_object_id="$(az ad sp show --id "$SP_CLIENT_ID" --query id -o tsv 2>/dev/null || true)"
+    if [[ -n "$sp_object_id" ]]; then
+      az role assignment create \
+        --assignee-object-id "$sp_object_id" \
+        --role "Storage Blob Data Contributor" \
+        --scope "$storage_scope" \
+        --output none >/dev/null \
+        || true
+    fi
+  fi
+
   for container in uploads evidence exports scratch; do
     az storage container create \
       --account-name "$existing_name" \
@@ -225,6 +239,9 @@ ensure_sql() {
 }
 
 ensure_app_service() {
+  local storage_scope
+  storage_scope="/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.Storage/storageAccounts/$STORAGE_ACCOUNT"
+
   if ! az appservice plan show --name "$APP_SERVICE_PLAN" --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
     az appservice plan create \
       --name "$APP_SERVICE_PLAN" \
@@ -364,6 +381,12 @@ ensure_app_service() {
         --assignee-object-id "$worker_principal_id" \
         --role "Key Vault Secrets User" \
         --scope "/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.KeyVault/vaults/$KEY_VAULT_NAME" \
+        --output none \
+        || true
+      az role assignment create \
+        --assignee-object-id "$worker_principal_id" \
+        --role "Storage Blob Data Reader" \
+        --scope "$storage_scope" \
         --output none \
         || true
     fi

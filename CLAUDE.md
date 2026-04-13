@@ -268,6 +268,15 @@ chore: bump SQLAlchemy to 2.0.38
 - Deployment pipeline hardening (Section 13)
 - Section 14 C/H pass: `/dev/simulate` auth, async finalize, AgentRun lifecycle, DefaultAzureCredential storage, SK kernel caching, SB sender reuse, cost tracking + cap warn, deployment-aware pricing, profile-specific deployment vars
 - SK runtime hardening: canonical `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME`, api_version pinned, safe usage parsing, fail-fast on missing deployment
+- **Phase 6 — Frontend Integration (reviewed 2026-04-13, 264 tests passing):**
+  - `api.js` `_fetch` + `uploadFile` send `X-API-Key` header from `VITE_API_KEY`
+  - `saveDraft` called before `finalizeJob` — fixes the `user_saved_draft` 409 gate
+  - `GET /api/jobs` endpoint + `JobRepository.list_jobs()` — lightweight, deleted-excluded, most recent first
+  - `JobList.jsx` — history table with status badges, source chips, click-to-navigate by status
+  - `App.jsx` defaults to list view; `onSelectJob` routes to review/exports/status by job state
+  - `ExportLinks.jsx` switched to `downloadExport` (programmatic via `_fetch`) — auth header on downloads
+  - `vite.config.js` `/dev` proxy added — dev simulate button now works locally
+  - `VITE_API_KEY` documented in `REFERENCE.md`
 - Section 14 M/L pass (reviewed 2026-04-12, 231 tests passing):
   - Timestamp columns → `DateTime(timezone=True)` (M1)
   - Canonical `anchor_utils.classify_anchor()` shared by all three callers (M2)
@@ -282,8 +291,23 @@ chore: bump SQLAlchemy to 2.0.38
 
 **Assigned to Codex:** See `HANDOVER.md` for current assignments, in-progress work, and review queue.
 
+**Open deployment note (DEPLOY-FIX2 Part 2 — on hold):**
+- Part 1 resolved the immediate SCM restart race; deployment is working
+- Part 2 (`WEBSITE_RUN_FROM_PACKAGE` via blob storage) is designed and on hold pending prompt quality fixes
+
+**Active Codex task queue:** Queue is empty. Phase 7 (PRD gap closure) complete at 273 tests (reviewed 2026-04-13):
+- `DRAFT-EDIT`: editable PDD/SIPOC + re-review on save ✓
+- `SPEAKER-RESOLVE`: speaker resolution UI + extraction speaker hint ✓
+- `FRAME-PERSIST`: frame upload to evidence container + export bundle ✓
+Remaining PRD gaps: OCR execution (§8.1/§8.6), `confidence_delta` population (§8.11), Application Insights (§8.4).
+
+**Architecture decision (2026-04-13):**
+- Provider scope: Azure OpenAI + direct OpenAI only. Google/Gemini dropped.
+- Rationale: individual Azure account cannot provision latest models (gpt-4o, gpt-4.1); direct OpenAI provides identical models without quota constraints. Same SK connector family — no prompt or schema changes.
+- Azure remains the deployment/storage/orchestration platform; provider flexibility is LLM call path only.
+
 **Architecture gaps (non-blocking):**
-- Full token/sequence similarity in `alignment.py` requires Azure Speech (currently uses anchor ratio only)
-- `VideoAdapter` returns metadata stub only — Azure Vision integration pending
+- `VideoAdapter` Whisper transcription limited to 25 MB until MediaPreprocessor (Phase 5) is built
+- Full frame extraction (ffmpeg keyframes → multimodal LLM) pending MediaPreprocessor
 - Frontend (`frontend/`) is present but not yet integrated with the backend pipeline
-- Service Bus sender auto-reconnect on stale AMQP link (optional enhancement, see `SECTION14_MEDIUM_LOW_FINDINGS_2026-04-11.md`)
+- Service Bus sender auto-reconnect on stale AMQP link (optional enhancement)

@@ -376,6 +376,49 @@ def test_video_adapter_normalize_with_transcription(monkeypatch):
     assert job["_video_transcript_inline"] == vtt_text
 
 
+def test_video_adapter_normalize_large_file_transcribed_via_preprocessor(monkeypatch):
+    from app.agents.adapters.video import VideoAdapter
+
+    adapter = VideoAdapter()
+    job = _make_job(has_video=True, has_audio=True, has_transcript=False)
+    job["input_manifest"]["video"]["storage_key"] = "/tmp/large-meeting.mp4"
+    vtt_text = "WEBVTT\n\n00:00:00.000 --> 00:00:03.000\nFinance Analyst: Open SAP.\n"
+
+    with patch("app.agents.adapters.video.transcribe_audio_blob", return_value=vtt_text):
+        ev = adapter.normalize(job)
+
+    assert ev.content_text == vtt_text
+    assert ev.confidence == 0.85
+    assert ev.anchors == ["00:00:00-00:00:03"]
+    assert job["_video_transcript_inline"] == vtt_text
+
+
+def test_video_adapter_normalize_with_frame_analysis(monkeypatch):
+    from app.agents.adapters.video import VideoAdapter
+
+    adapter = VideoAdapter()
+    job = _make_job(has_video=True, has_audio=False, has_transcript=False)
+    job["input_manifest"]["video"]["audio_detected"] = False
+    job["input_manifest"]["video"]["storage_key"] = "/tmp/frame-demo.mp4"
+
+    monkeypatch.setattr("app.agents.adapters.video.transcribe_audio_blob", lambda _path: "")
+    monkeypatch.setattr("app.agents.adapters.video.is_ffmpeg_available", lambda: True)
+    monkeypatch.setattr(
+        "app.agents.adapters.video.extract_keyframes",
+        lambda _path, _tmp, _interval: [("/tmp/f.jpg", 0.0)],
+    )
+    monkeypatch.setattr(
+        "app.agents.adapters.video.analyze_frames",
+        lambda _frames, _policy: "Frame: user opens SAP.",
+    )
+
+    ev = adapter.normalize(job)
+
+    assert "FRAME ANALYSIS" in ev.content_text
+    assert job["_frame_descriptions_inline"] == "Frame: user opens SAP."
+    assert ev.metadata.get("has_frame_analysis") is True
+
+
 # ---------------------------------------------------------------------------
 # VideoAdapter — render_review_notes()
 # ---------------------------------------------------------------------------

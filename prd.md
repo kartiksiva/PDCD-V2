@@ -402,7 +402,7 @@ Given transcript-only fallback:
 
 ---
 
-## Implementation Progress (as of 2026-04-07)
+## Implementation Progress (as of 2026-04-13)
 
 | Milestone | Status |
 |-----------|--------|
@@ -415,3 +415,13 @@ Given transcript-only fallback:
 | Bug-fix pass (2026-04-07): OCR anchor field, alignment verdict, media-consistency gate, runner dead-branch, AgentRun persistence, doc drift | ✅ Complete |
 | Azure E2E deployment (2026-04-07): worker 504 fix, semantic-kernel dep, worker ContainerTimeout (health server), OpenAI endpoint + RBAC | ✅ Complete |
 | Section 14 Medium/Low backlog pass (2026-04-11): M1–M5, L1–L4, dead code cleanup, and test-gap closure | ✅ Complete |
+| Provider strategy decision (2026-04-13): Azure OpenAI + direct OpenAI via `PFCD_PROVIDER`; Google/Gemini dropped; §8.3 azure_ollama remains optional | 🔵 Decided — implementation pending |
+| PROC-PROMPT-FIX: strengthen SIPOC anchor rules in processing prompt | ✅ Complete (2026-04-13) |
+| PROVIDER-FLEX: `PFCD_PROVIDER` env var; OpenAIChatCompletion path in kernel_factory / extraction / processing | ✅ Complete (2026-04-13) |
+| VIDEO-TRANSCRIPTION: real Whisper transcription in VideoAdapter; new transcription.py module | ✅ Complete (2026-04-13) |
+| TEXT-SIMILARITY: Jaccard + SequenceMatcher consistency check in alignment.py (§8.5) | ✅ Complete (2026-04-13) |
+| REVIEW-FLAGS-L1L2L3: deduplicate _provider_name(), fix render_review_notes(), align thresholds | ✅ Complete (2026-04-13) |
+| E2E-PIPELINE-TEST: local smoke test script exercising real LLM chain; validates sipoc_no_anchor fix | ✅ Complete (2026-04-13) |
+| MediaPreprocessor: ffmpeg audio extraction + chunked Whisper transcription for large files (§8.6) | ✅ Complete (2026-04-13) |
+| MediaPreprocessor Phase 5b: keyframe extraction + multimodal LLM visual analysis (§8.6) | ✅ Complete (2026-04-13) |
+| Frontend integration: adapt V1 Next.js frontend to V2 API | ⬜ Not started — Phase 6 |
