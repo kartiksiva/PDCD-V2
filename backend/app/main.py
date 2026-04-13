@@ -7,7 +7,7 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 import anyio
@@ -201,6 +201,12 @@ async def create_job(payload: JobCreateRequest) -> Dict[str, Any]:
     await anyio.to_thread.run_sync(ORCHESTRATOR.enqueue, "extracting", message)
     logger.info("Job created: job_id=%s profile=%s", job_id, job["profile_requested"])
     return {"job_id": job_id, **job}
+
+
+@api_router.get("/jobs")
+async def list_jobs(limit: int = 50) -> List[Dict[str, Any]]:
+    bounded_limit = max(0, min(limit, 200))
+    return await anyio.to_thread.run_sync(lambda: JOB_REPO.list_jobs(limit=bounded_limit))
 
 
 @api_router.get("/jobs/{job_id}")

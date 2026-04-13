@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { finalizeJob } from '../api'
+import { finalizeJob, saveDraft } from '../api'
 import FlagPanel from './FlagPanel'
 import SipocTable from './SipocTable'
 
@@ -104,6 +104,7 @@ export default function DraftReview({ job, onFinalized }) {
     setError(null)
     setLoading(true)
     try {
+      await saveDraft(job.job_id, draft)
       const data = await finalizeJob(job.job_id)
       onFinalized(data)
     } catch (err) {

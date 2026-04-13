@@ -346,6 +346,48 @@ Completed the low-severity follow-up bundle raised during Claude review of Secti
 
 ---
 
+## Section 10: Local E2E Pipeline Smoke Script (2026-04-13)
+
+Added a stateless local smoke-test entrypoint for the real agent chain without Service Bus, repository, or storage dependencies.
+
+### Completed
+
+- Added [scripts/test_e2e_pipeline.py](/Users/karthicks/kAgents/Projects/PFCD-V2/scripts/test_e2e_pipeline.py).
+- The script:
+  - builds a job via `JobCreateRequest` + `default_job_payload`
+  - injects a short inline VTT transcript
+  - runs `run_extraction()`, `run_anchor_alignment()`, `run_processing()`, and `run_reviewing()` in order
+  - prints the requested summary table
+  - exits non-zero only when `sipoc_no_anchor` is present or runtime/env setup fails
+- No application code, migrations, repository logic, or test files were changed for this task.
+
+### Validation
+
+- `cd backend && .venv/bin/python -m py_compile ../scripts/test_e2e_pipeline.py`
+- `cd backend && .venv/bin/python ../scripts/test_e2e_pipeline.py`
+- Local result without live credentials: `Result: FAIL - PFCD_PROVIDER=openai is required.`
+- Live operator validation in a network-enabled shell:
+  - `cd backend`
+  - `export PFCD_PROVIDER=openai`
+  - `export OPENAI_API_KEY=...`
+  - `export OPENAI_CHAT_MODEL_BALANCED=gpt-4o-mini`
+  - `.venv/bin/python ../scripts/test_e2e_pipeline.py`
+  - Result: `PASS`
+  - Observed output:
+    - `Extraction evidence items: 4`
+    - `Alignment verdict: inconclusive`
+    - `SIPOC rows generated: 4`
+    - `SIPOC rows with step_anchor: 4`
+    - `SIPOC rows with source_anchor: 4`
+    - `Review flags: ['transcript_fallback']`
+    - `Blockers: ['NONE']`
+
+### Notes / Open Questions
+
+- The successful live run confirms the primary objective of this script: transcript-only balanced OpenAI processing no longer produces a `sipoc_no_anchor` blocker in the real agent chain.
+
+---
+
 ## Section 8: Azure End-to-End Deployment (2026-04-07)
 
 Validated full Azure deployment. All four App Services are running and the job pipeline is live. A series of infrastructure bugs were found and fixed during the first real end-to-end run.
@@ -1428,3 +1470,184 @@ Four capabilities ported from V1 into V2 as tasks PROC-PROMPT-FIX → PROVIDER-F
 - **Docker workers** — required for ffmpeg availability on Azure App Service
 - **Frontend wiring** — adapt V1 Next.js frontend to V2 API contract
 - **Job list endpoint** (`GET /api/jobs`) + provider health endpoint
+
+---
+
+## Section 29: MediaPreprocessor for Large Media Transcription (2026-04-13)
+
+Implemented `MEDIA-PREPROCESSOR` to unblock Whisper transcription for video/audio blobs larger than the 24 MB API limit.
+
+### Changes
+
+- `backend/app/agents/media_preprocessor.py`
+  - added `is_ffmpeg_available()` to probe `ffmpeg` on `PATH` without raising
+  - added `extract_audio_track()` to convert large video files to low-bitrate MP3 via subprocess `ffmpeg`
+  - added `split_audio_chunks()` to segment oversize audio into 10-minute chunks with a single-file fallback path
+  - added `_shift_ts()` and `merge_vtt_chunks()` to offset per-chunk VTT cue timings and emit one merged `WEBVTT` document
+- `backend/app/agents/transcription.py`
+  - extracted provider dispatch into `_transcribe_single()` while leaving `_transcribe_with_azure()` and `_transcribe_with_openai()` unchanged
+  - replaced the old immediate `file_too_large` skip path with a preprocessing pipeline:
+    - probe for `ffmpeg`
+    - extract audio from large videos
+    - chunk oversize audio
+    - transcribe each chunk independently
+    - merge successful chunk VTTs with timestamp offsets
+  - retained the prior stub fallback when `ffmpeg` is unavailable or extraction fails
+  - added cleanup of temporary extraction directories after transcription completes
+- `tests/unit/test_media_preprocessor.py`
+  - added coverage for `ffmpeg` availability probing, VTT merge behavior, comma-to-dot timestamp normalization, small-file chunk bypass, large-file preprocessing success, and `ffmpeg`-unavailable fallback
+- `tests/unit/test_adapters.py`
+  - added adapter transparency coverage confirming `VideoAdapter` behaves the same when `transcribe_audio_blob()` returns VTT through the new preprocessing path
+- `REFERENCE.md`
+  - added `media_preprocessor.py` and its test file to the repo map
+  - documented the external `ffmpeg` dependency and the Azure App Service limitation
+
+### Validation
+
+- ran `.venv/bin/pytest ../tests/unit/test_media_preprocessor.py -v`
+- ran `.venv/bin/pytest ../tests/unit/test_adapters.py -v`
+- ran `.venv/bin/pytest ../tests/ -q`
+- final suite result: `253 passed, 1 warning`
+
+### Open question / residual risk
+
+- Azure App Service still does not provide `ffmpeg`, so production use of this path depends on the planned Phase 5b custom-image/Docker worker deployment. Until then, large files continue to fall back to `[transcription_skipped:file_too_large]` in environments without `ffmpeg`.
+
+---
+
+## Section 30: Keyframe Vision Supplement for VideoAdapter (2026-04-13)
+
+Implemented `KEYFRAME-VISION` to add frame-derived evidence for video inputs and supplement audio transcripts with batched multimodal frame analysis.
+
+### Changes
+
+- `backend/app/agents/media_preprocessor.py`
+  - added `extract_keyframes()` using subprocess `ffmpeg` with interval sampling, JPEG output, and a hard max-frame cap
+  - returns sorted `(frame_path, timestamp_sec)` pairs and degrades to `[]` on missing `ffmpeg` or extraction failures
+- `backend/app/agents/vision.py`
+  - added direct `httpx` vision-call batching for both provider paths using `_provider_name()`
+  - added env-controlled limits for frames per call and frames per job
+  - added base64 image packaging into chat-completions `image_url` content items
+  - returns concatenated frame-analysis text and degrades to `""` on any error
+- `backend/app/agents/adapters/video.py`
+  - documented `_frame_descriptions_inline` as a second ephemeral extraction-only field beside `_video_transcript_inline`
+  - added optional keyframe extraction + `analyze_frames()` path gated on `storage_key` and `ffmpeg` availability
+  - now returns:
+    - raw VTT transcript text when only audio transcription is available
+    - `FRAME ANALYSIS:` content when only visual analysis is available
+    - combined transcript + frame-analysis content when both are available
+  - added `has_frame_analysis` metadata and updated review notes to report completed frame analysis
+- `backend/app/workers/runner.py`
+  - extraction-phase cleanup now drops `_frame_descriptions_inline` anywhere `_video_transcript_inline` is cleared, preserving deterministic persisted payloads
+- `tests/unit/test_media_preprocessor.py`
+  - added keyframe extraction coverage for `ffmpeg`-missing fallback and tuple/timestamp output
+- `tests/unit/test_vision.py`
+  - added coverage for empty input, provider routing, exception fallback, and batching behavior
+- `tests/unit/test_adapters.py`
+  - added frame-analysis adapter coverage and adjusted transcript-only expectations to preserve existing extraction behavior
+- `REFERENCE.md`
+  - added `vision.py`, `test_vision.py`, and the new vision-related environment variables to the reference map/table
+
+### Validation
+
+- ran `.venv/bin/pytest ../tests/unit/test_media_preprocessor.py -v`
+- ran `.venv/bin/pytest ../tests/unit/test_vision.py -v`
+- ran `.venv/bin/pytest ../tests/unit/test_adapters.py -v`
+- ran `.venv/bin/pytest ../tests/ -q`
+- final suite result: `260 passed, 1 warning`
+
+### Open question / residual risk
+
+- Production still depends on both a vision-capable model deployment and `ffmpeg` availability in the worker runtime. Without those, the adapter falls back to transcript-only or metadata-only video evidence as designed.
+
+---
+
+## Section 9: Phase 6 — Frontend Integration (assigned 2026-04-13)
+
+Reviewed and spec'd by Claude. Assigned to Codex via `HANDOVER.md FRONTEND-COMPLETE`.
+
+### Gaps identified in existing frontend
+
+The frontend components (`CreateJob`, `JobStatus`, `DraftReview`, `ExportLinks`, `SipocTable`, `FlagPanel`) are structurally sound and connected to correct API calls. Four critical gaps were found:
+
+1. **API key header absent** — `_fetch` in `api.js` never sends `X-API-Key`. Any deployment with `PFCD_API_KEY` configured silently returns 401 on every call.
+2. **Save-draft missing → finalize always 409** — `DraftReview.handleFinalize` calls `finalizeJob` directly. The backend requires `user_saved_draft=True` (set by PUT `/jobs/{id}/draft`). Without calling `saveDraft` first, finalize always returns 409. There is no save-draft function in `api.js` and no save step in the UI.
+3. **No job list** — there is no `GET /api/jobs` endpoint in the backend and no list/history view in the frontend. Jobs are unreachable after page refresh.
+4. **Dev proxy gap** — Vite dev server proxies `/api` but not `/dev`. The devSimulate button calls `/dev/jobs/{id}/simulate` and always fails locally.
+
+### Spec for Codex
+
+- `frontend/src/api.js` — add VITE_API_KEY header in `_fetch`; add `saveDraft`; add `listJobs`
+- `frontend/vite.config.js` — add `/dev` to proxy config
+- `frontend/src/components/DraftReview.jsx` — call `saveDraft` before `finalizeJob` in `handleFinalize`
+- `backend/app/repository.py` — add `list_jobs(limit=50)` → lightweight summary rows, deleted excluded, most recent first
+- `backend/app/main.py` — add `GET /api/jobs` endpoint
+- `frontend/src/components/JobList.jsx` (new) — table of recent jobs; clicking a row calls `getJob` then routes to appropriate view
+- `frontend/src/App.jsx` — default view `'list'`; add `onSelectJob` routing; `← Jobs` back button
+- `tests/unit/test_job_list.py` (new) — 4 tests: empty, rows ordered, deleted excluded, endpoint 200
+
+### Delivered (reviewed 2026-04-13)
+
+All 8 changes implemented as specced, plus one beyond-spec improvement:
+
+- `api.js` — `authHeaders()` helper extracted; `_fetch`, `uploadFile`, and `devSimulate` all send `X-API-Key`; `saveDraft` and `listJobs` added; `DEV_BASE` extracted for `/dev/*` calls
+- `vite.config.js` — `/dev` proxy added alongside `/api`
+- `DraftReview.jsx` — `saveDraft` called before `finalizeJob` in `handleFinalize`; import updated
+- `repository.py` — `list_jobs(limit)` added: SQLAlchemy query filtering `deleted_at IS NULL`, ordered `created_at DESC`, limit-capped
+- `main.py` — `GET /api/jobs` at line 206 (before `/jobs/{job_id}` to avoid shadowing); `bounded_limit = max(0, min(limit, 200))` prevents oversized queries
+- `JobList.jsx` (new) — status badge colours, source type chips, `selecting` state for per-row loading feedback
+- `App.jsx` — default view `'list'`; `onSelectJob` routes to `exports`/`review`/`status` by status; `← Jobs` back button replaces `+ New Job` in nav
+- `ExportLinks.jsx` — **beyond spec**: switched from `<a href download>` to `downloadExport()` button calls, which routes through `_fetch` and sends `X-API-Key`; also adds per-format loading state and error display
+- `REFERENCE.md` — `VITE_API_KEY` documented
+
+### Validation
+
+- 264 passed, 1 warning (all tests green)
+- `npm run build` clean
+
+---
+
+## Section 31: Phase 6 Frontend Integration Completed (2026-04-13)
+
+Implemented `FRONTEND-COMPLETE` to make the React/Vite frontend usable across refreshes and aligned with the backend’s auth and draft-finalize requirements.
+
+### Changes
+
+- `backend/app/repository.py`
+  - added `list_jobs(limit=50)` returning lightweight, most-recent-first job summaries
+  - excludes soft-deleted rows via `deleted_at is null`
+- `backend/app/main.py`
+  - added authenticated `GET /api/jobs` endpoint with limit clamped to `0..200`
+- `frontend/src/api.js`
+  - added `X-API-Key` injection from `VITE_API_KEY` for JSON API requests
+  - added `saveDraft(jobId, draft)` and `listJobs()`
+  - extended upload and `/dev/jobs/{id}/simulate` requests to send the same API key header so authenticated local/dev flows no longer break on upload or simulate
+  - added authenticated export download helper using `fetch` + blob download because plain anchor tags cannot send `X-API-Key`
+- `frontend/src/components/DraftReview.jsx`
+  - now saves the draft before calling finalize, fixing the backend `409 Draft must be saved before finalize` path
+- `frontend/src/components/JobList.jsx`
+  - added recent-job list view with status/source badges and row-click job loading
+- `frontend/src/App.jsx`
+  - switched default route to the new job list
+  - added list/create/status/review/exports routing from selected job status
+  - added `← Jobs` navigation back to history
+- `frontend/src/components/ExportLinks.jsx`
+  - switched export actions from raw anchor links to authenticated button-triggered downloads
+  - now prefers `finalized_draft` details when loading a completed job from history
+- `frontend/vite.config.js`
+  - added `/dev` proxy alongside `/api` so local `Simulate → needs_review` works
+- `tests/unit/test_job_list.py`
+  - added coverage for empty list, ordering, deleted-row exclusion, and `GET /api/jobs`
+- `REFERENCE.md`
+  - documented `VITE_API_BASE`, `VITE_API_KEY`, and the new `GET /api/jobs` endpoint
+
+### Validation
+
+- ran `.venv/bin/pytest ../tests/unit/test_job_list.py -v`
+- ran `.venv/bin/pytest ../tests/ -q`
+- ran `cd frontend && npm run build`
+- final suite result: `264 passed, 1 warning`
+
+### Open question / residual risk
+
+- The frontend still has no dedicated automated UI/component test coverage. The integration here is validated via backend tests and a production build, but browser-flow regressions would currently be caught only through manual testing.

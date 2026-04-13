@@ -1,5 +1,5 @@
-import React from 'react'
-import { exportUrl } from '../api'
+import React, { useState } from 'react'
+import { downloadExport } from '../api'
 
 const FORMATS = [
   { key: 'json', label: 'JSON', mime: 'application/json' },
@@ -9,10 +9,25 @@ const FORMATS = [
 ]
 
 export default function ExportLinks({ job }) {
+  const [downloading, setDownloading] = useState(null)
+  const [error, setError] = useState(null)
   const jobId = job?.job_id
-  const draft = job?.draft ?? {}
+  const draft = job?.finalized_draft ?? job?.draft ?? {}
   const summary = draft.confidence_summary ?? {}
   const generatedAt = draft.finalized_at ?? job?.updated_at
+
+  async function handleDownload(fmt) {
+    setError(null)
+    setDownloading(fmt)
+    try {
+      await downloadExport(jobId, fmt)
+    } catch (err) {
+      const detail = err.data?.detail
+      setError(typeof detail === 'string' ? detail : detail?.message ?? err.message)
+    } finally {
+      setDownloading(null)
+    }
+  }
 
   return (
     <div className="bg-white rounded-xl shadow p-6 max-w-xl mx-auto space-y-6">
@@ -44,17 +59,23 @@ export default function ExportLinks({ job }) {
 
       <div>
         <h3 className="text-sm font-semibold text-gray-700 mb-3">Download Exports</h3>
+        {error && (
+          <div className="mb-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
+            {error}
+          </div>
+        )}
         <div className="flex flex-wrap gap-3">
           {FORMATS.map(({ key, label }) => (
-            <a
+            <button
               key={key}
-              href={exportUrl(jobId, key)}
-              download
+              type="button"
+              onClick={() => handleDownload(key)}
+              disabled={!jobId || downloading !== null}
               className="flex items-center gap-2 bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
             >
               <span>↓</span>
-              <span>{label}</span>
-            </a>
+              <span>{downloading === key ? `Downloading ${label}…` : label}</span>
+            </button>
           ))}
         </div>
       </div>

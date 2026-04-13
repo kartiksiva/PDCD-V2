@@ -143,6 +143,30 @@ class JobRepository:
             exports = session.get(ExportPayload, job_id)
             return self._job_to_payload(job, input_manifest, review_notes, drafts, agent_runs, exports)
 
+    def list_jobs(self, limit: int = 50) -> list[dict]:
+        """Return lightweight job summaries, most recent first, excluding deleted."""
+        with session_scope() as session:
+            rows = session.execute(
+                select(Job)
+                .where(Job.deleted_at.is_(None))
+                .order_by(Job.created_at.desc())
+                .limit(limit)
+            ).scalars().all()
+            return [
+                {
+                    "job_id": row.job_id,
+                    "status": row.status,
+                    "created_at": self._to_iso(row.created_at),
+                    "updated_at": self._to_iso(row.updated_at),
+                    "profile_requested": row.profile_requested,
+                    "has_video": row.has_video,
+                    "has_audio": row.has_audio,
+                    "has_transcript": row.has_transcript,
+                    "current_phase": row.current_phase,
+                }
+                for row in rows
+            ]
+
     def upsert_job(self, job_id: str, payload: Dict[str, Any]) -> None:
         logger.debug("Upserting job %s status=%s", job_id, payload.get("status"))
         with session_scope() as session:

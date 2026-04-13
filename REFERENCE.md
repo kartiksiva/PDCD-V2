@@ -25,11 +25,13 @@ PDCD-V2/
 │   │   │   ├── evidence.py        # Evidence strength computation
 │   │   │   ├── extraction.py      # SK-based extraction agent (uses AdapterRegistry)
 │   │   │   ├── kernel_factory.py  # SK Kernel factory (Azure OpenAI + direct OpenAI)
+│   │   │   ├── media_preprocessor.py # ffmpeg audio extraction/chunking + VTT merge helpers
 │   │   │   ├── openai_client.py   # (legacy — kept for reference, unused)
 │   │   │   ├── processing.py      # SK-based processing agent
 │   │   │   ├── reviewing.py       # Pure-Python reviewing agent (uses SIPOCValidator)
 │   │   │   ├── sipoc_validator.py # SIPOC schema validation (PRD §8.8 + §10)
 │   │   │   ├── transcription.py   # Whisper transcription helper for local media blobs
+│   │   │   ├── vision.py          # direct httpx vision-call batching for video frames
 │   │   │   └── adapters/
 │   │   │       ├── __init__.py
 │   │   │       ├── base.py        # IProcessEvidenceAdapter ABC + dataclasses
@@ -56,6 +58,8 @@ PDCD-V2/
 │   │   ├── test_auth.py            # API key auth HTTP-level tests
 │   │   ├── test_agents.py          # extraction, processing, reviewing, alignment, evidence tests
 │   │   ├── test_adapters.py        # TranscriptAdapter, VideoAdapter, AdapterRegistry, extraction integration
+│   │   ├── test_media_preprocessor.py # ffmpeg availability, VTT merge, chunking, large-file transcription
+│   │   ├── test_vision.py          # frame batching and provider-routing tests
 │   │   ├── test_sipoc_validator.py # SIPOC schema validation and reviewing agent integration
 │   │   └── test_export_builder.py  # evidence bundle, PDF, Markdown, DOCX export tests
 │   └── integration/
@@ -139,9 +143,22 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 | `OPENAI_CHAT_MODEL_BALANCED` | Direct OpenAI balanced chat model | `gpt-4o-mini` |
 | `OPENAI_CHAT_MODEL_QUALITY` | Direct OpenAI quality chat model | `gpt-4o` |
 | `OPENAI_TRANSCRIPTION_MODEL` | Direct OpenAI transcription model | `whisper-1` |
+| `OPENAI_VISION_MODEL` | Direct OpenAI vision model | `gpt-4o-mini` |
+| `AZURE_OPENAI_VISION_DEPLOYMENT` | Azure OpenAI deployment name for vision | `""` |
+| `PFCD_VISION_FRAMES_PER_CALL` | Max images sent per vision LLM call | `4` |
+| `PFCD_VISION_MAX_FRAMES` | Max frames analyzed per job | `40` |
 | `PFCD_CONSISTENCY_MATCH_THRESHOLD` | Transcript/media consistency threshold for `match` | `0.80` |
 | `PFCD_CONSISTENCY_INCONCLUSIVE_THRESHOLD` | Anchor-fallback consistency threshold for `inconclusive` | `0.50` |
 | `PFCD_CONSISTENCY_MISMATCH_THRESHOLD` | Transcript/media consistency threshold for `suspected_mismatch` | `0.30` |
+
+### Frontend Dev Environment Variables
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `VITE_API_BASE` | Frontend API origin override | `""` |
+| `VITE_API_KEY` | Client-side API key sent as `X-API-Key` | `""` |
+
+**ffmpeg dependency:** `media_preprocessor.py` calls `ffmpeg` via subprocess. Azure App Service (Linux) does not include `ffmpeg` by default. For local dev, install with `brew install ffmpeg` on macOS or `apt install ffmpeg` on Linux. For Azure production, Docker workers with a custom image are required (Phase 5b). When `ffmpeg` is absent, files larger than 24 MB fall back to `[transcription_skipped:file_too_large]`, matching the pre-Phase 5 behavior.
 
 ### Starting Workers (Service Bus Phases)
 
@@ -178,6 +195,7 @@ Base path: `/api`
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/api/jobs` | Create a new job (accepts `JobCreateRequest`) |
+| GET | `/api/jobs` | List recent non-deleted jobs (most recent first) |
 | GET | `/api/jobs/{job_id}` | Get job state and payload |
 | PUT | `/api/jobs/{job_id}/draft` | Update draft (reconcile review notes) |
 | POST | `/api/jobs/{job_id}/finalize` | Finalize draft (move to FINALIZING) |
