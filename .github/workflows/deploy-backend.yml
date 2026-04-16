@@ -42,7 +42,9 @@ jobs:
   deploy:
     needs: test
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Upload (~1 min) + async deploy trigger + health-check polling (≤15 min).
+    # The synchronous Oryx build has been eliminated; this guard covers the rest.
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -59,8 +61,26 @@ jobs:
             exit 1
           fi
 
-      - name: Build backend package
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build backend package (with pre-installed dependencies)
         run: |
+          # Derive the minor version from the interpreter so the path stays
+          # in sync if the setup-python version is ever bumped.
+          PY_MINOR=$(python3 --version | cut -d' ' -f2 | cut -d'.' -f1-2)
+
+          # Pre-install pip dependencies into antenv/ so Azure App Service does not
+          # need to run Oryx server-side pip install after deployment.  This is the
+          # standard layout expected by the Python App Service worker (PYTHONPATH
+          # already includes /home/site/wwwroot/antenv/lib/python*/site-packages).
+          pip install \
+            --quiet \
+            --target "backend/antenv/lib/python${PY_MINOR}/site-packages" \
+            -r backend/requirements.txt
+
           cd backend
           zip -r ../backend.zip . \
             -x "venv/*" -x ".venv/*" -x "env/*" \
@@ -69,12 +89,24 @@ jobs:
             -x "*.db" -x "*.sqlite3" \
             -x ".env" -x ".env.*" \
             -x "storage/*"
+          # antenv/ is intentionally included so Azure has pre-built packages.
 
-      - name: Deploy backend package
-        uses: azure/webapps-deploy@v3
-        with:
-          app-name: ${{ secrets.AZURE_WEBAPP_NAME }}
-          package: ./backend.zip
+          # Remove the temporary antenv directory so it is not left in the workspace.
+          rm -rf antenv
+
+      - name: Deploy backend package (async)
+        # Use az cli directly so the command returns immediately after upload.
+        # azure/webapps-deploy@v3 blocks synchronously waiting for Oryx to finish,
+        # which caused the previous 30-minute cancellation.
+        # The CLI returns non-zero if the upload fails (caught by bash -e).
+        # Deployment completion is validated by the health-check step below.
+        run: |
+          az webapp deploy \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WEBAPP_NAME }} \
+            --src-path ./backend.zip \
+            --type zip \
+            --async true
 
       - name: Verify backend HTTP readiness
         run: |
@@ -96,4 +128,7 @@ jobs:
           az webapp config appsettings set \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WEBAPP_NAME }} \
-            --settings PFCD_CORS_ORIGINS="${{ secrets.PFCD_CORS_ORIGINS }}"
+            --settings \
+              PFCD_CORS_ORIGINS="${{ secrets.PFCD_CORS_ORIGINS }}" \
+              SCM_DO_BUILD_DURING_DEPLOYMENT="false" \
+              ENABLE_ORYX_BUILD="false"
