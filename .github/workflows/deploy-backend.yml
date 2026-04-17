@@ -115,9 +115,15 @@ jobs:
             --name ${{ secrets.AZURE_WEBAPP_NAME }} \
             --settings \
               PFCD_CORS_ORIGINS="${{ secrets.PFCD_CORS_ORIGINS }}" \
+              SCM_DO_BUILD_DURING_DEPLOYMENT=false \
+              PYTHONPATH=/home/site/wwwroot/antenv/lib/python3.11/site-packages \
               WEBSITES_CONTAINER_START_TIME_LIMIT=600 \
               WEBSITES_PORT=8000 \
               WEBSITE_RUN_FROM_PACKAGE="$PACKAGE_URL"
+          az webapp config set \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WEBAPP_NAME }} \
+            --startup-file "python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
           az webapp restart \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WEBAPP_NAME }}

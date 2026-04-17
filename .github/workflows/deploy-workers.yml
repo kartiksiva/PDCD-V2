@@ -143,6 +143,8 @@ jobs:
             --settings PFCD_WORKER_ROLE=extracting \
               AZURE_OPENAI_ENDPOINT="${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
               AZURE_OPENAI_CHAT_DEPLOYMENT_NAME="${AZURE_OPENAI_CHAT_DEPLOYMENT_NAME_RESOLVED}" \
+              SCM_DO_BUILD_DURING_DEPLOYMENT=false \
+              PYTHONPATH=/home/site/wwwroot/antenv/lib/python3.11/site-packages \
               WEBSITES_CONTAINER_START_TIME_LIMIT=600 \
               WEBSITES_PORT=8000 \
               WEBSITE_RUN_FROM_PACKAGE="$PACKAGE_URL"
@@ -234,6 +236,8 @@ jobs:
             --settings PFCD_WORKER_ROLE=processing \
               AZURE_OPENAI_ENDPOINT="${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
               AZURE_OPENAI_CHAT_DEPLOYMENT_NAME="${AZURE_OPENAI_CHAT_DEPLOYMENT_NAME_RESOLVED}" \
+              SCM_DO_BUILD_DURING_DEPLOYMENT=false \
+              PYTHONPATH=/home/site/wwwroot/antenv/lib/python3.11/site-packages \
               WEBSITES_CONTAINER_START_TIME_LIMIT=600 \
               WEBSITES_PORT=8000 \
               WEBSITE_RUN_FROM_PACKAGE="$PACKAGE_URL"
@@ -325,6 +329,8 @@ jobs:
             --settings PFCD_WORKER_ROLE=reviewing \
               AZURE_OPENAI_ENDPOINT="${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
               AZURE_OPENAI_CHAT_DEPLOYMENT_NAME="${AZURE_OPENAI_CHAT_DEPLOYMENT_NAME_RESOLVED}" \
+              SCM_DO_BUILD_DURING_DEPLOYMENT=false \
+              PYTHONPATH=/home/site/wwwroot/antenv/lib/python3.11/site-packages \
               WEBSITES_CONTAINER_START_TIME_LIMIT=600 \
               WEBSITES_PORT=8000 \
               WEBSITE_RUN_FROM_PACKAGE="$PACKAGE_URL"
