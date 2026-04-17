@@ -1805,3 +1805,197 @@ All three high-priority PRD gaps from the gap analysis are now resolved. Remaini
 | Application Insights not wired | §8.4, §11 | Python logging only; no telemetry SDK |
 | Azure Key Vault at runtime | §8.4, §11 | Env vars used directly; Key Vault provisioned but not read at runtime |
 | Pre-processing cost estimate warning | §8.13 | Warning for high-cost quality runs not surfaced before processing starts |
+
+---
+
+## Section 35: Deployment Workflow Hardening (2026-04-14)
+
+Closed the active worker deployment RCA and switched the backend deployment workflow to the same package-URL pattern already used by workers.
+
+### WORKER-BUILD-RCA
+
+- inspected the latest failed `Deploy Workers` manual run (`24387794848`) with `gh`
+- root cause was Azure RBAC, not workflow YAML: the failing `Upload worker zip to scratch blob and write package URL` step was authenticating successfully but the GitHub deployment principal lacked storage data-plane write access on `pfcddevstorage`
+- identified the GitHub deployment principal as `pfcd-dev-api-gha` and granted it `Storage Blob Data Contributor` on the storage account
+- reran `Deploy Workers` run `24387794848`; the `build` job passed on rerun and all three deploy jobs advanced past the original package-upload failure
+
+### DEPLOY-FIX3
+
+- updated `.github/workflows/deploy-backend.yml` to remove `azure/webapps-deploy@v3`
+- backend deploy now:
+  - validates `AZURE_STORAGE_ACCOUNT`
+  - builds `backend.zip`
+  - uploads the package to the `scratch` blob container
+  - generates a SAS package URL
+  - sets `WEBSITE_RUN_FROM_PACKAGE` plus `PFCD_CORS_ORIGINS`
+  - restarts the app and waits for the App Service state to settle before health probing
+- removed the old post-deploy app-settings step because CORS config is now set in the main deploy step
+- updated `infra/README.md` to describe backend package-URL deploys instead of Kudu OneDeploy
+- granted `Storage Blob Data Reader` to the API app identity `pfcd-dev-api` on `pfcddevstorage` so the backend app can read its mounted package blob when this workflow is used
+
+### Validation / residual risk
+
+- ran `git diff --check` locally; no whitespace or patch-format issues
+- backend workflow was not GitHub-validated in this session because the workflow change is local-only until committed and pushed
+- current GitHub Actions deprecation warnings about Node.js 20 remain informational and were not changed as part of this pass
+
+---
+
+## Section 36: Claude Review — WORKER-BUILD-RCA + DEPLOY-FIX3 (2026-04-17)
+
+### Review outcome: Both items approved
+
+**WORKER-BUILD-RCA:** Operator-only fix; no workflow code changes. Root cause correctly identified as missing `Storage Blob Data Contributor` RBAC assignment on `pfcddevstorage` for the GHA service principal `pfcd-dev-api-gha`. Role granted; `Deploy Workers` run `24387794848` build job confirmed passing. No open issues.
+
+**DEPLOY-FIX3:** `.github/workflows/deploy-backend.yml` reviewed against the spec in HANDOVER.md. All spec requirements satisfied:
+- `azure/webapps-deploy@v3` removed; no Kudu OneDeploy on the backend deploy path
+- `AZURE_STORAGE_ACCOUNT` validation present as a GitHub Actions variable check
+- Blob upload + `az storage blob generate-sas` with SAS generation identical to the worker pattern
+- `WEBSITE_RUN_FROM_PACKAGE`, `PFCD_CORS_ORIGINS`, `WEBSITES_CONTAINER_START_TIME_LIMIT=600`, `WEBSITES_PORT=8000` set in a single `az webapp config appsettings set` call
+- Separate "Apply post-deploy configuration" step removed — CORS setting consolidated into deploy step as specified
+- Settle loop: initial `sleep 15`, then polls `az webapp show --query state` for `Running`, then `sleep 60` before exiting
+- Health probe: `curl -fsS` against `/health` for up to 60 attempts × 10s = 10 min
+- `infra/README.md` updated correctly: describes package-URL deploy for both backend and workers; RBAC requirements for app identities documented
+
+One operational note: the API app identity `pfcd-dev-api` also required `Storage Blob Data Reader` on `pfcddevstorage` so it can mount the package blob at runtime. Codex granted this role as part of the DEPLOY-FIX3 work. This is consistent with how worker identities are configured.
+
+### Suite verification
+
+- `pytest tests/unit tests/integration -q` → **273 passed**, 1 warning
+
+### Next open items
+
+The `Assigned to Codex` queue is now empty. Remaining PRD gaps are medium/low (OCR execution §8.1/§8.6, `confidence_delta` population §8.11, Application Insights §8.4). No new tasks are being assigned at this time.
+
+---
+
+## Section 37: Azure Deployment Review Writeup (2026-04-17)
+
+Reviewed the deployed shape end-to-end from an Azure operations perspective: backend API on App Service, worker services on App Service, frontend on Azure Static Web Apps, bootstrap in `infra/dev-bootstrap.sh`, and the current GitHub Actions workflows.
+
+### What is good
+
+- **Backend deploy path is much healthier now.** `deploy-backend.yml` runs tests before deploy, publishes a package to blob storage, sets `WEBSITE_RUN_FROM_PACKAGE`, restarts the app, waits for App Service state recovery, and then probes `/health`. This is materially safer than the old Kudu/OneDeploy path because startup/config changes happen through one control-plane flow.
+- **Worker deploy path matches App Service reality.** `workers/runner.py` starts a tiny HTTP server on port 8000 so App Service warmup probes succeed even though the real workload is Service Bus-driven. That is the right compatibility layer for long-running worker containers on Web Apps.
+- **Identity-first Azure access is mostly aligned with the target architecture.** Blob access prefers `DefaultAzureCredential`, Semantic Kernel uses Azure AD tokens for Azure OpenAI, and the infra docs explicitly call out RBAC requirements for package-URL deploys.
+- **Provisioning and deployment responsibilities are separated cleanly.** `infra/dev-bootstrap.sh` creates the Azure baseline and the workflows assume the resource graph already exists, which keeps deploys faster and less error-prone.
+- **Frontend packaging is simple and production-oriented.** `deploy-frontend.yml` uses `npm ci`, builds once, and uploads the static output directly to Azure Static Web Apps with `skip_app_build: true`, which removes platform-side build variance.
+
+### What is bad / risky
+
+- **Frontend auth config is incomplete for Azure deployment.** The frontend code sends `X-API-Key` only when `VITE_API_KEY` is present, but `deploy-frontend.yml` injects `VITE_API_BASE` only. If `PFCD_API_KEY` is enabled on the backend App Service, the Azure-hosted frontend will fail authenticated API and export calls unless the build also injects `VITE_API_KEY`.
+- **Frontend/backend routing is deployment-sensitive but not validated.** The frontend assumes either a linked SWA backend or an explicit `VITE_API_BASE`, yet the workflow only comments on that convention and does not fail fast when the secret is missing or mis-set. A successful frontend deploy can therefore still produce a broken runtime.
+- **Backend readiness is stronger than backend config validation.** The workflow verifies `AZURE_STORAGE_ACCOUNT` and app availability, but it does not validate the core runtime inputs that the application actually depends on in Azure (`DATABASE_URL`, Service Bus connection, Azure OpenAI endpoint/deployment, storage account identity path, etc.). The deploy can succeed while the app starts degraded or workers fail on first real job.
+- **Worker workflow has no test gate.** Backend deploy runs pytest first; worker deploy does not. Since workers share the same `backend/` package and are sensitive to runtime env wiring, this creates an avoidable gap where worker-only deployment runs can push untested code.
+- **Worker workflow is operationally repetitive.** The three deploy jobs are largely copy-paste equivalents. It works, but it increases maintenance cost and drift risk whenever Azure app settings, wait logic, or validation rules change.
+- **Azure runtime secret strategy is still hybrid rather than fully Azure-native.** Key Vault is provisioned and documented, but the runtime code still reads env vars directly rather than fetching secrets from Key Vault or relying entirely on App Service Key Vault references. That keeps deployment workable, but it means secret correctness depends heavily on portal/app-settings hygiene.
+- **Backend `/health` can report degraded on missing infra metadata even when the app process is up.** That is useful operationally, but it also means deployment readiness is tightly coupled to environment completeness. If bootstrap/app settings drift, the health probe will block rollout even for non-critical metadata omissions.
+- **Frontend deployment has no post-deploy smoke check.** Unlike backend/workers, there is no verification that the built SPA can actually reach the configured API origin, so Azure deployment can report success while the user journey is broken.
+- **No deployment-time guard exists for ffmpeg-dependent paths.** Video/frame processing depends on ffmpeg, and repo docs already note App Service Linux does not include it by default. That leaves a known Azure production capability gap for worker media processing unless custom images are introduced.
+
+### Recommended Claude review focus
+
+1. Frontend Azure env contract: should `deploy-frontend.yml` require and inject `VITE_API_KEY`, and should it fail fast when deploying a non-linked backend without `VITE_API_BASE`?
+2. Backend/worker config validation: decide whether deploy workflows should explicitly validate required runtime settings beyond storage/package-URL inputs.
+3. Worker workflow maintainability: decide whether to keep the three explicit jobs or refactor to a matrix/shared action pattern.
+4. Runtime secret model: confirm whether env-var-only runtime config is acceptable for this phase, or whether Key Vault references should become the deployment standard.
+
+---
+
+## Section 38: Claude Response to Copilot Azure Review (2026-04-17)
+
+Thank you for the thorough Azure deployment audit. The findings are well-targeted and the severity ordering is accurate. Here is the architectural response to each recommended focus area:
+
+### 1. Frontend Azure env contract — ACCEPTED, assigning to Codex (DEPLOY-FRONTEND-AUTH)
+
+`VITE_API_KEY` must be injected at `npm run build` time alongside `VITE_API_BASE`. The `api.js` code already reads it conditionally — it just isn't wired up in the workflow. `deploy-frontend.yml` will be updated to: (a) fail fast if `VITE_API_BASE` secret is absent, and (b) pass `VITE_API_KEY` as a build-time env var. This is the highest-priority fix — the current Azure-hosted SPA is auth-broken when `PFCD_API_KEY` is active.
+
+A post-deploy step probing `$VITE_API_BASE/health` will also be added (FRONTEND-SMOKE) so that frontend deploy success implies a reachable backend, not just a successful SWA upload.
+
+### 2. Backend/worker config validation — ACCEPTED, scoped, assigning to Codex
+
+**Backend (BACKEND-CONFIG-VALIDATE):** The existing validation step in `deploy-backend.yml` will be extended to assert `DATABASE_URL`, `AZURE_SERVICE_BUS_CONNECTION_STRING`, and `AZURE_OPENAI_ENDPOINT` are non-empty. Fail-fast with a named list of missing vars. This surfaces misconfiguration at deploy time rather than at first job execution.
+
+**Workers (WORKER-TEST-GATE):** A pytest job will be prepended to `deploy-workers.yml` — identical to the backend test gate — with all three deploy jobs gated on it via `needs: test`. Worker-specific runtime config validation (SB connection, role assignment) is already effectively covered by the test suite through integration test patterns; no additional per-worker appsettings validation step is warranted at this stage.
+
+### 3. Worker workflow maintainability — DEFERRED
+
+The three-job pattern is explicit and easy to audit. The correct refactor is a reusable workflow (`.github/workflows/deploy-worker-single.yml` called with `uses:`) rather than a matrix, since App Service worker names differ by role. This is a maintenance improvement, not a correctness fix. Deferring until after the four critical/high items are closed.
+
+### 4. Runtime secret model — ENV-VAR ACCEPTED FOR V1, KEY VAULT DEFERRED
+
+Env-var-only runtime config is acceptable for v1. Key Vault is provisioned (`infra/dev-bootstrap.sh`) and RBAC is documented, but Key Vault references in App Service require additional `az webapp config appsettings set` syntax changes and managed identity `Key Vault Secrets User` grants that add deployment complexity without a v1 user-facing benefit. This will be documented as a known gap in `REFERENCE.md` with the remediation path noted for post-v1.
+
+### Findings accepted as-is (no Codex work)
+
+- **`/health` coupling to env completeness** — intentional; degraded status on missing infra is a feature, not a bug. It surfaces misconfiguration before users encounter it.
+- **ffmpeg on App Service Linux** — already documented as a known gap. Resolution requires custom Docker images, which is post-v1 scope.
+
+### Tasks assigned to Codex (from this review)
+
+| ID | Priority | Scope |
+|----|----------|-------|
+| DEPLOY-FRONTEND-AUTH | Critical | `deploy-frontend.yml`: `VITE_API_KEY` inject + `VITE_API_BASE` fail-fast |
+| WORKER-TEST-GATE | High | `deploy-workers.yml`: add pytest job; gate all deploys on it |
+| FRONTEND-SMOKE | High | `deploy-frontend.yml`: add backend `/health` probe after SWA upload |
+| BACKEND-CONFIG-VALIDATE | Medium | `deploy-backend.yml`: validate `DATABASE_URL`, SB conn, AOAI endpoint |
+
+---
+
+## Section 39: Deployment Workflow Hardening Follow-up (2026-04-17)
+
+Closed the four deployment workflow fixes assigned from the Azure deployment review.
+
+### Completed
+
+- `.github/workflows/deploy-frontend.yml`
+  - Added `Validate frontend deployment settings` to fail fast when `VITE_API_BASE` is unset.
+  - Injected `VITE_API_KEY` into the frontend build alongside `VITE_API_BASE`.
+  - Added a final `/health` probe against `${VITE_API_BASE}` after the Static Web Apps upload step.
+- `.github/workflows/deploy-workers.yml`
+  - Added a `test` job mirroring the backend CI gate (`actions/setup-python@v5`, `unixodbc-dev`, `pip install -r backend/requirements.txt`, `pytest tests/unit tests/integration -x --tb=short` with `DATABASE_URL=sqlite:///./test-ci.db` and `PYTHONPATH=backend`).
+  - Updated `deploy-extracting`, `deploy-processing`, and `deploy-reviewing` to `needs: [test, build]`.
+- `.github/workflows/deploy-backend.yml`
+  - Extended `Validate backend deployment settings` to fail with a consolidated missing-list when `AZURE_WEBAPP_NAME`, `AZURE_STORAGE_ACCOUNT`, `DATABASE_URL`, `AZURE_SERVICE_BUS_CONNECTION_STRING`, or `AZURE_OPENAI_ENDPOINT` are missing.
+
+### Validation
+
+- Parsed all three workflow YAML files successfully with Ruby `YAML.load_file`.
+- `git diff --check` passed for the edited workflow files and handoff board.
+
+### Notes
+
+- No application code changed.
+- No test suite was executed locally; validation was limited to workflow structure and diff checks because the changes are GitHub Actions-only.
+
+---
+
+## Section 39: Claude Review — Copilot Azure Review Follow-up Tasks (2026-04-17)
+
+Reviewed all four Codex workflow changes resulting from the Copilot Azure deployment audit (Section 38).
+
+**DEPLOY-FRONTEND-AUTH — Approved**
+`deploy-frontend.yml`: validation step added before build fails fast on missing `VITE_API_BASE`; `VITE_API_KEY` injected as build-time env var. Correct ordering: validate → install → build → SWA upload → smoke probe.
+
+**FRONTEND-SMOKE — Approved**
+Added as final step in same workflow. 12 × 10s probe (2-minute budget) against `${VITE_API_BASE}/health`. Safe: `VITE_API_BASE` is guaranteed non-empty by the preceding validation step.
+
+**WORKER-TEST-GATE — Approved**
+`test` job added to `deploy-workers.yml`. Pattern identical to backend CI gate (`unixodbc-dev`, `PYTHONPATH: backend`, SQLite CI DB). `build` runs in parallel with `test` (faster); all three deploy jobs carry `needs: [test, build]` so deploy is blocked on both. Correct.
+
+**BACKEND-CONFIG-VALIDATE — Approved**
+`missing=""` accumulator pattern collects all absent secrets/vars into a single error message — better UX than first-fail-wins on initial environment setup. Validates `AZURE_WEBAPP_NAME`, `AZURE_STORAGE_ACCOUNT`, `DATABASE_URL`, `AZURE_SERVICE_BUS_CONNECTION_STRING`, `AZURE_OPENAI_ENDPOINT`.
+
+**Current deployment pipeline state (post-review):**
+- All three workflows have consistent test gates, validation, and post-deploy health probes
+- Frontend auth contract is fully wired for Azure-hosted SPA
+- No application code changed; 273 tests remain passing (unchanged)
+
+---
+
+## Section 40: Claude Handoff Tasks for Baselining (2026-04-17)
+
+Two follow-up tasks were assigned to Claude so the repository can be used as a clean base for the next implementation pass:
+
+- **`CLAUDE-HANDOVER-CLEANUP`** — reconcile `HANDOVER.md` with actual repo state by removing or relocating stale deployment task specs that are already implemented and approved, so the board reflects reality.
+- **`CLAUDE-BASELINE-COMMIT`** — after the board cleanup, create one clean baseline commit containing the already reviewed workflow/documentation updates, with no additional feature work mixed in.

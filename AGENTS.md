@@ -47,6 +47,17 @@ When modules are added, include and maintain commands in this section (examples)
 
 Document required env vars and startup prerequisites next to each command.
 
+## Coding Guidelines (Karpathy Principles)
+
+Apply these on every task:
+
+1. **Think before coding** — state assumptions explicitly; if multiple interpretations exist, surface them rather than picking silently; ask when unclear.
+2. **Simplicity first** — minimum code that solves the problem; no speculative features, abstractions for single use, or error handling for impossible scenarios.
+3. **Surgical changes** — touch only what the task requires; don't improve adjacent code; match existing style; remove only imports/variables made unused by *your* changes.
+4. **Goal-driven execution** — define verifiable success criteria before acting; for multi-step tasks, state a brief plan with a per-step verification check.
+
+---
+
 ## Coding Style & Naming Conventions
 No style tooling is configured yet.  
 Recommended baseline for this project:

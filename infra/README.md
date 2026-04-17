@@ -39,7 +39,7 @@ SPEECH_ACCOUNT_LOCATION=eastus bash infra/dev-bootstrap.sh
 
 ## Deployment
 - App Service startup command is set to `uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}`.
-- Backend GitHub Actions deploys use `azure/webapps-deploy@v3` after `azure/login@v2`; the deploy action authenticates with the logged-in service principal bearer token rather than a publish profile.
+- Backend GitHub Actions deploys upload `backend.zip` to the `scratch` blob container, generate a SAS package URL, and set `WEBSITE_RUN_FROM_PACKAGE` on the API app.
 - Worker GitHub Actions deploys upload `worker.zip` to the `scratch` blob container, generate a SAS package URL, and set `WEBSITE_RUN_FROM_PACKAGE` on each worker app.
 - No App Service publish-profile secrets are required for backend or worker deploys on this path.
 
@@ -49,8 +49,7 @@ Key Vault-backed settings created by the script:
 - `AZURE_SERVICE_BUS_CONNECTION_STRING` -> secret `service-bus-connection-string`
 
 App Service build:
-- `SCM_DO_BUILD_DURING_DEPLOYMENT=true` enables Oryx to install `requirements.txt` on backend zip deploys.
-- Worker package-URL deploys require the worker managed identities to have `Storage Blob Data Reader` on the storage account, and the CI service principal to have `Storage Blob Data Contributor` when uploading the package blob.
+- API and worker package-URL deploys require the app managed identities to have `Storage Blob Data Reader` on the storage account, and the CI service principal to have `Storage Blob Data Contributor` when uploading the package blob.
 
 After updating bootstrap settings, rerun `infra/dev-bootstrap.sh` and restart the App Service:
 ```bash

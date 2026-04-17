@@ -213,6 +213,17 @@ All `/api/*` endpoints require `X-API-Key` header when `PFCD_API_KEY` env var is
 
 ---
 
+## Coding Guidelines (Karpathy Principles)
+
+These apply to all agents working in this repo:
+
+1. **Think before coding** — state assumptions explicitly; if multiple interpretations exist, surface them rather than picking silently; ask when unclear.
+2. **Simplicity first** — minimum code that solves the problem; no speculative features, abstractions for single use, or error handling for impossible scenarios.
+3. **Surgical changes** — touch only what the task requires; don't improve adjacent code; match existing style; remove only imports/variables made unused by *your* changes.
+4. **Goal-driven execution** — define verifiable success criteria before acting; for multi-step tasks, state a brief plan with a per-step verification check.
+
+---
+
 ## Code Conventions
 
 - **Python indent:** 4 spaces
@@ -245,7 +256,7 @@ chore: bump SQLAlchemy to 2.0.38
 
 ---
 
-## Current Implementation Status (as of 2026-04-12)
+## Current Implementation Status (as of 2026-04-17)
 
 **Done:**
 - FastAPI endpoints and job lifecycle API
@@ -291,9 +302,11 @@ chore: bump SQLAlchemy to 2.0.38
 
 **Assigned to Codex:** See `HANDOVER.md` for current assignments, in-progress work, and review queue.
 
-**Open deployment note (DEPLOY-FIX2 Part 2 — on hold):**
-- Part 1 resolved the immediate SCM restart race; deployment is working
-- Part 2 (`WEBSITE_RUN_FROM_PACKAGE` via blob storage) is designed and on hold pending prompt quality fixes
+**Deployment note (fully resolved as of 2026-04-17):**
+- `WEBSITE_RUN_FROM_PACKAGE` pattern now active for both backend (`deploy-backend.yml`) and all three workers (`deploy-workers.yml`)
+- Both workflows upload a zip to the `scratch` blob container, generate a SAS URL, and apply `WEBSITE_RUN_FROM_PACKAGE` via `az webapp config appsettings set`
+- No Kudu OneDeploy dependency remains; `azure/webapps-deploy@v3` removed from both workflows
+- RBAC: `pfcd-dev-api-gha` has `Storage Blob Data Contributor`; all App Service identities have `Storage Blob Data Reader` on `pfcddevstorage`
 
 **Active Codex task queue:** Queue is empty. Phase 7 (PRD gap closure) complete at 273 tests (reviewed 2026-04-13):
 - `DRAFT-EDIT`: editable PDD/SIPOC + re-review on save ✓

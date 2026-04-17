@@ -42,22 +42,24 @@ jobs:
   deploy:
     needs: test
     runs-on: ubuntu-latest
-    # Upload (~1 min) + async deploy trigger + health-check polling (≤15 min).
-    # The synchronous Oryx build has been eliminated; this guard covers the rest.
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Azure login
-        uses: azure/login@v2
+      - uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Validate backend deployment settings
         run: |
-          if [ -z "${{ secrets.AZURE_WEBAPP_NAME }}" ]; then
-            echo "ERROR: Set AZURE_WEBAPP_NAME in GitHub secrets."
+          missing=""
+          [ -z "${{ secrets.AZURE_WEBAPP_NAME }}" ] && missing="$missing AZURE_WEBAPP_NAME"
+          [ -z "${{ vars.AZURE_STORAGE_ACCOUNT }}" ] && missing="$missing AZURE_STORAGE_ACCOUNT"
+          [ -z "${{ secrets.DATABASE_URL }}" ] && missing="$missing DATABASE_URL"
+          [ -z "${{ secrets.AZURE_SERVICE_BUS_CONNECTION_STRING }}" ] && missing="$missing AZURE_SERVICE_BUS_CONNECTION_STRING"
+          [ -z "${{ secrets.AZURE_OPENAI_ENDPOINT }}" ] && missing="$missing AZURE_OPENAI_ENDPOINT"
+          if [ -n "$missing" ]; then
+            echo "ERROR: missing required secrets/vars:$missing"
             exit 1
           fi
 
@@ -68,14 +70,7 @@ jobs:
 
       - name: Build backend package (with pre-installed dependencies)
         run: |
-          # Derive the minor version from the interpreter so the path stays
-          # in sync if the setup-python version is ever bumped.
           PY_MINOR=$(python3 --version | cut -d' ' -f2 | cut -d'.' -f1-2)
-
-          # Pre-install pip dependencies into antenv/ so Azure App Service does not
-          # need to run Oryx server-side pip install after deployment.  This is the
-          # standard layout expected by the Python App Service worker (PYTHONPATH
-          # already includes /home/site/wwwroot/antenv/lib/python*/site-packages).
           pip install \
             --quiet \
             --target "backend/antenv/lib/python${PY_MINOR}/site-packages" \
@@ -89,46 +84,74 @@ jobs:
             -x "*.db" -x "*.sqlite3" \
             -x ".env" -x ".env.*" \
             -x "storage/*"
-          # antenv/ is intentionally included so Azure has pre-built packages.
-
-          # Remove the temporary antenv directory so it is not left in the workspace.
           rm -rf antenv
 
-      - name: Deploy backend package (async)
-        # Use az cli directly so the command returns immediately after upload.
-        # azure/webapps-deploy@v3 blocks synchronously waiting for Oryx to finish,
-        # which caused the previous 30-minute cancellation.
-        # The CLI returns non-zero if the upload fails (caught by bash -e).
-        # Deployment completion is validated by the health-check step below.
+      - name: Upload backend zip to scratch blob and write package URL
         run: |
-          az webapp deploy \
-            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --name ${{ secrets.AZURE_WEBAPP_NAME }} \
-            --src-path ./backend.zip \
-            --type zip \
-            --async true
+          account="${{ vars.AZURE_STORAGE_ACCOUNT }}"
+          blob_name="backend-${{ github.sha }}.zip"
+          az storage blob upload \
+            --account-name "$account" \
+            --container-name scratch \
+            --name "$blob_name" \
+            --file backend.zip \
+            --auth-mode login \
+            --overwrite true
+          expiry=$(date -u -d "+4 hours" +%Y-%m-%dT%H:%MZ 2>/dev/null || date -u -v+4H +%Y-%m-%dT%H:%MZ)
+          sas=$(az storage blob generate-sas \
+            --account-name "$account" \
+            --container-name scratch \
+            --name "$blob_name" \
+            --permissions r \
+            --expiry "$expiry" \
+            --auth-mode login \
+            --as-user \
+            -o tsv)
+          printf '%s\n' "https://${account}.blob.core.windows.net/scratch/${blob_name}?${sas}" > package-url.txt
+          echo "PACKAGE_URL=$(cat package-url.txt)" >> $GITHUB_ENV
 
-      - name: Verify backend HTTP readiness
-        run: |
-          url="https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net/health"
-          echo "Polling health endpoint until backend is ready: $url"
-          for i in $(seq 1 90); do
-            if curl -fsS --max-time 10 "$url" >/dev/null; then
-              echo "Health check passed on attempt $i"
-              exit 0
-            fi
-            echo "Health check not ready yet (attempt $i/90); waiting 10s..."
-            sleep 10
-          done
-          echo "ERROR: backend health check did not pass within 15 minutes"
-          exit 1
-
-      - name: Apply post-deploy configuration
+      - name: Deploy backend (WEBSITE_RUN_FROM_PACKAGE)
         run: |
           az webapp config appsettings set \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_WEBAPP_NAME }} \
             --settings \
               PFCD_CORS_ORIGINS="${{ secrets.PFCD_CORS_ORIGINS }}" \
-              SCM_DO_BUILD_DURING_DEPLOYMENT="false" \
-              ENABLE_ORYX_BUILD="false"
+              WEBSITES_CONTAINER_START_TIME_LIMIT=600 \
+              WEBSITES_PORT=8000 \
+              WEBSITE_RUN_FROM_PACKAGE="$PACKAGE_URL"
+          az webapp restart \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --name ${{ secrets.AZURE_WEBAPP_NAME }}
+
+      - name: Wait for backend package restart to settle
+        run: |
+          sleep 15
+          for i in $(seq 1 30); do
+            state=$(az webapp show \
+              --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+              --name ${{ secrets.AZURE_WEBAPP_NAME }} \
+              --query "state" -o tsv)
+            echo "backend config settle $i/30: $state"
+            if [ "$state" = "Running" ]; then
+              sleep 60
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "ERROR: backend did not return to Running after package deployment"
+          exit 1
+
+      - name: Verify backend HTTP readiness
+        run: |
+          url="https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net/health"
+          for i in $(seq 1 60); do
+            if curl -fsS --max-time 10 "$url" >/dev/null; then
+              echo "Health check passed on attempt $i"
+              exit 0
+            fi
+            echo "Health check not ready yet (attempt $i/60); waiting 10s..."
+            sleep 10
+          done
+          echo "ERROR: backend health check did not pass within 10 minutes"
+          exit 1
