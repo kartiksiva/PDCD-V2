@@ -7,6 +7,14 @@ Shared coordination board. Read and updated by both Claude and Codex at session 
 
 ---
 
+## Assigned to Claude (review / planning)
+
+| ID | Task | Notes |
+|----|------|-------|
+| — | | |
+
+---
+
 ## Assigned to Codex (not started)
 
 | ID | Task | Notes |
@@ -43,6 +51,10 @@ Shared coordination board. Read and updated by both Claude and Codex at session 
 
 | ID | Task | Closed | Outcome |
 |----|----- |--------|---------|
+| BACKEND-DEPLOY-VALIDATION-FIX | Fix `Validate backend deployment settings` in `deploy-backend.yml` | 2026-04-17 | Approved — removed 3 spurious Key Vault-backed secret checks (DATABASE_URL, SB conn str, AOAI endpoint); added AZURE_RESOURCE_GROUP which was used but not validated |
+| WORKER-VENDORED-DEPS | Vendor Python deps into worker zip for `WEBSITE_RUN_FROM_PACKAGE` | 2026-04-17 | Approved — unixodbc-dev + setup-python + pip install into antenv/ added to build job; rm -rf antenv after zip; matches backend pattern exactly; workers now ship self-contained packages |
+| CLAUDE-BACKEND-DEPLOY-RCA | Review backend deploy failure path and plan secret/config-source fix | 2026-04-17 | Complete — see Section 42 of IMPLEMENTATION_SUMMARY.md; two Codex tasks created: BACKEND-DEPLOY-VALIDATION-FIX and WORKER-VENDORED-DEPS |
+| CLAUDE-WORKER-PACKAGE-RCA | Review worker package startup path and plan self-contained deploy hardening | 2026-04-17 | Complete — root cause: source-only zip under WEBSITE_RUN_FROM_PACKAGE; fix: pre-install deps into antenv/ matching backend pattern |
 | CLAUDE-BASELINE-COMMIT | Create baseline commit from approved deployment/doc updates | 2026-04-17 | Complete — all workflow and doc changes from this session committed as a single reviewed baseline |
 | CLAUDE-HANDOVER-CLEANUP | Reconcile HANDOVER.md with actual repo state | 2026-04-17 | Complete — removed all stale task spec bodies; board now reflects current reality |
 | DEPLOY-FRONTEND-AUTH | Inject `VITE_API_KEY` in frontend build; fail-fast on missing `VITE_API_BASE` | 2026-04-17 | Approved — validation step + `VITE_API_KEY` env var in build step; post-deploy smoke probe added in same workflow |

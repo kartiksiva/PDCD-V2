@@ -55,9 +55,7 @@ jobs:
           missing=""
           [ -z "${{ secrets.AZURE_WEBAPP_NAME }}" ] && missing="$missing AZURE_WEBAPP_NAME"
           [ -z "${{ vars.AZURE_STORAGE_ACCOUNT }}" ] && missing="$missing AZURE_STORAGE_ACCOUNT"
-          [ -z "${{ secrets.DATABASE_URL }}" ] && missing="$missing DATABASE_URL"
-          [ -z "${{ secrets.AZURE_SERVICE_BUS_CONNECTION_STRING }}" ] && missing="$missing AZURE_SERVICE_BUS_CONNECTION_STRING"
-          [ -z "${{ secrets.AZURE_OPENAI_ENDPOINT }}" ] && missing="$missing AZURE_OPENAI_ENDPOINT"
+          [ -z "${{ secrets.AZURE_RESOURCE_GROUP }}" ] && missing="$missing AZURE_RESOURCE_GROUP"
           if [ -n "$missing" ]; then
             echo "ERROR: missing required secrets/vars:$missing"
             exit 1

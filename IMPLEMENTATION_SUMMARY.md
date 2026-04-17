@@ -1999,3 +1999,84 @@ Two follow-up tasks were assigned to Claude so the repository can be used as a c
 
 - **`CLAUDE-HANDOVER-CLEANUP`** — reconcile `HANDOVER.md` with actual repo state by removing or relocating stale deployment task specs that are already implemented and approved, so the board reflects reality.
 - **`CLAUDE-BASELINE-COMMIT`** — after the board cleanup, create one clean baseline commit containing the already reviewed workflow/documentation updates, with no additional feature work mixed in.
+
+---
+
+## Section 41: Claude Deployment Review Follow-up Queue (2026-04-17)
+
+Added two Claude-owned review/planning items after a fresh Azure deployment pass identified remaining workflow/runtime mismatches.
+
+- **`CLAUDE-BACKEND-DEPLOY-RCA`**
+  - Scope: review backend deployment failure mode and plan the correct contract between GitHub Actions validation and App Service Key Vault-backed runtime settings.
+  - Evidence: latest backend run `24559639332` failed in `Validate backend deployment settings` because `DATABASE_URL` and `AZURE_SERVICE_BUS_CONNECTION_STRING` were absent from GitHub secrets even though `infra/dev-bootstrap.sh` provisions them as App Service settings via Key Vault references.
+- **`CLAUDE-WORKER-PACKAGE-RCA`**
+  - Scope: review worker startup path and plan a self-contained `WEBSITE_RUN_FROM_PACKAGE` artifact strategy for Azure App Service workers.
+  - Evidence: backend deploy vendors Python dependencies into `antenv`, while worker deploy currently packages source only; this leaves worker startup vulnerable to App Service host/runtime drift and explains intermittent deployment failures on fresh or changed environments.
+
+---
+
+## Section 42: Claude RCA — Backend Deploy Validation + Worker Package Strategy (2026-04-17)
+
+Completed both items from Section 41. Two Codex tasks created.
+
+### CLAUDE-BACKEND-DEPLOY-RCA — Resolved
+
+**Root cause:**
+The `Validate backend deployment settings` step in `deploy-backend.yml` (lines 53–64) checks three GitHub secrets that the deploy step never injects and that come from Key Vault-backed App Service settings provisioned by `infra/dev-bootstrap.sh`:
+- `DATABASE_URL` — App Service Key Vault ref; absent from GitHub secrets
+- `AZURE_SERVICE_BUS_CONNECTION_STRING` — same
+- `AZURE_OPENAI_ENDPOINT` — validated but never set by the backend deploy step (only workers set it)
+
+The deploy step only sets `PFCD_CORS_ORIGINS`, `WEBSITES_CONTAINER_START_TIME_LIMIT`, `WEBSITES_PORT`, `WEBSITE_RUN_FROM_PACKAGE`. Additionally `AZURE_RESOURCE_GROUP` is used by all post-deploy steps but not validated.
+
+**Fix (assigned: BACKEND-DEPLOY-VALIDATION-FIX):**
+Remove the three spurious `[ -z ... ]` lines from the validation accumulator; add `AZURE_RESOURCE_GROUP`. Surgical change to lines 55–63 only.
+
+### CLAUDE-WORKER-PACKAGE-RCA — Resolved
+
+**Root cause:**
+Worker `build` job produces a source-only zip. Under `WEBSITE_RUN_FROM_PACKAGE` the zip is mounted read-only; Azure App Service's Oryx dependency installer does not run in this mode. Any Python import not in the zip fails at worker startup. The backend avoids this by pre-installing all deps into `antenv/lib/python${PY_MINOR}/site-packages` before zipping.
+
+**Fix (assigned: WORKER-VENDORED-DEPS):**
+Extend the worker `build` job with: `sudo apt-get install -y unixodbc-dev`, `actions/setup-python@v5 (3.11)`, and `pip install --target antenv/... -r backend/requirements.txt` before the zip step; add `rm -rf antenv` after. Identical pattern to backend.
+
+**Board update:** Both Claude RCA items closed; two Codex tasks placed in Assigned to Codex.
+
+---
+
+## Section 43: Codex Follow-up — Backend Validation + Worker Self-Contained Packages (2026-04-17)
+
+Closed both Codex tasks created from Claude's Section 42 RCA.
+
+### Completed
+
+- `.github/workflows/deploy-backend.yml`
+  - Narrowed `Validate backend deployment settings` to check only deploy-time inputs actually consumed by the workflow.
+  - Removed `DATABASE_URL`, `AZURE_SERVICE_BUS_CONNECTION_STRING`, and `AZURE_OPENAI_ENDPOINT` from the validation accumulator because those are provisioned as App Service runtime settings rather than injected by this deploy job.
+  - Added `AZURE_RESOURCE_GROUP` to validation because the deploy, restart, settle, and health steps all use it directly.
+- `.github/workflows/deploy-workers.yml`
+  - Extended the `build` job to mirror the backend self-contained package pattern under `WEBSITE_RUN_FROM_PACKAGE`.
+  - Added `unixodbc-dev`, `actions/setup-python@v5`, and `pip install --target backend/antenv/lib/python${PY_MINOR}/site-packages -r backend/requirements.txt` before zipping.
+  - Added `rm -rf antenv` after packaging to leave the runner workspace clean.
+
+### Validation
+
+- Parsed `.github/workflows/deploy-backend.yml` and `.github/workflows/deploy-workers.yml` successfully with Ruby `YAML.load_file`.
+- `git diff --check` passed for the edited workflow files and handoff board.
+
+### Notes
+
+- No application code changed.
+- No local test suite was run because the changes are limited to GitHub Actions workflow packaging/validation logic.
+
+---
+
+## Section 43: Codex Review — BACKEND-DEPLOY-VALIDATION-FIX + WORKER-VENDORED-DEPS (2026-04-17)
+
+**BACKEND-DEPLOY-VALIDATION-FIX — Approved**
+`deploy-backend.yml` validation step: removed `DATABASE_URL`, `AZURE_SERVICE_BUS_CONNECTION_STRING`, `AZURE_OPENAI_ENDPOINT` from the missing-secret accumulator (all three are App Service Key Vault refs, never injected by this workflow). Added `AZURE_RESOURCE_GROUP`, which is referenced by deploy/wait/health steps but was previously unchecked. Three remaining validated items (`AZURE_WEBAPP_NAME`, `AZURE_STORAGE_ACCOUNT`, `AZURE_RESOURCE_GROUP`) exactly match what the deploy step uses.
+
+**WORKER-VENDORED-DEPS — Approved**
+`deploy-workers.yml` `build` job: added `sudo apt-get install -y unixodbc-dev`, `actions/setup-python@v5 (3.11)`, and `pip install --quiet --target backend/antenv/lib/python${PY_MINOR}/site-packages -r backend/requirements.txt` before the zip step; added `rm -rf antenv` after. `antenv/` is included in `worker.zip` (not excluded). Workers now ship fully vendored packages under `WEBSITE_RUN_FROM_PACKAGE` — immune to host/runtime drift. Pattern identical to backend.
+
+Both tasks closed. Board queue now empty.

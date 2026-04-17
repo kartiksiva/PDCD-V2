@@ -308,6 +308,10 @@ chore: bump SQLAlchemy to 2.0.38
 - No Kudu OneDeploy dependency remains; `azure/webapps-deploy@v3` removed from both workflows
 - RBAC: `pfcd-dev-api-gha` has `Storage Blob Data Contributor`; all App Service identities have `Storage Blob Data Reader` on `pfcddevstorage`
 
+**Deployment review follow-up (2026-04-17):**
+- Backend deploy is not fully resolved: `deploy-backend.yml` currently validates `DATABASE_URL` and `AZURE_SERVICE_BUS_CONNECTION_STRING` as GitHub secrets even though `infra/dev-bootstrap.sh` provisions them as Key Vault-backed App Service settings; latest backend run `24559639332` failed before rollout on this mismatch.
+- Worker deploy is not yet fully hardened: `deploy-workers.yml` ships a source-only zip under `WEBSITE_RUN_FROM_PACKAGE`, unlike backend which vendors dependencies into `antenv`; this leaves worker startup sensitive to host/runtime drift on Azure App Service.
+
 **Active Codex task queue:** Queue is empty. Phase 7 (PRD gap closure) complete at 273 tests (reviewed 2026-04-13):
 - `DRAFT-EDIT`: editable PDD/SIPOC + re-review on save ✓
 - `SPEAKER-RESOLVE`: speaker resolution UI + extraction speaker hint ✓
