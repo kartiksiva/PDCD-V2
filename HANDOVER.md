@@ -43,7 +43,7 @@ Shared coordination board. Read and updated by both Claude and Codex at session 
 
 | ID | Task | PR / Commit |
 |----|------|-------------|
-| — | | |
+| ISSUE-19-ACA-INFRA | Provision Azure Container Registry and shared Container Apps environment for GitHub issue #19 | — |
 
 ---
 
