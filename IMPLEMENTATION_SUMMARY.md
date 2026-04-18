@@ -2080,3 +2080,45 @@ Closed both Codex tasks created from Claude's Section 42 RCA.
 `deploy-workers.yml` `build` job: added `sudo apt-get install -y unixodbc-dev`, `actions/setup-python@v5 (3.11)`, and `pip install --quiet --target backend/antenv/lib/python${PY_MINOR}/site-packages -r backend/requirements.txt` before the zip step; added `rm -rf antenv` after. `antenv/` is included in `worker.zip` (not excluded). Workers now ship fully vendored packages under `WEBSITE_RUN_FROM_PACKAGE` — immune to host/runtime drift. Pattern identical to backend.
 
 Both tasks closed. Board queue now empty.
+
+---
+
+## Section 59: Codex Delivery — GitHub Issue #19 ACR + Container Apps Environment Bootstrap (2026-04-18)
+
+GitHub issue `#19 Provision Azure Container Registry and Container Apps environment` requested a narrow infrastructure bootstrap update ahead of the Container Apps deployment work in `#20` and `#21`.
+
+### Completed
+
+- Updated [infra/dev-bootstrap.sh](/Users/karthicks/kAgents/Projects/PFCD-V2/infra/dev-bootstrap.sh) to derive and provision the new shared container infrastructure names:
+  - `pfcddevregistry` via `CONTAINER_REGISTRY_NAME`
+  - `pfcd-dev-logs` via `LOG_ANALYTICS_WORKSPACE_NAME`
+  - `pfcd-dev-env` via `CONTAINER_APPS_ENVIRONMENT_NAME`
+- Added an ACR provisioning block that creates the registry with the admin user disabled and, when `SP_CLIENT_ID` is supplied, grants the GitHub Actions service principal `AcrPush`.
+- Added a Log Analytics workspace provisioning block plus a Container Apps environment provisioning block wired to that workspace via `customerId` and shared key.
+- Added a deferred Container App RBAC helper that grants `Storage Blob Data Contributor`, `Azure Service Bus Data Owner`, and `Key Vault Secrets User` to the future API and worker Container App identities once those apps exist.
+- Updated the bootstrap script footer to print the ACR login server and shared Container Apps environment name after a run.
+- Updated [REFERENCE.md](/Users/karthicks/kAgents/Projects/PFCD-V2/REFERENCE.md) to document the ACR, Log Analytics workspace, Container Apps environment, the optional `SP_CLIENT_ID` bootstrap input, and the new `AZURE_CONTAINER_REGISTRY` GitHub variable expectation for upcoming Container Apps workflows.
+
+### Decisions
+
+- Kept the resource group source of truth aligned to the repository defaults (`app-pfcd-v2`) rather than the issue body's older `pfcd-dev-rg` wording.
+- Kept the change scoped to infra bootstrap and reference docs only; no application code or workflow files were modified in this issue.
+- Chose a deferred RBAC approach for Container App managed identities because system-assigned identities do not exist until the Container Apps from `#20` and `#21` are created.
+
+### Validation
+
+- Script syntax check:
+  - `bash -n infra/dev-bootstrap.sh`
+  - result: pass
+- Azure CLI command-shape validation with sandbox-safe config path:
+  - `AZURE_CONFIG_DIR=/tmp/azcfg az acr create -h`
+  - `AZURE_CONFIG_DIR=/tmp/azcfg az containerapp env create -h`
+  - `AZURE_CONFIG_DIR=/tmp/azcfg az monitor log-analytics workspace create -h`
+  - `AZURE_CONFIG_DIR=/tmp/azcfg az monitor log-analytics workspace get-shared-keys -h`
+  - `AZURE_CONFIG_DIR=/tmp/azcfg az containerapp show -h`
+  - result: commands and flags used by the new bootstrap blocks are present
+
+### Open follow-up
+
+- The actual repo variable `AZURE_CONTAINER_REGISTRY` and the effective `AcrPush` scope on `AZURE_CREDENTIALS` still need operator-side confirmation in GitHub/Azure; this issue only documents and bootstraps the infra-side expectations.
+- The deferred RBAC helper will report skips until the Container Apps from `#20` and `#21` exist, which is expected for this issue's scope.
