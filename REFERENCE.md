@@ -229,12 +229,16 @@ All Azure resources are in resource group `app-pfcd-v2`.
 | Resource | Name Pattern |
 |----------|--------------|
 | Storage Account | `pfcd[env]storage` (containers: uploads, evidence, exports, scratch) |
+| Azure Container Registry | `pfcd[env]registry` (login server `pfcd[env]registry.azurecr.io`, admin user disabled) |
 | Service Bus | `pfcd-[env]-bus` (queues: extracting, processing, reviewing) |
-| SQL Server | `pfcd-[env]-sql` |
-| SQL Database | `pfcd-[env]-jobs` |
+| Log Analytics Workspace | `pfcd-[env]-logs` (shared diagnostics for Container Apps) |
+| Container Apps Environment | `pfcd-[env]-env` (shared environment for API + workers) |
+| Container App API | `pfcd-[env]-api` (external ingress, `/health` probe on port 8000) |
+| PostgreSQL Flexible Server | `pfcd-[env]-pg` |
+| PostgreSQL Database | `pfcd-[env]-jobs` |
 | Key Vault | `pfcd-[env]-kv` |
-| App Service Plan | `pfcd-[env]-asp` (Linux) |
-| Web App | `pfcd-[env]-api` (Python 3.11) |
+| App Service Plan | `pfcd-[env]-asp` (legacy backend App Service during ACA cutover / rollback window) |
+| Web App | `pfcd-[env]-api` (legacy backend App Service during ACA cutover / rollback window) |
 | Azure OpenAI | `pfcd-[env]-oai` (model: gpt-4o-mini) |
 | Azure Speech | `pfcd-[env]-speech` |
 
@@ -246,6 +250,8 @@ SPEECH_ACCOUNT_LOCATION=eastus bash infra/dev-bootstrap.sh
 
 The script is idempotent — safe to re-run.
 
+Pass `SP_CLIENT_ID=<github-actions-service-principal-client-id>` when you want the bootstrap script to grant the CI principal both `Storage Blob Data Contributor` on the storage account and `AcrPush` on the registry during provisioning.
+
 **Authentication:** All Azure SDK clients use `DefaultAzureCredential` (supports Managed Identity, CLI login, and environment variables). Secrets are stored in Key Vault and injected at runtime.
 
 ---
@@ -255,9 +261,14 @@ The script is idempotent — safe to re-run.
 **File:** `.github/workflows/deploy-backend.yml`
 
 - Triggers on push to `main` with changes under `backend/**`
-- Deploys via `az webapp deploy` (zip upload)
-- Required secrets: `AZURE_CREDENTIALS`, `AZURE_RESOURCE_GROUP`, `AZURE_WEBAPP_NAME`
-- No automated tests run in CI yet — add pytest step when integration tests exist
+- Runs the SQLite-backed unit/integration suite plus a PostgreSQL smoke path before deploy
+- Builds `backend/Dockerfile --target api`, pushes `pfcd-backend-api:${GITHUB_SHA}` to ACR, and deploys the backend as an Azure Container App revision
+- Bootstraps the backend Container App with a public image on first deploy so the system-assigned identity exists before assigning `AcrPull` and `Key Vault Secrets User`
+- Applies the final backend runtime as a YAML-based Container App update with:
+  - external ingress on port 8000
+  - HTTP `/health` startup/liveness/readiness probes
+  - Key Vault-backed secret refs for `DATABASE_URL`, `AZURE_STORAGE_CONNECTION_STRING`, and `AZURE_SERVICE_BUS_CONNECTION_STRING`
+- Required secrets / vars: `AZURE_CREDENTIALS`, `AZURE_RESOURCE_GROUP`, `AZURE_WEBAPP_NAME`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME` (or deprecated alias), `AZURE_CONTAINER_REGISTRY`, `AZURE_CONTAINER_APPS_ENVIRONMENT`, `AZURE_STORAGE_ACCOUNT`, `AZURE_KEY_VAULT_NAME`, `AZURE_SERVICE_BUS_NAMESPACE`, `AZURE_OPENAI_ACCOUNT_NAME`, `AZURE_SPEECH_ACCOUNT_NAME`
 
 **File:** `.github/workflows/deploy-workers.yml`
 
@@ -270,7 +281,13 @@ The script is idempotent — safe to re-run.
 
 | Variable | Used by | Purpose |
 |----------|---------|---------|
-| `AZURE_STORAGE_ACCOUNT` | `deploy-workers.yml` | Storage account resource name used to upload `worker.zip` to `scratch` and generate the `WEBSITE_RUN_FROM_PACKAGE` SAS URL |
+| `AZURE_STORAGE_ACCOUNT` | `deploy-backend.yml`, `deploy-workers.yml` | Storage account resource name surfaced to the runtime, e.g. `pfcddevstorage` |
+| `AZURE_CONTAINER_REGISTRY` | `deploy-backend.yml`, upcoming Container Apps worker workflows | ACR login server for image push/pull, e.g. `pfcddevregistry.azurecr.io` |
+| `AZURE_CONTAINER_APPS_ENVIRONMENT` | `deploy-backend.yml`, upcoming Container Apps worker workflows | Shared ACA environment name, e.g. `pfcd-dev-env` |
+| `AZURE_KEY_VAULT_NAME` | `deploy-backend.yml`, upcoming Container Apps worker workflows | Key Vault name used for ACA secret refs, e.g. `pfcd-dev-kv` |
+| `AZURE_SERVICE_BUS_NAMESPACE` | `deploy-backend.yml`, upcoming Container Apps worker workflows | Service Bus namespace name surfaced to the runtime, e.g. `pfcd-dev-bus` |
+| `AZURE_OPENAI_ACCOUNT_NAME` | `deploy-backend.yml`, upcoming Container Apps worker workflows | Azure OpenAI account name used by `/health` diagnostics |
+| `AZURE_SPEECH_ACCOUNT_NAME` | `deploy-backend.yml`, upcoming Container Apps worker workflows | Azure Speech account name used by `/health` diagnostics |
 
 ---
 

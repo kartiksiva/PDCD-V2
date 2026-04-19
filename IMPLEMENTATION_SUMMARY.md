@@ -2080,3 +2080,38 @@ Closed both Codex tasks created from Claude's Section 42 RCA.
 `deploy-workers.yml` `build` job: added `sudo apt-get install -y unixodbc-dev`, `actions/setup-python@v5 (3.11)`, and `pip install --quiet --target backend/antenv/lib/python${PY_MINOR}/site-packages -r backend/requirements.txt` before the zip step; added `rm -rf antenv` after. `antenv/` is included in `worker.zip` (not excluded). Workers now ship fully vendored packages under `WEBSITE_RUN_FROM_PACKAGE` — immune to host/runtime drift. Pattern identical to backend.
 
 Both tasks closed. Board queue now empty.
+## Section 62: Codex Delivery — GitHub Issue #20 Backend API to Azure Container Apps (2026-04-19)
+
+Executed the first Container Apps migration slice for the backend API by replacing the App Service package deployment workflow with an image-based Azure Container Apps deployment path.
+
+### Completed
+
+- Rewrote [.github/workflows/deploy-backend.yml](/Users/karthicks/kAgents/Projects/PFCD-V2/.github/workflows/deploy-backend.yml) from App Service zip deploy to Azure Container Apps:
+  - keeps the existing unit/integration + PostgreSQL smoke test gate
+  - installs the Azure Container Apps CLI extension
+  - builds `backend/Dockerfile --target api`
+  - pushes `pfcd-backend-api:${GITHUB_SHA}` to ACR
+  - bootstraps the backend Container App with a public image on first deploy so the system-assigned identity exists before the private-image revision is applied
+  - grants the backend Container App identity `AcrPull` on ACR and `Key Vault Secrets User` on the vault
+  - renders a YAML manifest for the final backend revision with:
+    - external ingress
+    - port `8000`
+    - HTTP `/health` startup/liveness/readiness probes
+    - Key Vault-backed secret refs for `DATABASE_URL`, `AZURE_STORAGE_CONNECTION_STRING`, and `AZURE_SERVICE_BUS_CONNECTION_STRING`
+  - verifies the deployed backend using the ACA FQDN and accepts either `200 {"status":"ok"}` or `503 {"status":"degraded"}` from `/health`
+- Updated [REFERENCE.md](/Users/karthicks/kAgents/Projects/PFCD-V2/REFERENCE.md):
+  - CI/CD section now documents the backend ACA deploy path and the new required GitHub variables
+  - Azure infrastructure table now lists `pfcd-[env]-api` as the active backend Container App while keeping the App Service entry marked as legacy during cutover
+
+### Decisions
+
+- Used a two-step ACA deploy shape (`public bootstrap image` -> `role assignment` -> `private ACR image revision`) because system-assigned managed identities do not exist until the Container App resource is created.
+- Kept runtime secrets Azure-native by referencing Key Vault from the Container App manifest instead of moving `DATABASE_URL`, storage, and Service Bus connection strings into GitHub secrets.
+- Preserved the existing backend app name secret (`AZURE_WEBAPP_NAME`) to keep the migration narrow even though the active resource is now a Container App rather than an App Service Web App.
+
+### Open follow-up
+
+- Worker migration (`#21`) is still required before the platform is fully on Azure Container Apps.
+- `infra/dev-bootstrap.sh` still provisions the legacy App Service plan / web apps by default; that drift should be cleaned up after the ACA backend and worker paths are both stable.
+
+---
