@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -16,6 +17,24 @@ from sqlalchemy.orm.exc import StaleDataError
 from app.db import ENGINE, session_scope
 from app.job_logic import JobStatus, _utc_now
 from app.models import AgentRun, Draft, ExportPayload, InputManifest, Job, JobEvent, ReviewNotes
+
+
+def _current_and_head_revisions(engine) -> tuple[str | None, str | None]:
+    try:
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+        from alembic.runtime.migration import MigrationContext
+    except Exception:
+        return None, None
+
+    backend_dir = Path(__file__).resolve().parents[1]
+    config = Config(str(backend_dir / "alembic.ini"))
+    config.set_main_option("script_location", str(backend_dir / "alembic"))
+    script = ScriptDirectory.from_config(config)
+
+    with engine.connect() as connection:
+        current_revision = MigrationContext.configure(connection).get_current_revision()
+    return current_revision, script.get_current_head()
 
 
 class ConcurrentModificationError(RuntimeError):
@@ -34,6 +53,13 @@ class JobRepository:
         from app.models import Base
 
         Base.metadata.create_all(self.engine)
+        current_revision, head_revision = _current_and_head_revisions(self.engine)
+        if head_revision and current_revision != head_revision:
+            logger.warning(
+                "Database revision is %s while Alembic head is %s. Run `alembic upgrade head` to align the schema.",
+                current_revision or "<none>",
+                head_revision,
+            )
 
     def _serialize(self, payload: Dict[str, Any]) -> str:
         return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))

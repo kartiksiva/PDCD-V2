@@ -10,6 +10,7 @@ Base = declarative_base()
 
 class Job(Base):
     __tablename__ = "jobs"
+    __table_args__ = (Index("ix_jobs_ttl_expires_at", "ttl_expires_at"),)
 
     job_id = Column(String(64), primary_key=True)
     version = Column(Integer, nullable=False, default=1)

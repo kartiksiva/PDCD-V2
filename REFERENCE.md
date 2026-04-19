@@ -132,7 +132,10 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 | `AZURE_SERVICE_BUS_QUEUE_REVIEWING` | Queue name | `reviewing` |
 | `PFCD_WORKER_ROLE` | Worker phase (`extracting`/`processing`/`reviewing`) | — |
 | `PFCD_CLEANUP_INTERVAL_SECONDS` | Cleanup worker poll interval | `300` |
+| `PFCD_JOB_TTL_DAYS` | Job retention window before expiry/cleanup | `7` |
+| `PFCD_LLM_TIMEOUT_SECONDS` | Max seconds allowed for a single extraction/processing LLM call | `120` |
 | `PFCD_API_KEY` | Static API key for `X-API-Key` header | `""` (auth disabled if unset) |
+| `PFCD_CORS_ORIGINS` | Comma-separated allowed CORS origins | `http://localhost:5173` |
 | `PFCD_PROVIDER` | Chat/transcription provider (`azure_openai` or `openai`) | `azure_openai` |
 | `AZURE_OPENAI_ENDPOINT` | Azure OpenAI REST endpoint | required for agents |
 | `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME` | Chat model deployment name (canonical) | required for agents |
@@ -159,7 +162,11 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 | `VITE_API_BASE` | Frontend API origin override | `""` |
 | `VITE_API_KEY` | Client-side API key sent as `X-API-Key` | `""` |
 
+`VITE_API_KEY` / `PFCD_API_KEY` is intended only for internal/demo deployments. The key is embedded in the browser bundle and can be recovered by any user who can load the app. Do not use this pattern for public deployments; place the API behind real authentication or a trusted backend proxy.
+
 **ffmpeg dependency:** `media_preprocessor.py` calls `ffmpeg` via subprocess. Azure App Service (Linux) does not include `ffmpeg` by default. For local dev, install with `brew install ffmpeg` on macOS or `apt install ffmpeg` on Linux. For Azure production, Docker workers with a custom image are required (Phase 5b). When `ffmpeg` is absent, files larger than 24 MB fall back to `[transcription_skipped:file_too_large]`, matching the pre-Phase 5 behavior.
+
+**Upload protection note:** `/api/upload` only enforces the per-file 500 MB limit in application code. For shared or public deployments, configure request rate limiting, body-size caps, and storage/disk quotas at the ingress or platform layer because the backend does not implement per-key quota accounting.
 
 ### Starting Workers (Service Bus Phases)
 
@@ -203,6 +210,8 @@ Base path: `/api`
 | GET | `/api/jobs/{job_id}/exports/{format}` | Export draft (`json`, `markdown`, `pdf`, `docx`) |
 | DELETE | `/api/jobs/{job_id}` | Soft-delete / mark job expired |
 | GET | `/health` | Health check — returns `{"status": "ok"}` (200) or `{"status": "degraded", ...}` (503) with env diagnostics when Azure connections are unavailable |
+
+`POST /api/jobs` accepts additive `input_files[].upload_id` references from `POST /api/upload`. When present, the backend validates that the upload exists before persisting the job and resolves the upload to the internal `storage_key` path used by workers.
 
 ---
 

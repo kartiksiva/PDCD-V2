@@ -3,6 +3,8 @@ import pathlib
 import sys
 from uuid import uuid4
 
+import pytest
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
 sys.path.append(str(BACKEND))
@@ -101,3 +103,26 @@ def test_job_upsert_rejects_stale_version(tmp_path, monkeypatch):
         assert False, "Expected stale write to fail"
     except repo.ConcurrentModificationError:
         pass
+
+
+def test_jobs_table_declares_ttl_index():
+    from app.models import Job
+
+    index_names = {index.name for index in Job.__table__.indexes}
+
+    assert "ix_jobs_ttl_expires_at" in index_names
+
+
+def test_init_db_warns_when_alembic_revision_mismatch(tmp_path, monkeypatch, caplog):
+    db_path = tmp_path / "pfcd-mismatch.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+
+    _, repo = _reload_modules()
+
+    repository = repo.JobRepository.from_env()
+    monkeypatch.setattr(repo, "_current_and_head_revisions", lambda _engine: (None, "20260419_0004"))
+
+    with caplog.at_level("WARNING"):
+        repository.init_db()
+
+    assert "Alembic head" in caplog.text

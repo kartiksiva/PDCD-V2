@@ -1,6 +1,12 @@
 const BASE = (import.meta.env.VITE_API_BASE ?? '') + '/api'
 const DEV_BASE = import.meta.env.VITE_API_BASE ?? ''
 
+if (import.meta.env.DEV && import.meta.env.VITE_API_KEY) {
+  console.warn(
+    'VITE_API_KEY is embedded in the client bundle for internal/demo use only. Do not use this pattern for public deployments.'
+  )
+}
+
 function authHeaders(headers = {}) {
   return {
     ...(import.meta.env.VITE_API_KEY ? { 'X-API-Key': import.meta.env.VITE_API_KEY } : {}),

@@ -8,6 +8,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import anyio
@@ -64,7 +65,44 @@ app = FastAPI(
 
 def _cors_origins() -> list[str]:
     raw = os.environ.get("PFCD_CORS_ORIGINS", "http://localhost:5173")
-    return [o.strip() for o in raw.split(",") if o.strip()]
+    env = os.environ.get("PFCD_ENV", "development").strip().lower()
+    origins = [o.strip() for o in raw.split(",") if o.strip()]
+    validated = []
+    for origin in origins:
+        parsed = urlparse(origin)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise RuntimeError(f"Invalid CORS origin: {origin!r}")
+        if parsed.scheme == "http":
+            logger.warning("Configured non-HTTPS CORS origin: %s", origin)
+            if env == "production":
+                raise RuntimeError("HTTPS origins are required for PFCD_CORS_ORIGINS in production.")
+        validated.append(origin)
+    return validated
+
+
+def _resolve_upload_path(upload_id: str, file_name: str | None) -> str:
+    file_part = file_name or "upload"
+    return os.path.join(UPLOADS_DIR, upload_id, file_part)
+
+
+def _resolve_input_files(payload: JobCreateRequest) -> JobCreateRequest:
+    resolved_inputs = []
+    for item in payload.input_files:
+        resolved = item.model_copy(deep=True)
+        if resolved.upload_id:
+            storage_key = _resolve_upload_path(resolved.upload_id, resolved.file_name)
+            if not os.path.isfile(storage_key):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"input_files upload_id {resolved.upload_id!r} does not reference an existing upload.",
+                )
+            resolved.storage_key = storage_key
+            if not resolved.file_name:
+                resolved.file_name = os.path.basename(storage_key)
+            if not resolved.size_bytes:
+                resolved.size_bytes = os.path.getsize(storage_key)
+        resolved_inputs.append(resolved)
+    return payload.model_copy(update={"input_files": resolved_inputs})
 
 
 app.add_middleware(
@@ -191,6 +229,7 @@ async def create_job(payload: JobCreateRequest) -> Dict[str, Any]:
                 "remediation": "Trim/re-encode source media or use segmented upload in a future release.",
             },
         )
+    payload = _resolve_input_files(payload)
     job_id = str(uuid4())
     job = default_job_payload(payload)
     job["job_id"] = job_id

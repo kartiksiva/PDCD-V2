@@ -50,6 +50,8 @@ class InputFile(BaseModel):
     file_name: Optional[str] = None
     size_bytes: int = Field(default=0, ge=0)
     mime_type: Optional[str] = None
+    upload_id: Optional[str] = None
+    storage_key: Optional[str] = None
     audio_detected: Optional[bool] = None
     audio_declared: Optional[bool] = None
 
@@ -75,6 +77,15 @@ def _utc_now() -> str:
 
 def _utc_in_days(days: int) -> str:
     return (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+
+
+def _job_ttl_days() -> int:
+    raw = os.environ.get("PFCD_JOB_TTL_DAYS", "7").strip()
+    try:
+        days = int(raw)
+    except ValueError:
+        return 7
+    return max(1, days)
 
 
 def _safe_dict(value: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -176,6 +187,10 @@ def default_job_payload(payload: JobCreateRequest) -> Dict[str, Any]:
                     item.source_type == "video" and bool(item.audio_declared)
                     for item in payload.input_files
                 ),
+                "storage_key": next(
+                    (item.storage_key for item in payload.input_files if item.source_type == "video" and item.storage_key),
+                    None,
+                ),
                 "frame_extraction_policy": frame_policy,
             },
             "inputs": [item.model_dump() for item in payload.input_files],
@@ -221,7 +236,7 @@ def default_job_payload(payload: JobCreateRequest) -> Dict[str, Any]:
         "active_agent_run_id": None,
         "deleted_at": None,
         "cleanup_pending": False,
-        "ttl_expires_at": _utc_in_days(7),
+        "ttl_expires_at": _utc_in_days(_job_ttl_days()),
         "error": None,
     }
 
@@ -322,6 +337,13 @@ def apply_cost_tracking_and_cap_warning(job: Dict[str, Any], *, phase: str, cost
 def load_transcript_text(job: Dict[str, Any], storage: Any) -> Optional[str]:
     """Load transcript text from storage. Returns None if no transcript input."""
     for inp in job.get("input_manifest", {}).get("inputs", []):
+        if inp.get("source_type") == "transcript":
+            if inp.get("storage_key"):
+                try:
+                    with open(inp["storage_key"], "rb") as handle:
+                        return handle.read().decode("utf-8")
+                except Exception:
+                    return None
         if inp.get("source_type") == "transcript" and inp.get("file_name"):
             meta = {
                 "location": f"{job['job_id']}/inputs/{inp['file_name']}",

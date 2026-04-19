@@ -45,6 +45,7 @@ Shared coordination board. Read and updated by both Claude and Codex at session 
 |----|------|-------------|
 | CRITICAL-GHCO-BUNDLE | Resolve GitHub critical issues #36-#40 on consolidated branch `codex/fix-critical-ghco-issues` | PR #43 |
 | ISSUE-41-HIGH-SEVERITY-BUGS | Resolve GitHub issue #41 high-severity bugs on isolated branch `codex/fix-high-severity-bugs` | PR #45 |
+| ISSUE-42-MEDIUM-SEVERITY | Resolve GitHub issue #42 medium-severity bugs on isolated branch `codex/fix-medium-severity-issues` | PR #46 |
 | ISSUE-19-ACA-INFRA | Provision Azure Container Registry and shared Container Apps environment for GitHub issue #19 | — |
 
 ---

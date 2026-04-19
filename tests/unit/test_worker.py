@@ -348,6 +348,15 @@ def test_maybe_start_health_server_skips_without_websites_port(monkeypatch):
     assert runner_mod._maybe_start_health_server() is None
 
 
+def test_resolve_phase_requires_worker_role(monkeypatch):
+    from app.workers import runner as runner_mod
+
+    monkeypatch.delenv("PFCD_WORKER_ROLE", raising=False)
+
+    with pytest.raises(RuntimeError, match="PFCD_WORKER_ROLE"):
+        runner_mod._resolve_phase()
+
+
 def test_run_recreates_receiver_after_servicebus_error(monkeypatch):
     """run() should recreate the receiver after Service Bus connection failures."""
     from app.workers import runner as runner_mod

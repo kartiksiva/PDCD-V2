@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
 from app.job_logic import (
@@ -141,3 +143,20 @@ def test_cost_cap_warning_is_not_duplicated(monkeypatch):
     warnings = [f for f in job["review_notes"]["flags"] if f.get("code") == "cost_cap_exceeded"]
     assert len(warnings) == 1
     assert job["agent_signals"]["cost_tracking"]["total_estimated_usd"] == pytest.approx(6.0)
+
+
+def test_default_job_payload_uses_ttl_env_override(monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", "test-deployment")
+    monkeypatch.setenv("PFCD_JOB_TTL_DAYS", "14")
+
+    job = default_job_payload(
+        JobCreateRequest(
+            profile=Profile.BALANCED,
+            input_files=[InputFile(source_type="video", size_bytes=100)],
+        )
+    )
+
+    ttl_dt = datetime.fromisoformat(job["ttl_expires_at"])
+    delta_days = (ttl_dt - datetime.now(timezone.utc)).total_seconds() / 86400
+
+    assert 13.9 <= delta_days <= 14.1
