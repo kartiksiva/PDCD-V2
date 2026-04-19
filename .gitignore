@@ -26,10 +26,12 @@ build/
 
 # Local export storage
 backend/storage/
+/storage/
 
 # Environment files
 .env
 .env.*
+.env.docker.local
 
 # IDEs
 .vscode/

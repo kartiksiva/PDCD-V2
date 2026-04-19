@@ -6,9 +6,7 @@ import json
 import logging
 import os
 import random
-import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict
 from uuid import uuid4
 
@@ -264,28 +262,6 @@ def _resolve_phase() -> str:
     return "extracting"
 
 
-def _start_health_server(port: int = 8000) -> None:
-    """Start a minimal HTTP server so Azure App Service warmup probe succeeds.
-
-    Azure App Service kills containers that don't respond to HTTP within 230s.
-    Workers are Service Bus consumers with no HTTP server, so we run a tiny
-    background health server on port 8000 alongside the worker loop.
-    """
-    class _Handler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"ok")
-
-        def log_message(self, *args: object) -> None:  # suppress access logs
-            pass
-
-    server = HTTPServer(("0.0.0.0", port), _Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    logging.getLogger(__name__).info("Health server listening on port %d", port)
-
-
 def _connection_backoff_seconds(consecutive_errors: int) -> float:
     """Return bounded exponential backoff with small jitter for reconnect attempts."""
     exponent = min(max(1, consecutive_errors), 6)
@@ -295,7 +271,6 @@ def _connection_backoff_seconds(consecutive_errors: int) -> float:
 
 def run() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    _start_health_server()
     phase = _resolve_phase()
     logger.info(
         "Worker runtime OpenAI config: role=%s endpoint=%s chat_deployment=%s api_version=%s",

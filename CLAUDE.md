@@ -6,11 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Role in This Project
 
-**Claude is architect and code reviewer only.** Codex is the developer who writes and modifies application code.
+**Claude is architect and code reviewer only.** Codex writes application code. Copilot handles git operations, CI/CD tasks, and repo hygiene unless it is explicitly asked to operate in the Claude role.
+
+When GitHub Copilot is taking over the Claude role for a session, it must follow every constraint in this file exactly: architecture/review only, no application code edits, and docs/coordination updates only where Claude is allowed to write.
 
 Claude's permitted actions:
 - Review PRs and code changes for correctness, architecture fit, and PRD compliance
-- Update `CLAUDE.md`, `HANDOVER.md`, `IMPLEMENTATION_SUMMARY.md`, `prd.md` (progress section only), and `REFERENCE.md`
+- Update `CLAUDE.md`, `IMPLEMENTATION_SUMMARY.md`, `prd.md` (progress section only), and `REFERENCE.md`
 - Propose design decisions and flag architectural concerns
 - Run tests and read files to validate Codex's work
 
@@ -22,12 +24,11 @@ Claude must **not** write or modify application code (`.py`, `.ts`, `.tsx`, `.sh
 |------|---------|------------|---------|
 | `CLAUDE.md` | Claude | Claude | Claude's bootstrap, architecture reference, review checklist |
 | `AGENTS.md` | Codex | Codex | Codex's bootstrap — coding style, commit/PR guidelines, build commands |
-| `HANDOVER.md` | **Both** | **Both** | Work assignment board — assignments, in-progress, review queue |
-| `IMPLEMENTATION_SUMMARY.md` | Both | Both (append-only) | Rolling history log |
-| `prd.md` | Both | Claude (progress table only) | Authoritative requirements |
-| `REFERENCE.md` | Both | Claude | File layout, env vars, API/data model, Azure infra |
+| `IMPLEMENTATION_SUMMARY.md` | All | All (append-only) | Rolling history log |
+| `prd.md` | All | Claude (progress table only) | Authoritative requirements |
+| `REFERENCE.md` | All | Claude | File layout, env vars, API/data model, Azure infra |
 
-Work assignments live in `HANDOVER.md`. Claude adds items to "Assigned to Codex"; Codex moves them through the board; Claude closes them after review. Neither agent edits the other's bootstrap file.
+GitHub Issues and Pull Requests are the task trail and source of truth for assignment, implementation, review, and closure. Claude should use GitHub issue/PR state for routing and queue management.
 
 ---
 
@@ -36,14 +37,13 @@ Work assignments live in `HANDOVER.md`. Claude adds items to "Assigned to Codex"
 At the start of every session, before reviewing or commenting on any code:
 
 1. Read `CLAUDE.md` (this file)
-2. Read `HANDOVER.md` — current work assignment board; check what's ready for review
+2. Read the relevant GitHub issue / PR context and current review state
 3. Read `IMPLEMENTATION_SUMMARY.md` — rolling log of what has been built and what remains
 4. Read `prd.md` — authoritative requirements; never modify requirements, only the progress table
 5. Read `REFERENCE.md` on demand — file layout, env vars, API/data model, Azure infra, CI/CD
 
 After any meaningful review or architectural decision, update:
 - `CLAUDE.md` → Implementation Status section (Done / Architecture gaps)
-- `HANDOVER.md` → close completed items; add new Codex assignments
 - `IMPLEMENTATION_SUMMARY.md` → append findings, design decisions, open questions
 - `prd.md` → progress milestone table only
 - `REFERENCE.md` → only when APIs, infra naming, file layout, or env vars actually change
@@ -113,7 +113,7 @@ python -m app.workers.cleanup   # TTL expiry + data purge
 
 ```
 HTTP POST /api/jobs
-    └─ main.py → JobRepository (SQLite/Azure SQL)
+    └─ main.py → JobRepository (SQLite/PostgreSQL)
                 └─ ServiceBusOrchestrator → queue: "extracting"
 
 Worker (PFCD_WORKER_ROLE=extracting)
@@ -209,7 +209,7 @@ Tracked in `agent_runs.cost_estimate_usd`. Respect caps when reviewing agent cal
 
 ## Authentication
 
-All `/api/*` endpoints require `X-API-Key` header when `PFCD_API_KEY` env var is set. `/health` is always public. Uses `secrets.compare_digest` (timing-safe). Implemented in `auth.py`.
+All `/api/*` endpoints require `X-API-Key` only when `PFCD_API_KEY` is set. This is an optional deployment guard rather than a product auth workflow. `/health` is always public. Uses `secrets.compare_digest` (timing-safe). Implemented in `auth.py`.
 
 ---
 
@@ -300,7 +300,7 @@ chore: bump SQLAlchemy to 2.0.38
   - `/dev/simulate` no longer sets `user_saved_draft=True`; 409 path exercisable (L4)
   - Dead code removed: `_cost_usd()`, `_DEPLOYMENT` vars (DC1)
 
-**Assigned to Codex:** See `HANDOVER.md` for current assignments, in-progress work, and review queue.
+**Assigned work:** Use GitHub issues / PRs as the active queue and review trail.
 
 **Deployment note (fully resolved as of 2026-04-17):**
 - `WEBSITE_RUN_FROM_PACKAGE` pattern now active for both backend (`deploy-backend.yml`) and all three workers (`deploy-workers.yml`)
@@ -309,8 +309,9 @@ chore: bump SQLAlchemy to 2.0.38
 - RBAC: `pfcd-dev-api-gha` has `Storage Blob Data Contributor`; all App Service identities have `Storage Blob Data Reader` on `pfcddevstorage`
 
 **Deployment review follow-up (2026-04-17):**
-- Backend deploy is not fully resolved: `deploy-backend.yml` currently validates `DATABASE_URL` and `AZURE_SERVICE_BUS_CONNECTION_STRING` as GitHub secrets even though `infra/dev-bootstrap.sh` provisions them as Key Vault-backed App Service settings; latest backend run `24559639332` failed before rollout on this mismatch.
-- Worker deploy is not yet fully hardened: `deploy-workers.yml` ships a source-only zip under `WEBSITE_RUN_FROM_PACKAGE`, unlike backend which vendors dependencies into `antenv`; this leaves worker startup sensitive to host/runtime drift on Azure App Service.
+- Earlier deploy blockers are resolved in repo: backend secret-source validation was corrected, and workers now vendor dependencies into `antenv` before zip packaging.
+- App Service startup RCA also landed in repo via `bc8e34b`: workflows now set `SCM_DO_BUILD_DURING_DEPLOYMENT=false`, export `PYTHONPATH=/home/site/wwwroot/antenv/lib/python3.11/site-packages`, and reset the backend startup command to `python -m uvicorn ...`.
+- Fresh validation deploys are now the current checkpoint: backend run `24564473613` and workers run `24564473595` were triggered from `bc8e34b` and need Claude review once they finish.
 
 **Active Codex task queue:** Queue is empty. Phase 7 (PRD gap closure) complete at 273 tests (reviewed 2026-04-13):
 - `DRAFT-EDIT`: editable PDD/SIPOC + re-review on save ✓
@@ -326,5 +327,5 @@ Remaining PRD gaps: OCR execution (§8.1/§8.6), `confidence_delta` population (
 **Architecture gaps (non-blocking):**
 - `VideoAdapter` Whisper transcription limited to 25 MB until MediaPreprocessor (Phase 5) is built
 - Full frame extraction (ffmpeg keyframes → multimodal LLM) pending MediaPreprocessor
-- Frontend (`frontend/`) is present but not yet integrated with the backend pipeline
+- Frontend is integrated with the backend pipeline for list/create/status/review/export flows; remaining gaps are specific PRD features rather than baseline integration
 - Service Bus sender auto-reconnect on stale AMQP link (optional enhancement)

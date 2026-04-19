@@ -1,0 +1,12 @@
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE: ${VITE_API_BASE:-http://127.0.0.1:8000}
+        VITE_API_KEY: ${VITE_API_KEY:-}
+    image: pfcd-frontend:smoke
+    ports:
+      - "${PFCD_FRONTEND_SMOKE_PORT:-3000}:80"
+

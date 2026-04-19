@@ -2083,6 +2083,628 @@ Both tasks closed. Board queue now empty.
 
 ---
 
+## Section 44: Claude Follow-up Queue — App Service Startup RCA (2026-04-17)
+
+Added one new Claude-owned review/planning item after the post-hardening deploys failed during Azure runtime startup rather than workflow validation.
+
+- **`CLAUDE-APPSERVICE-STARTUP-RCA`**
+  - Scope: review backend and worker App Service startup failures after `WEBSITE_RUN_FROM_PACKAGE` rollout and produce an action plan for the next remediation pass.
+  - Evidence:
+    - Backend run `24560714713` passed validation and package upload, then failed `Verify backend HTTP readiness` with repeated timeouts and 503s against `/health`.
+    - Worker run `24560714718` failed the same way across the worker endpoints after deploy.
+    - Azure reports the sites as `Running`, and both package URLs are reachable (`200`, `application/zip`, `145032000` bytes), so the failure moved past GitHub Actions and into App Service boot/runtime.
+  - Working hypothesis:
+    - The most likely cause is a boot-time native dependency/runtime mismatch on Azure App Service, likely around the `mssql+pyodbc` production `DATABASE_URL`.
+    - `backend/app/db.py` constructs the SQLAlchemy engine at import time, so API and worker startup both pay the `pyodbc` load cost before serving HTTP.
+    - The vendored Python packages may now be present, but App Service still may not provide the required unixODBC runtime pieces needed by `pyodbc`, which would explain the shared timeout/503 symptom across API and workers.
+
+---
+
+## Section 45: Claude RCA — App Service Startup Failures (2026-04-17)
+
+### Root Cause (three compounding issues)
+
+**Issue 1: `SCM_DO_BUILD_DURING_DEPLOYMENT=true` conflicts with `WEBSITE_RUN_FROM_PACKAGE`**
+
+`infra/dev-bootstrap.sh` sets `SCM_DO_BUILD_DURING_DEPLOYMENT=true` for all four App Services. The deploy workflows never clear this setting. Under `WEBSITE_RUN_FROM_PACKAGE`, the mounted zip is read-only — Oryx does not run a build in this mode regardless of this flag. Result: no Oryx-managed virtualenv is created, no package activation happens, and the `antenv/` directory in the zip is not treated as an active Python environment.
+
+**Issue 2: `PYTHONPATH` not set → vendored packages not on sys.path**
+
+Both `deploy-backend.yml` and `deploy-workers.yml` pre-install packages into `antenv/lib/python3.11/site-packages/` and include that directory in the zip. However, neither workflow sets `PYTHONPATH` as an App Service application setting. System Python 3.11 (the runtime used by the startup command) has no mechanism to discover packages in a non-venv `antenv/` subdirectory. The first import of `fastapi`, `uvicorn`, `sqlalchemy`, `semantic_kernel`, etc. raises `ModuleNotFoundError` → process crashes before ever binding to port 8000 → 503.
+
+**Issue 3: API startup command `uvicorn` is not in PATH**
+
+`infra/dev-bootstrap.sh` sets the API startup-file to `uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}`. `pip install --target antenv/lib/python3.11/site-packages/` installs module files only — no executable scripts are written to any `bin/` directory. `uvicorn` is not in system PATH, and `antenv/bin/` does not exist in the zip. App Service cannot resolve the `uvicorn` executable → process fails to launch → 503. (Workers are unaffected by this specific issue because bootstrap correctly uses `python -m app.workers.runner`.)
+
+**Why sites show `Running` in Azure control plane:** App Service reports `Running` once the host process container is up, not after the Python application starts. The Python process crashes immediately at startup but the container health check sees `WEBSITES_CONTAINER_START_TIME_LIMIT=600` and keeps the container alive waiting for a retry.
+
+### Fix (assigned: APPSERVICE-STARTUP-FIX)
+
+**`deploy-backend.yml` — `az webapp config appsettings set` step:**
+Add to the existing settings call:
+```
+SCM_DO_BUILD_DURING_DEPLOYMENT=false
+PYTHONPATH=/home/site/wwwroot/antenv/lib/python3.11/site-packages
+```
+
+Add a new `az webapp config set` step immediately after appsettings:
+```bash
+az webapp config set \
+  --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+  --name ${{ secrets.AZURE_WEBAPP_NAME }} \
+  --startup-file "python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+```
+
+**`deploy-workers.yml` — all three deploy jobs (extracting, processing, reviewing):**
+Add to each `az webapp config appsettings set` call:
+```
+SCM_DO_BUILD_DURING_DEPLOYMENT=false
+PYTHONPATH=/home/site/wwwroot/antenv/lib/python3.11/site-packages
+```
+No startup command change needed for workers — `python -m app.workers.runner` is correct module syntax.
+
+### Verification
+
+After deploy, operator should confirm via `az webapp log tail --resource-group app-pfcd-v2 --name pfcd-dev-api` that startup no longer shows `ModuleNotFoundError` and that `uvicorn` binds to port 8000. Worker logs should show `"Health server listening on port 8000"` followed by `"Worker listening on phase <role>"`.
+
+### Pre-fix diagnostic (optional but recommended)
+
+Before triggering Codex, confirm hypothesis:
+```bash
+az webapp config appsettings list \
+  --resource-group app-pfcd-v2 \
+  --name pfcd-dev-api \
+  --query "[?name=='PYTHONPATH' || name=='SCM_DO_BUILD_DURING_DEPLOYMENT']"
+```
+Expected: `PYTHONPATH` absent; `SCM_DO_BUILD_DURING_DEPLOYMENT` = `"true"`. This confirms both missing settings.
+
+---
+
+## Section 46: Codex Follow-up — App Service Startup Workflow Fix (2026-04-17)
+
+Closed `APPSERVICE-STARTUP-FIX` from Section 45.
+
+### Completed
+
+- `.github/workflows/deploy-backend.yml`
+  - Added `SCM_DO_BUILD_DURING_DEPLOYMENT=false` and `PYTHONPATH=/home/site/wwwroot/antenv/lib/python3.11/site-packages` to the backend App Service appsettings write.
+  - Added a backend-only `az webapp config set --startup-file "python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"` step immediately after appsettings and before restart.
+- `.github/workflows/deploy-workers.yml`
+  - Added `SCM_DO_BUILD_DURING_DEPLOYMENT=false` and `PYTHONPATH=/home/site/wwwroot/antenv/lib/python3.11/site-packages` to each worker deploy job (`extracting`, `processing`, `reviewing`).
+  - No worker startup-file mutation was reintroduced; workers keep module-form startup via existing App Service configuration.
+
+### Validation
+
+- Parsed `.github/workflows/deploy-backend.yml` and `.github/workflows/deploy-workers.yml` successfully with Ruby `YAML.load_file`.
+- `git diff --check` passed for the edited workflow files and handoff board.
+
+### Notes
+
+- No application code changed.
+- No local test suite was run because the changes are limited to GitHub Actions workflow runtime/appsettings behavior.
+
+---
+
+## Section 47: Copilot Follow-up — Deploy Trigger Commit Pushed (2026-04-17)
+
+Executed the follow-up handover task to publish the App Service startup workflow fix and trigger a fresh Azure deploy cycle.
+
+### Completed
+
+- Validated `.github/workflows/deploy-backend.yml` and `.github/workflows/deploy-workers.yml` with Ruby `YAML.load_file`.
+- Confirmed workflow diff hygiene with `git diff --check` scoped to the two workflow files.
+- Committed only the workflow changes as:
+  - `bc8e34b` — `fix: set PYTHONPATH and startup-file for WEBSITE_RUN_FROM_PACKAGE deploys`
+- Pushed `bc8e34b` to `main`.
+
+### Resulting workflow runs
+
+- Backend: `Deploy Backend (App Service)` run `24564473613`
+- Workers: `Deploy Workers` run `24564473595`
+
+Both runs were observed in progress immediately after push; outcome review is the next checkpoint.
+
+---
+
+## Section 48: Codex Follow-up — Repository-local Codex Config Stub (2026-04-17)
+
+Executed a direct repo task to add a local Codex configuration path without introducing speculative settings.
+
+### Completed
+
+- Added `.codex/config.toml` as a minimal valid TOML stub for future repository-local Codex configuration.
+
+### Validation
+
+- File creation will be verified via workspace file inspection and diff hygiene checks.
+
+### Notes
+
+- No application, workflow, or infrastructure behavior changed.
+- No automated tests were run because the change only adds a placeholder config file and coordination log entries.
+
+---
+
+## Section 49: Codex Follow-up — GitHub-first `.codex` Multi-Agent Setup (2026-04-17)
+
+Completed the repository-local Codex workflow setup beyond the initial config stub.
+
+### Completed
+
+- Added `.codex/agents/orchestrator.toml`, `planner.toml`, `developer.toml`, `reviewer.toml`, and `deployer.toml`.
+- Added `.codex/README.md` with practical usage guidance and guardrails.
+- Finalized `.codex/config.toml` with the trusted project entry and agent thread/depth limits.
+- Aligned `AGENTS.md` with the current implemented repository state while preserving the required role workflow, bootstrap protocol, handover rules, and memory context block.
+
+### Validation
+
+- Parsed `.codex/config.toml` and all five agent TOMLs successfully with Python 3.11 `tomllib`.
+- Verified the workflow order and role boundaries against `AGENTS.md`.
+- `git diff --check` passed for the `.codex` files and `AGENTS.md`.
+
+### Notes
+
+- The current Codex setup is GitHub-first and human-supervised: HANDOVER.md remains the internal coordination board, while GitHub Issues, Pull Requests, and CI/CD evidence remain the external system of record where applicable.
+- No production application code changed as part of this setup.
+
+---
+
+## Section 50: Codex Follow-up — GitHub Issue #8 PRD Gap Summary (2026-04-17)
+
+Executed the latest GitHub issue in the repository, `#8 Gap Summary`, as a documentation/analysis task.
+
+### Completed
+
+- Added `docs/ISSUE-8-GAP-SUMMARY.md` with a current repo-vs-PRD gap analysis grounded in the codebase.
+- Compared the current implementation against `prd.md` and grouped findings into:
+  - implemented areas that should not be re-triaged
+  - partial areas where the core exists but PRD scope is not fully met
+  - missing contracts and operational capabilities still absent from API/UI/infra
+
+### Key findings captured
+
+- Ingestion is still direct upload based and not yet SAS/Blob-first.
+- Video-first processing is only partially realized; transcript and chat-vision paths still carry more weight than the PRD intends.
+- Provider routing does not yet implement the full Azure Speech/Vision/OpenAI matrix described in the PRD.
+- Cost governance remains warning-only; the `confirm-cost` contract and UI are still missing.
+- Teams metadata is accepted by backend models but is not collected in the frontend create-job flow.
+- Audio/document extensibility is only partially implemented because only transcript and video adapters are currently registered.
+- Operational readiness gaps remain around readiness probes, Application Insights, and alerting.
+
+### Validation
+
+- Verified the summary against the current code paths in `backend/app/main.py`, `backend/app/job_logic.py`, `backend/app/agents/*`, `frontend/src/components/CreateJob.jsx`, `frontend/src/api.js`, and `infra/dev-bootstrap.sh`.
+- No automated tests were run because this task is documentation-only and does not change runtime behavior.
+
+---
+
+## Section 51: Codex Follow-up — GitHub Issue #17 Docker / Azure Container Apps Impact Analysis (2026-04-17)
+
+Executed GitHub issue `#17 Move to Docker` as a narrow analysis task tied to the current App Service deployment path.
+
+### Completed
+
+- Added `docs/ISSUE-17-DOCKER-IMPACT.md` with a repo-grounded impact analysis for moving the backend and workers from Linux App Service package deploys to Docker images on Azure Container Apps.
+- Evaluated the current deployment shape across:
+  - API App Service package deploy
+  - three worker App Service package deploys
+  - Static Web Apps frontend
+  - shared Azure SQL / Blob / Service Bus / Key Vault / Azure OpenAI / Azure Speech dependencies
+- Captured the strongest migration drivers already visible in the repository:
+  - `WEBSITE_RUN_FROM_PACKAGE` packaging complexity
+  - manual `PYTHONPATH` and startup-command adjustments
+  - worker HTTP warmup shim added specifically for App Service
+  - `ffmpeg` and native dependency pressure that fits custom images better than the current host model
+
+### Decisions captured
+
+- Treat the move primarily as an infrastructure and CI/CD migration, not an application rewrite.
+- Preserve current environment variable names to minimize backend/frontend code churn.
+- Keep frontend on Static Web Apps unless a separate issue justifies moving it.
+- Prefer a phased migration:
+  - containerize the runtime first
+  - migrate the API before the workers
+  - move workers only after the API container path is proven stable
+
+### Validation
+
+- Verified the analysis against the current deployment and runtime files:
+  - `.github/workflows/deploy-backend.yml`
+  - `.github/workflows/deploy-workers.yml`
+  - `.github/workflows/deploy-frontend.yml`
+  - `infra/dev-bootstrap.sh`
+  - `infra/README.md`
+  - `backend/app/main.py`
+  - `backend/app/workers/runner.py`
+  - `backend/app/agents/media_preprocessor.py`
+  - `backend/app/servicebus.py`
+- No automated tests were run because this task is documentation-only and does not change runtime behavior.
+
+### Open questions
+
+- Whether the worker target should be long-running Container Apps, Container Apps Jobs, or a later queue-driven autoscaling design.
+- Whether the next implementation issue should stop at Dockerfiles plus local smoke validation, or include Azure Container Registry and Container Apps provisioning in the same slice.
+
+---
+
+## Section 52: Codex Follow-up — GitHub Issue #18 Container Runtime + Local Smoke Path (2026-04-17)
+
+Executed GitHub issue `#18 Containerize backend and workers with local smoke path` as a narrow implementation task following the Issue #17 analysis.
+
+### Completed
+
+- Added [backend/Dockerfile](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/Dockerfile) with shared Python 3.11 container packaging and two explicit runtime targets:
+  - `api` for `python -m uvicorn app.main:app --host 0.0.0.0 --port 8000`
+  - `worker` for `python -m app.workers.runner` with `PFCD_WORKER_ROLE` supplied at runtime
+- Installed the native/runtime dependencies called out by the issue in the container path:
+  - `ffmpeg`
+  - `unixodbc`
+  - `msodbcsql18`
+- Added [backend/.dockerignore](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/.dockerignore) to keep the backend build context small and avoid copying local venv, caches, SQLite files, and storage artifacts into image builds.
+- Added [backend/docker-compose.smoke.yml](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/docker-compose.smoke.yml) as the local smoke workflow:
+  - API service builds the `api` target, binds `127.0.0.1:8000`, and seeds placeholder env vars so `/health` can return a real JSON payload locally.
+  - Worker service builds the `worker` target, sets `PFCD_WORKER_ROLE=extracting`, and uses a placeholder Service Bus connection string so the runtime enters the listener loop and retries receiver setup without requiring Azure cutover work in this issue.
+- Updated [backend/README.md](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/README.md) with:
+  - the new container targets
+  - the local smoke commands
+  - expected API and worker behavior
+  - teardown instructions
+
+### Decisions captured
+
+- Kept existing backend and worker environment variable names unchanged to minimize future Azure Container Apps migration churn.
+- Used a single shared Docker build with distinct final targets instead of duplicating nearly identical API and worker Dockerfiles.
+- Kept the worker startup pattern environment-driven via `PFCD_WORKER_ROLE`, matching the current non-container runtime.
+
+### Validation
+
+- `docker compose -f backend/docker-compose.smoke.yml config` passed after quoting the OpenAI API version so Compose preserves it as a string instead of coercing it into a timestamp.
+- `git diff --check` passed for:
+  - `backend/.dockerignore`
+  - `backend/Dockerfile`
+  - `backend/docker-compose.smoke.yml`
+  - `backend/README.md`
+- Attempted `docker build -f backend/Dockerfile --target api -t pfcd-backend-api:issue-18 backend`, but the local Docker daemon was unavailable in this session (`unix:///Users/karthicks/.docker/run/docker.sock` missing), so a full image build and runtime smoke execution could not be completed here.
+
+### Open follow-up
+
+- Once Docker Desktop or another local daemon is available, run the README smoke path end-to-end to capture concrete API `/health` output and worker listener-loop logs before any Azure registry or Container Apps work begins.
+
+---
+
+## Section 53: Codex Validation Addendum — GitHub Issue #18 Docker Smoke Run (2026-04-17)
+
+Re-ran the issue `#18` validation after Docker daemon access became available locally.
+
+### Additional implementation adjustment
+
+- Updated [backend/docker-compose.smoke.yml](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/docker-compose.smoke.yml) so the API host port is configurable via `PFCD_SMOKE_API_PORT` instead of being hardcoded to `8000`.
+- Updated [backend/README.md](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/README.md) to use `PFCD_SMOKE_API_PORT=8010` in the documented smoke path and note that `8000` remains the default when free.
+- Reason: the first live smoke attempt failed because `127.0.0.1:8000` was already allocated on the local machine. Making the host port configurable keeps the smoke workflow usable on busy dev setups without changing the container’s internal port or startup command.
+
+### Docker validation evidence
+
+- API image built successfully with:
+  - `docker build -f backend/Dockerfile --target api -t pfcd-backend-api:issue-18 backend`
+- The build completed through both high-risk layers:
+  - native runtime install (`ffmpeg`, `unixodbc`, `msodbcsql18`)
+  - Python dependency install from `backend/requirements.txt`
+- Smoke API container started successfully on a non-conflicting host port with:
+  - `PFCD_SMOKE_API_PORT=8010 docker compose -f backend/docker-compose.smoke.yml up -d api`
+- Host-side API probe succeeded:
+  - `curl http://127.0.0.1:8010/health`
+  - response: `{"status":"ok", ... "missing_environment":[]}`
+- In-container API probe also succeeded:
+  - `docker exec backend-api-1 curl -sS http://127.0.0.1:8000/health`
+- Process check confirmed the expected startup command:
+  - `python -m uvicorn app.main:app --host 0.0.0.0 --port 8000`
+
+### Worker validation evidence
+
+- Smoke worker container started successfully with:
+  - `docker compose -f backend/docker-compose.smoke.yml up -d worker-extracting`
+- Process check confirmed the expected worker runtime:
+  - `python -m app.workers.runner`
+- In-container worker health probe succeeded:
+  - `docker exec backend-worker-extracting-1 curl -sS http://127.0.0.1:8000/`
+  - response: `ok`
+- Worker logs confirmed acceptance-criteria behavior:
+  - `Health server listening on port 8000`
+  - `Worker runtime OpenAI config: role=extracting ...`
+  - `Worker starting for phase extracting`
+  - repeated Service Bus connection retry logs caused by the intentionally fake placeholder connection string (`failed to resolve broker hostname`), which is acceptable for this local smoke path because it proves the container enters the listener loop instead of exiting immediately
+
+### Cleanup
+
+- Stopped and removed the smoke containers and network with:
+  - `docker compose -f backend/docker-compose.smoke.yml down --remove-orphans`
+
+---
+
+## Section 53: Codex Follow-up — GitHub Issue #22 PostgreSQL Migration Impact Analysis (2026-04-17)
+
+Completed the requested impact analysis for moving PFCD persistence from Azure SQL Server to PostgreSQL so the platform can adopt `pgvector` later if RAG is approved.
+
+### Deliverable
+
+- added `docs/ISSUE-22-POSTGRES-IMPACT.md` with explicit Orchestrator, Planner, Developer, Reviewer, and Deployer sections tied to GitHub issue #22
+
+### Key findings
+
+- application persistence code is largely database-dialect-neutral today:
+  - `backend/app/db.py` already treats non-SQLite URLs generically
+  - ORM/repository code uses standard SQLAlchemy patterns
+- the highest migration cost is outside the repository layer:
+  - `infra/dev-bootstrap.sh` provisions Azure SQL Server and emits a SQL Server ODBC connection string
+  - CI and runtime packaging still depend on `pyodbc`, `unixodbc-dev`, `unixodbc`, and `msodbcsql18`
+  - operational docs and env-var naming are still Azure SQL Server-specific
+- PostgreSQL should be migrated as a standalone platform change first; `pgvector` should remain a separate follow-on issue because the current schema does not yet contain embedding storage or retrieval flows
+- the current migration chain should be validated against a disposable PostgreSQL instance before any cutover, especially the initial boolean server defaults in `20260401_0001_init.py`
+
+### Recommendation
+
+- create a follow-on implementation issue for PostgreSQL driver swap, Azure PostgreSQL bootstrap, Alembic validation, and one PostgreSQL CI smoke path
+- do not bundle RAG or `pgvector` schema work into that first migration PR
+
+### Validation
+
+- source inspection only; no application tests run because this pass was analysis/documentation-only
+
+---
+
+## Section 54: Codex Delivery — GitHub Issue #23 Frontend Containerization (2026-04-17)
+
+Executed GitHub issue `#23 Frontend to docker` as a narrow implementation task focused on containerizing the existing Vite frontend without changing the current Azure Static Web Apps deployment workflow.
+
+### Completed
+
+- Added [frontend/Dockerfile](/Users/karthicks/kAgents/Projects/PFCD-V2/frontend/Dockerfile) with a two-stage frontend image:
+  - `node:20-alpine` build stage running `npm ci` and `npm run build`
+  - `nginx:1.27-alpine` runtime stage serving the built SPA on port `80`
+- Added [frontend/nginx/default.conf](/Users/karthicks/kAgents/Projects/PFCD-V2/frontend/nginx/default.conf) to provide:
+  - SPA fallback via `try_files ... /index.html`
+  - a lightweight `/health` endpoint for smoke checks
+  - the existing `X-Content-Type-Options` and `X-Frame-Options` response headers
+- Added [frontend/.dockerignore](/Users/karthicks/kAgents/Projects/PFCD-V2/frontend/.dockerignore) so `node_modules`, `dist`, env files, and local artefacts do not bloat the build context.
+- Added [frontend/docker-compose.smoke.yml](/Users/karthicks/kAgents/Projects/PFCD-V2/frontend/docker-compose.smoke.yml) as the local smoke workflow:
+  - builds the frontend image from `frontend/`
+  - accepts `VITE_API_BASE` and `VITE_API_KEY` as build args
+  - binds host port `${PFCD_FRONTEND_SMOKE_PORT:-3000}` to container port `80`
+- Added [frontend/README.md](/Users/karthicks/kAgents/Projects/PFCD-V2/frontend/README.md) with:
+  - local development commands
+  - direct `docker build` / `docker run` usage
+  - the compose-based smoke path
+  - notes clarifying that `staticwebapp.config.json` still applies to the existing SWA deployment path while nginx handles the container runtime
+
+### Decisions captured
+
+- Kept the existing GitHub Actions Static Web Apps deployment flow unchanged so issue `#23` remains a containerization task rather than a hosting migration.
+- Preserved the current frontend configuration model by using `VITE_API_BASE` and `VITE_API_KEY` as optional build-time arguments in the Docker build.
+- Used nginx instead of a Node runtime in production so the container serves the already-built SPA with a minimal static runtime and explicit health endpoint.
+
+### Validation
+
+- `git diff --check` passed for:
+  - `frontend/.dockerignore`
+  - `frontend/Dockerfile`
+  - `frontend/README.md`
+  - `frontend/docker-compose.smoke.yml`
+  - `frontend/nginx/default.conf`
+  - `HANDOVER.md`
+- `docker compose -f frontend/docker-compose.smoke.yml config` passed.
+- Frontend image built successfully with:
+  - `docker build -f frontend/Dockerfile --build-arg VITE_API_BASE=http://127.0.0.1:8000 -t pfcd-frontend:issue-23 frontend`
+- Smoke container started successfully with:
+  - `docker run --rm -d --name pfcd-frontend-issue-23 -p 3010:80 pfcd-frontend:issue-23`
+- In-container probes succeeded:
+  - `docker exec pfcd-frontend-issue-23 wget -qO- http://127.0.0.1/health`
+    - response: `ok`
+  - `docker exec pfcd-frontend-issue-23 wget -qO- http://127.0.0.1/ | head -n 5`
+    - returned the built `index.html`
+  - `docker exec pfcd-frontend-issue-23 sh -lc "wget -qO- http://127.0.0.1/jobs | head -n 5"`
+    - returned `index.html`, confirming SPA fallback routing
+- Container status/log evidence:
+  - `docker ps` showed the container `Up ... (healthy)` with port mapping `3010->80`
+  - nginx startup logs were clean and `/health` requests returned `200`
+- Cleanup completed with:
+  - `docker rm -f pfcd-frontend-issue-23`
+
+### Open follow-up
+
+- Actual Azure container hosting, registry publishing, and deployment workflow migration remain separate work; this issue only adds the frontend image and local smoke path.
+- If the team wants runtime-configurable API targets instead of build-time `VITE_*` injection, that should be handled in a follow-up so it can be reviewed as a deliberate config-contract change.
+
+---
+
+## Section 55: Codex Delivery — GitHub Issue #24 Frontend to Backend Docker Integration (2026-04-18)
+
+Executed GitHub issue `#24 Frontend to backend integration in Docker` as a narrow follow-up to the backend and frontend containerization work from issues `#18` and `#23`.
+
+### Completed
+
+- Added [docker-compose.local.yml](/Users/karthicks/kAgents/Projects/PFCD-V2/docker-compose.local.yml) at the repo root to run the backend API and frontend together as a local Docker stack.
+- Updated [frontend/nginx/default.conf](/Users/karthicks/kAgents/Projects/PFCD-V2/frontend/nginx/default.conf) so the frontend container proxies:
+  - `/api/*` to the backend API container
+  - `/dev/*` to the backend API container
+- Kept the frontend bundle same-origin in the integrated stack by building with `VITE_API_BASE=""`, so browser traffic goes to `http://<frontend-host>/api/...` instead of trying to resolve a Docker-internal hostname.
+- Added a compose-level API healthcheck that accepts backend `status=degraded` in local Docker, because the integrated stack intentionally omits Azure Service Bus and the worker services.
+- Added a harmless placeholder `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME=local-docker-smoke` in the local compose environment so `POST /api/jobs` can build `provider_effective` metadata without requiring a real Azure deployment for this issue.
+- Updated [backend/README.md](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/README.md) and [frontend/README.md](/Users/karthicks/kAgents/Projects/PFCD-V2/frontend/README.md) with the integrated local Docker workflow and the expected local limitations.
+
+### Decisions captured
+
+- Kept scope narrow: no backend application logic or worker orchestration behavior changed.
+- Solved browser-to-backend routing at the nginx/container boundary rather than changing the frontend API client contract.
+- Preserved the existing standalone smoke paths in `backend/docker-compose.smoke.yml` and `frontend/docker-compose.smoke.yml`; the new root compose file is additive for integrated local validation only.
+
+### Validation
+
+Executed the integrated stack locally with Docker on alternate host ports because `127.0.0.1:8000` was already in use on the machine:
+
+- startup:
+  - `PFCD_LOCAL_API_PORT=8011 PFCD_LOCAL_FRONTEND_PORT=3001 docker compose -f docker-compose.local.yml up --build -d`
+- backend direct health:
+  - `curl -i http://127.0.0.1:8011/health`
+  - response: `503` with JSON `status="degraded"` as expected in local Docker without Azure-backed env vars
+- frontend health:
+  - `curl -i http://127.0.0.1:3001/health`
+  - response: `200 OK`
+- frontend-proxied API reachability:
+  - `curl -i http://127.0.0.1:3001/api/jobs`
+  - response: `200 OK` with `[]`
+- frontend-proxied upload:
+  - `curl -X POST http://127.0.0.1:3001/api/upload -F file=@/tmp/pfcd-issue24.txt`
+  - response: `201` with upload metadata
+- frontend-proxied job creation:
+  - `curl -X POST http://127.0.0.1:3001/api/jobs ...`
+  - response: `200` with `status="queued"`
+- frontend-proxied dev workflow:
+  - `curl -X POST http://127.0.0.1:3001/dev/jobs/<job_id>/simulate`
+  - response: `status="needs_review"`
+  - `curl http://127.0.0.1:3001/api/jobs/<job_id>/draft`
+  - returned the simulated draft payload through the frontend origin
+- cleanup:
+  - `docker compose -f docker-compose.local.yml down --remove-orphans`
+
+### Reviewer verdict
+
+- `approved`
+
+### Risks / follow-up notes
+
+- The integrated stack is intentionally local-only and partial:
+  - backend `/health` remains `degraded` without Azure Service Bus and the Azure resource env vars
+  - jobs remain `queued` unless workers and a real Service Bus connection are added
+- The placeholder `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME` exists only to unblock local `create_job` metadata construction; it is not a substitute for real Azure model configuration.
+- No deployment workflow or Azure hosting configuration changed in this issue.
+
+---
+
+## Section 56: Codex Follow-up — Local Docker Env Example for Issue #24 (2026-04-18)
+
+Added a committed example env file for the integrated local Docker stack so the required variables are explicit and reusable without fighting the repo-wide `.env.*` ignore rule.
+
+### Completed
+
+- Added [docker-compose.local.env.example](/Users/karthicks/kAgents/Projects/PFCD-V2/docker-compose.local.env.example) with:
+  - host port overrides
+  - `VITE_API_KEY`
+  - local backend path overrides
+  - placeholder `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME`
+  - optional Azure-backed health variables for removing local `/health` degraded status
+- Updated [docker-compose.local.yml](/Users/karthicks/kAgents/Projects/PFCD-V2/docker-compose.local.yml) so those values can be overridden via `docker compose --env-file ...`
+- Updated [backend/README.md](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/README.md) and [frontend/README.md](/Users/karthicks/kAgents/Projects/PFCD-V2/frontend/README.md) with the example-file workflow
+
+### Validation
+
+- `docker compose --env-file docker-compose.local.env.example -f docker-compose.local.yml config` passed
+
+---
+
+## Section 57: Codex Delivery — GitHub Issue #25 PostgreSQL Migration Baseline (2026-04-18)
+
+Executed GitHub issue `#25 Plan and implement PostgreSQL migration baseline` as the first persistence cutover from Azure SQL Server / `pyodbc` to PostgreSQL, explicitly keeping `pgvector`, embeddings, retrieval, and RAG work out of scope.
+
+### Completed
+
+- Replaced the backend SQL driver dependency in [backend/requirements.txt](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/requirements.txt) from `pyodbc` to `psycopg[binary]==3.2.6`.
+- Updated [infra/dev-bootstrap.sh](/Users/karthicks/kAgents/Projects/PFCD-V2/infra/dev-bootstrap.sh) to provision Azure Database for PostgreSQL Flexible Server instead of Azure SQL Server:
+  - new defaults: `POSTGRES_SERVER_NAME`, `POSTGRES_DATABASE_NAME`, `POSTGRES_VERSION`, `POSTGRES_SKU_NAME`, `POSTGRES_TIER`, `POSTGRES_STORAGE_SIZE`
+  - creates/updates the flexible server and target database
+  - stores `postgres-admin-*` and `postgres-connection-string` secrets in Key Vault
+  - injects a PostgreSQL `DATABASE_URL` into API and worker App Service settings
+- Updated backend deploy and worker deploy workflows:
+  - removed `unixodbc-dev` installation from GitHub Actions jobs
+  - added a PostgreSQL service container to the test job
+  - added a PostgreSQL smoke step that runs `tests/integration/test_postgres_smoke.py`
+- Added [tests/integration/test_postgres_smoke.py](/Users/karthicks/kAgents/Projects/PFCD-V2/tests/integration/test_postgres_smoke.py), which:
+  - resets a fresh PostgreSQL schema
+  - runs Alembic against PostgreSQL
+  - boots the FastAPI app against that migrated database
+  - validates create job -> simulate -> save draft -> finalize -> markdown export
+- Kept the main test suite on SQLite for speed and determinism; PostgreSQL is covered as a focused smoke path instead of moving every test fixture at once.
+- Updated docs in [backend/README.md](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/README.md), [infra/README.md](/Users/karthicks/kAgents/Projects/PFCD-V2/infra/README.md), and [REFERENCE.md](/Users/karthicks/kAgents/Projects/PFCD-V2/REFERENCE.md) so PostgreSQL is the documented target runtime path.
+- Simplified [backend/app/main.py](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/app/main.py) health diagnostics to depend on `DATABASE_URL` instead of Azure SQL-specific env vars.
+
+### Alembic fixes discovered during real PostgreSQL validation
+
+- Kept `20260401_0001_init.py` PostgreSQL-safe for boolean defaults by switching boolean server defaults to `sa.false()`.
+- Preserved the intended migration chain by **not** front-loading later revisions into `20260401_0001_init.py`; index creation remains in `20260402_0002_add_job_id_indexes.py`, and timestamp type conversion remains in `20260411_0003_datetime_timestamps.py`.
+- Fixed `20260411_0003_datetime_timestamps.py` for PostgreSQL by adding explicit `postgresql_using` casts (for example `created_at::timestamptz` and `nullif(..., '')::timestamptz`) so text timestamp columns can be upgraded cleanly on PostgreSQL.
+- Fixed the PostgreSQL smoke harness so Alembic uses the PostgreSQL `DATABASE_URL` during test execution rather than silently falling back to SQLite.
+
+### Decisions captured
+
+- Kept the scope narrow to the base database migration. No `pgvector`, embedding schema, JSONB refactors, chunking, retrieval, or RAG APIs were added.
+- Preserved fast local/CI feedback by keeping the broad suite SQLite-backed and adding one explicit PostgreSQL acceptance path rather than rewriting all fixtures in the same issue.
+- Treated Alembic replay on a fresh PostgreSQL database as the highest-signal validation for this issue, because that was the main migration risk called out by the issue and the earlier impact analysis.
+
+### Validation
+
+- Full local suite after the migration changes:
+  - `backend/.venv/bin/pytest tests/unit tests/integration -q`
+  - result: `273 passed, 1 skipped, 1 warning`
+- Targeted PostgreSQL smoke using the machine's local PostgreSQL 16 instance:
+  - temporary DB: `pfcd_issue25_smoke`
+  - command path used: `/Library/PostgreSQL/16/bin/psql`
+  - smoke result: `tests/integration/test_postgres_smoke.py` passed against `postgresql+psycopg://postgres:***@127.0.0.1:5432/pfcd_issue25_smoke`
+- Infra script syntax validation:
+  - `bash -n infra/dev-bootstrap.sh`
+  - result: pass
+
+### Open follow-up
+
+- The tracked runtime and CI/database path is now PostgreSQL-oriented, but there are still untracked Docker artifacts from the separate containerization workstream in the working tree. They were left alone here to avoid mixing issue `#25` with the pending Docker review trail.
+- Historical documents that describe the old Azure SQL baseline remain as historical records; the current runtime docs were updated, but archival notes were intentionally not rewritten.
+
+---
+
+## Section 58: Codex Delivery — GitHub Issue #26 User Dependency Docs + Local Build Env Alignment (2026-04-18)
+
+GitHub issue `#26 List all dependencies from user - mainly the environment variables` requested a narrow repo-maintenance pass to make the user-supplied dependencies explicit, improve the local build-file experience, and tighten local ignore rules.
+
+### Completed
+
+- Added [docs/ISSUE-26-USER-DEPENDENCIES.md](/Users/karthicks/kAgents/Projects/PFCD-V2/docs/ISSUE-26-USER-DEPENDENCIES.md) as a workflow-based reference covering:
+  - user-supplied machine dependencies (`python`, `node`, `docker`, optional `ffmpeg`, optional PostgreSQL)
+  - the purpose of each local build file (`backend/frontend` Dockerfiles, smoke compose files, integrated `docker-compose.local.yml`)
+  - environment variables grouped by frontend-only, backend-only, worker-only, integrated Docker, and Azure-backed workflows
+  - the distinction between operational settings and `/health` parity placeholders
+- Expanded [docker-compose.local.yml](/Users/karthicks/kAgents/Projects/PFCD-V2/docker-compose.local.yml) so the integrated local API container accepts the main runtime/provider/storage env vars through `--env-file` instead of requiring manual YAML edits.
+- Expanded [docker-compose.local.env.example](/Users/karthicks/kAgents/Projects/PFCD-V2/docker-compose.local.env.example) to mirror those compose pass-through variables and document the intended integrated-stack defaults such as `VITE_API_BASE=` remaining blank for same-origin `/api`.
+- Updated [.gitignore](/Users/karthicks/kAgents/Projects/PFCD-V2/.gitignore) to ignore repo-root `storage/` scratch data and make `.env.docker.local` explicit alongside the existing `.env.*` rule.
+- Updated [HANDOVER.md](/Users/karthicks/kAgents/Projects/PFCD-V2/HANDOVER.md) for the required `In Progress` -> `Ready for Claude Review` workflow transition.
+
+### Decisions
+
+- Kept the change additive and local-only: no backend or frontend application logic changed.
+- Left `PFCD_WORKER_ROLE` and `PFCD_CLEANUP_INTERVAL_SECONDS` documented but intentionally out of `docker-compose.local.yml` because that stack only runs the API and frontend services.
+
+### Validation
+
+- `docker compose --env-file docker-compose.local.env.example -f docker-compose.local.yml config`
+  - passed; the integrated compose file resolves successfully with the example env file
+- Compared the documented/example env vars against actual backend/frontend env lookups
+  - result: only the worker-only variables were excluded from the integrated env example, by design
+
+### Open follow-up
+
+- During `docker compose config`, Compose inherited an `OPENAI_API_KEY` value from the local shell environment. That is expected Compose behavior, but it is a reminder that local shell secrets can appear in rendered config output even when the tracked example file leaves the value blank.
+
+### Clarification follow-up
+
+- Tightened the issue note after user feedback that "which file do I update?" was still unclear.
+- Added an explicit ownership matrix to [docs/ISSUE-26-USER-DEPENDENCIES.md](/Users/karthicks/kAgents/Projects/PFCD-V2/docs/ISSUE-26-USER-DEPENDENCIES.md) mapping env vars to:
+  - `.env.docker.local`
+  - direct shell env
+  - GitHub Actions secrets / vars
+  - Azure Key Vault-backed App Service settings
+- Documented the current asymmetry in the repo:
+  - `DATABASE_URL`, `AZURE_STORAGE_CONNECTION_STRING`, and `AZURE_SERVICE_BUS_CONNECTION_STRING` are Key Vault-backed in Azure
+  - `PFCD_API_KEY`, `VITE_API_KEY`, and `AZURE_OPENAI_ENDPOINT` are not currently Key Vault-backed by the bootstrap path
+
+---
+
 ## Section 59: Codex Delivery — GitHub Issue #19 ACR + Container Apps Environment Bootstrap (2026-04-18)
 
 GitHub issue `#19 Provision Azure Container Registry and Container Apps environment` requested a narrow infrastructure bootstrap update ahead of the Container Apps deployment work in `#20` and `#21`.
@@ -2122,3 +2744,154 @@ GitHub issue `#19 Provision Azure Container Registry and Container Apps environm
 
 - The actual repo variable `AZURE_CONTAINER_REGISTRY` and the effective `AcrPush` scope on `AZURE_CREDENTIALS` still need operator-side confirmation in GitHub/Azure; this issue only documents and bootstraps the infra-side expectations.
 - The deferred RBAC helper will report skips until the Container Apps from `#20` and `#21` exist, which is expected for this issue's scope.
+
+---
+
+## Section 60: Codex Delivery — GitHub Issue #27 PostgreSQL Cleanup Part A (2026-04-18)
+
+GitHub issue `#27 Provision Azure Database for PostgreSQL and cut over DATABASE_URL` was executed for **Part A only**: active-repo cleanup of stale SQL Server references. Part B remains blocked on issues `#20` and `#21` and was not attempted.
+
+### Completed
+
+- Removed `AZURE_SQL_SERVER_NAME` and `AZURE_SQL_DATABASE_NAME` from:
+  - [docker-compose.local.yml](/Users/karthicks/kAgents/Projects/PFCD-V2/docker-compose.local.yml)
+  - [backend/docker-compose.smoke.yml](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/docker-compose.smoke.yml)
+- Removed the same two legacy variables from [docker-compose.local.env.example](/Users/karthicks/kAgents/Projects/PFCD-V2/docker-compose.local.env.example).
+- Cleaned [backend/Dockerfile](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/Dockerfile) by removing the leftover SQL Server/ODBC package path (`unixodbc-dev`, `unixodbc`, and `msodbcsql18`) so the issue’s grep gate passes in active files.
+- Updated [REFERENCE.md](/Users/karthicks/kAgents/Projects/PFCD-V2/REFERENCE.md) so the `DATABASE_URL` row now includes a PostgreSQL DSN example while preserving the local SQLite default note.
+- Updated [HANDOVER.md](/Users/karthicks/kAgents/Projects/PFCD-V2/HANDOVER.md) for the required `In Progress` -> `Ready for Claude Review` transition.
+
+### Decisions
+
+- Kept the scope limited to active compose/build/doc files; no changes were made under `backend/app/`, historical issue docs, `HANDOVER.md` history entries, or `IMPLEMENTATION_SUMMARY.md` historical PostgreSQL migration notes beyond this append-only section.
+- Treated `backend/Dockerfile` as in-scope even though the issue body’s example edits focused on compose files, because the issue’s required repo-wide grep explicitly demanded zero in-scope hits for `unixodbc` / `mssql` / `pyodbc`.
+
+### Validation
+
+- In-scope grep checks returned zero matches for:
+  - `AZURE_SQL_SERVER_NAME`
+  - `AZURE_SQL_DATABASE_NAME`
+  - `pyodbc`
+  - `mssql`
+  - `unixodbc`
+  - `sql-connection-string`
+- `docker compose -f docker-compose.local.yml config`
+  - passed
+- Verified the `REFERENCE.md` `DATABASE_URL` line now includes:
+  - `postgresql+psycopg://pfcd_user:password@127.0.0.1:5432/pfcd`
+
+### Open follow-up
+
+- `docker compose config` inherited an `OPENAI_API_KEY` from the local shell and echoed it in rendered config output. That behavior is external to this issue’s scope, but it remains a reminder that shell-provided secrets can surface during local compose inspection unless the environment is scrubbed or an explicit env file is used.
+- Part B of issue `#27` remains blocked until Container Apps work in `#20` and `#21` is merged.
+
+---
+
+## Section 61: Instruction Doc Coherence Pass (2026-04-19)
+
+Performed a narrow documentation-only coherence pass across the active contributor guidance files while intentionally leaving `GEMINI.md` and the `prd.md` body untouched.
+
+### Completed
+
+- Updated [AGENTS.md](/Users/karthicks/kAgents/Projects/PFCD-V2/AGENTS.md) so frontend setup now uses `npm ci`, matching the lockfile-oriented workflow already documented elsewhere.
+- Updated [CLAUDE.md](/Users/karthicks/kAgents/Projects/PFCD-V2/CLAUDE.md) to replace the stale `SQLite/Azure SQL` architecture wording with `SQLite/PostgreSQL`.
+- Clarified in [CLAUDE.md](/Users/karthicks/kAgents/Projects/PFCD-V2/CLAUDE.md), [REFERENCE.md](/Users/karthicks/kAgents/Projects/PFCD-V2/REFERENCE.md), and [.github/copilot-instructions.md](/Users/karthicks/kAgents/Projects/PFCD-V2/.github/copilot-instructions.md) that `PFCD_API_KEY` / `VITE_API_KEY` are optional deployment guards rather than a product-level auth workflow.
+- Corrected [REFERENCE.md](/Users/karthicks/kAgents/Projects/PFCD-V2/REFERENCE.md) so the documented test naming convention matches the actual `tests/<layer>/test_*.py` pattern used in the repo.
+
+### Decisions
+
+- Treated `.github/copilot-instructions.md` plus `REFERENCE.md` as the most accurate active runtime guidance and normalized the other contributor-facing docs toward them.
+- Preserved historical logs and requirements text: no rewrite was attempted in `GEMINI.md`, `prd.md` body text, or earlier append-only implementation sections.
+
+---
+
+## Section 62: Codex Delivery — GitHub Issue #20 Backend API to Azure Container Apps (2026-04-19)
+
+Executed the first Container Apps migration slice for the backend API by replacing the App Service package deployment workflow with an image-based Azure Container Apps deployment path.
+
+### Completed
+
+- Rewrote [.github/workflows/deploy-backend.yml](/Users/karthicks/kAgents/Projects/PFCD-V2/.github/workflows/deploy-backend.yml) from App Service zip deploy to Azure Container Apps:
+  - keeps the existing unit/integration + PostgreSQL smoke test gate
+  - installs the Azure Container Apps CLI extension
+  - builds `backend/Dockerfile --target api`
+  - pushes `pfcd-backend-api:${GITHUB_SHA}` to ACR
+  - bootstraps the backend Container App with a public image on first deploy so the system-assigned identity exists before the private-image revision is applied
+  - grants the backend Container App identity `AcrPull` on ACR and `Key Vault Secrets User` on the vault
+  - renders a YAML manifest for the final backend revision with:
+    - external ingress
+    - port `8000`
+    - HTTP `/health` startup/liveness/readiness probes
+    - Key Vault-backed secret refs for `DATABASE_URL`, `AZURE_STORAGE_CONNECTION_STRING`, and `AZURE_SERVICE_BUS_CONNECTION_STRING`
+  - verifies the deployed backend using the ACA FQDN and accepts either `200 {"status":"ok"}` or `503 {"status":"degraded"}` from `/health`
+- Updated [REFERENCE.md](/Users/karthicks/kAgents/Projects/PFCD-V2/REFERENCE.md):
+  - CI/CD section now documents the backend ACA deploy path and the new required GitHub variables
+  - Azure infrastructure table now lists `pfcd-[env]-api` as the active backend Container App while keeping the App Service entry marked as legacy during cutover
+
+### Decisions
+
+- Used a two-step ACA deploy shape (`public bootstrap image` -> `role assignment` -> `private ACR image revision`) because system-assigned managed identities do not exist until the Container App resource is created.
+- Kept runtime secrets Azure-native by referencing Key Vault from the Container App manifest instead of moving `DATABASE_URL`, storage, and Service Bus connection strings into GitHub secrets.
+- Preserved the existing backend app name secret (`AZURE_WEBAPP_NAME`) to keep the migration narrow even though the active resource is now a Container App rather than an App Service Web App.
+
+### Open follow-up
+
+- Worker migration (`#21`) is still required before the platform is fully on Azure Container Apps.
+- `infra/dev-bootstrap.sh` still provisions the legacy App Service plan / web apps by default; that drift should be cleaned up after the ACA backend and worker paths are both stable.
+
+---
+
+## Section 63: Codex Delivery — GitHub Issue #21 Workers to Azure Container Apps + KEDA (2026-04-19)
+
+Executed the worker migration slice by replacing the App Service package deployment workflow and warmup shim with a Container Apps + Service Bus scaling path.
+
+### Completed
+
+- Rewrote [.github/workflows/deploy-workers.yml](/Users/karthicks/kAgents/Projects/PFCD-V2/.github/workflows/deploy-workers.yml) from App Service zip deploy to Azure Container Apps:
+  - keeps the existing unit/integration + PostgreSQL smoke test gate
+  - builds `backend/Dockerfile --target worker`
+  - pushes `pfcd-worker:${GITHUB_SHA}` to ACR
+  - deploys `extracting`, `processing`, and `reviewing` workers through a matrix job
+  - bootstraps each worker Container App with a public image on first deploy so the system-assigned identity exists before the final private-image revision is applied
+  - grants each worker identity `AcrPull`, `Key Vault Secrets User`, and `Azure Service Bus Data Owner`
+  - renders a YAML manifest for the final worker revision with:
+    - ingress disabled
+    - `PFCD_WORKER_ROLE` pinned per worker app
+    - Key Vault-backed secret refs for `DATABASE_URL`, `AZURE_STORAGE_CONNECTION_STRING`, and `AZURE_SERVICE_BUS_CONNECTION_STRING`
+    - an `azure-servicebus` custom scale rule using `identity: system`
+- Removed the App Service-only HTTP warmup shim from [backend/app/workers/runner.py](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/app/workers/runner.py), including its HTTP server and threading imports.
+- Removed the stale worker HTTP healthcheck from [backend/Dockerfile](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/Dockerfile) because the worker container no longer exposes an HTTP endpoint under Container Apps.
+- Updated [REFERENCE.md](/Users/karthicks/kAgents/Projects/PFCD-V2/REFERENCE.md) so the repo layout, Azure infrastructure, CI/CD notes, and GitHub Actions variable table now describe the worker ACA/KEDA deployment path rather than the old `WEBSITE_RUN_FROM_PACKAGE` flow.
+
+### Decisions
+
+- Kept worker runtime Service Bus access on the existing `AZURE_SERVICE_BUS_CONNECTION_STRING` path to avoid coupling infrastructure migration with a runtime auth rewrite.
+- Used managed identity specifically for the Container Apps Service Bus scaler so queue-depth scaling no longer depends on a scaler-side connection string.
+- Left active queue-processing verification to the live Azure deploy path; the repo change establishes the CI/CD and manifest shape, but production validation still needs a real deployment run.
+
+### Open follow-up
+
+- Confirm the worker ACA YAML is accepted by Azure exactly as written and that each Service Bus queue scales its matching worker from zero.
+- Complete PostgreSQL cutover cleanup (`#27` Part B) now that backend and worker Container App workflows exist in repo.
+
+---
+
+## Section 64: Codex Follow-up — ACA-first bootstrap defaults (2026-04-19)
+
+Cleaned up the remaining platform drift in the bootstrap path so new environments default to Azure Container Apps instead of silently provisioning legacy App Service resources.
+
+### Completed
+
+- Updated [infra/dev-bootstrap.sh](/Users/karthicks/kAgents/Projects/PFCD-V2/infra/dev-bootstrap.sh) so legacy App Service resources are now opt-in behind `PROVISION_LEGACY_APP_SERVICE=true` rather than created on every bootstrap run.
+- Added a small wrapper in the bootstrap script that logs whether the legacy rollback path is being provisioned and avoids printing a nonexistent App Service host when that path is skipped.
+- Updated [infra/README.md](/Users/karthicks/kAgents/Projects/PFCD-V2/infra/README.md) to describe the ACA-first default, the optional rollback flag, and the current image-based backend/worker deployment model.
+- Updated [REFERENCE.md](/Users/karthicks/kAgents/Projects/PFCD-V2/REFERENCE.md) so the infrastructure table and bootstrap notes reflect that App Service is now an explicit rollback path instead of a default provisioned runtime.
+
+### Decisions
+
+- Kept the legacy App Service provisioning code in repo to preserve a documented rollback path, but made it opt-in so fresh environments match the active deployment platform.
+- Left the existing legacy resource names unchanged to avoid creating a second rollback naming scheme.
+
+### Open follow-up
+
+- `#27` Part B remains blocked on merge/live deployment evidence before runtime cleanup can safely remove stale SQL-era settings from deployed resources.

@@ -25,15 +25,15 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.String(length=64), nullable=False),
         sa.Column("profile_requested", sa.String(length=32), nullable=False),
         sa.Column("provider_effective", sa.Text(), nullable=False),
-        sa.Column("has_video", sa.Boolean(), nullable=False, server_default=sa.text("0")),
-        sa.Column("has_audio", sa.Boolean(), nullable=False, server_default=sa.text("0")),
-        sa.Column("has_transcript", sa.Boolean(), nullable=False, server_default=sa.text("0")),
+        sa.Column("has_video", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("has_audio", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("has_transcript", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("teams_metadata", sa.Text(), nullable=False),
         sa.Column("transcript_media_consistency", sa.Text(), nullable=False),
         sa.Column("agent_signals", sa.Text(), nullable=False),
         sa.Column("agent_review", sa.Text(), nullable=False),
         sa.Column("speaker_resolutions", sa.Text(), nullable=False),
-        sa.Column("user_saved_draft", sa.Boolean(), nullable=False, server_default=sa.text("0")),
+        sa.Column("user_saved_draft", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("user_saved_at", sa.String(length=64), nullable=True),
         sa.Column("current_phase", sa.String(length=32), nullable=True),
         sa.Column("last_completed_phase", sa.String(length=32), nullable=True),
@@ -41,7 +41,7 @@ def upgrade() -> None:
         sa.Column("payload_hash", sa.String(length=128), nullable=True),
         sa.Column("active_agent_run_id", sa.String(length=64), nullable=True),
         sa.Column("deleted_at", sa.String(length=64), nullable=True),
-        sa.Column("cleanup_pending", sa.Boolean(), nullable=False, server_default=sa.text("0")),
+        sa.Column("cleanup_pending", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("ttl_expires_at", sa.String(length=64), nullable=True),
         sa.Column("error", sa.Text(), nullable=True),
     )
@@ -80,6 +80,7 @@ def upgrade() -> None:
         sa.Column("message", sa.Text(), nullable=True),
         sa.Column("created_at", sa.String(length=64), nullable=False),
         sa.Column("updated_at", sa.String(length=64), nullable=True),
+        sa.ForeignKeyConstraint(["job_id"], ["jobs.job_id"]),
     )
     op.create_table(
         "exports",
@@ -93,6 +94,7 @@ def upgrade() -> None:
         sa.Column("event_type", sa.String(length=64), nullable=False),
         sa.Column("payload", sa.Text(), nullable=False),
         sa.Column("created_at", sa.String(length=64), nullable=False),
+        sa.ForeignKeyConstraint(["job_id"], ["jobs.job_id"]),
     )
 
 

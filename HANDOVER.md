@@ -1,13 +1,22 @@
 # HANDOVER.md
 
-Shared coordination board. Read and updated by both Claude and Codex at session start.
+Shared coordination board. Read and updated by Claude, Codex, and Copilot at session start.
 
-- **Claude** adds items to "Assigned to Codex" when assigning work; closes items after review.
-- **Codex** moves items to "In Progress" when starting, then "Ready for Claude Review" when done.
+- **Claude** adds items to agent queues when assigning work; closes items after review.
+- **Codex** handles application code changes; moves items to "In Progress", then "Ready for Claude Review" when done.
+- **Copilot** handles git operations, CI/CD tasks, and repo hygiene; moves items to "In Progress", then "Ready for Claude Review" when done.
 
 ---
 
 ## Assigned to Claude (review / planning)
+
+| ID | Task | Notes |
+|----|------|-------|
+| — | | |
+
+---
+
+## Assigned to Copilot (not started)
 
 | ID | Task | Notes |
 |----|------|-------|
@@ -43,7 +52,18 @@ Shared coordination board. Read and updated by both Claude and Codex at session 
 
 | ID | Task | PR / Commit |
 |----|------|-------------|
+| ISSUE-27-POSTGRES-CUTOVER | Remove remaining SQL Server references from compose files and active docs for GitHub issue #27 (Part A only) | — |
 | ISSUE-19-ACA-INFRA | Provision Azure Container Registry and shared Container Apps environment for GitHub issue #19 | — |
+| ISSUE-26-USER-DEPS | Clarify which env vars are edited locally vs supplied by GitHub secrets vs Azure Key Vault for GitHub issue #26 | — |
+| ISSUE-25-POSTGRES-BASELINE | Plan and implement PostgreSQL migration baseline for GitHub issue #25 | — |
+| ISSUE-24-DOCKER-INTEGRATION | Integrate frontend and backend locally in Docker and validate functionality for GitHub issue #24 | — |
+| ISSUE-23-FRONTEND-DOCKER | Containerize frontend with local smoke path for GitHub issue #23 | — |
+| ISSUE-22-POSTGRES-IMPACT | Analyze impact of moving PFCD persistence from Azure SQL Server to PostgreSQL / `pgvector` for GitHub issue #22 | — |
+| ISSUE-18-CONTAINER-RUNTIME | Containerize backend and workers with local smoke path for GitHub issue #18 | — |
+| ISSUE-17-DOCKER-IMPACT | Analyze impact of moving PFCD runtime from App Service package deploys to Docker on Azure Container Apps for GitHub issue #17 | — |
+| ISSUE-8-GAP-SUMMARY | Compare current codebase against `prd.md` and write repo gap summary for GitHub issue #8 | — |
+| CODEX-MULTI-AGENT-SETUP | Configure repository-local `.codex` GitHub-first multi-agent workflow | — |
+| DEPLOY-COMMIT-PUSH | Validate, commit, and push APPSERVICE-STARTUP-FIX changes to trigger deployment | `bc8e34b` |
 
 ---
 
@@ -51,6 +71,8 @@ Shared coordination board. Read and updated by both Claude and Codex at session 
 
 | ID | Task | Closed | Outcome |
 |----|----- |--------|---------|
+| APPSERVICE-STARTUP-FIX | Fix PYTHONPATH + startup command in deploy workflows | 2026-04-17 | Approved — `SCM_DO_BUILD_DURING_DEPLOYMENT=false` + `PYTHONPATH=...antenv/lib/python3.11/site-packages` added to all four deploy targets; `az webapp config set --startup-file "python -m uvicorn..."` added to backend deploy before restart; workers unchanged (already use `python -m`). |
+| CLAUDE-APPSERVICE-STARTUP-RCA | Review App Service startup failures after package deploy | 2026-04-17 | Complete — three root causes identified: (1) missing PYTHONPATH, (2) SCM_DO_BUILD_DURING_DEPLOYMENT=true moot under WEBSITE_RUN_FROM_PACKAGE, (3) API startup command `uvicorn` not in PATH. Codex task APPSERVICE-STARTUP-FIX created. See Section 45. |
 | BACKEND-DEPLOY-VALIDATION-FIX | Fix `Validate backend deployment settings` in `deploy-backend.yml` | 2026-04-17 | Approved — removed 3 spurious Key Vault-backed secret checks (DATABASE_URL, SB conn str, AOAI endpoint); added AZURE_RESOURCE_GROUP which was used but not validated |
 | WORKER-VENDORED-DEPS | Vendor Python deps into worker zip for `WEBSITE_RUN_FROM_PACKAGE` | 2026-04-17 | Approved — unixodbc-dev + setup-python + pip install into antenv/ added to build job; rm -rf antenv after zip; matches backend pattern exactly; workers now ship self-contained packages |
 | CLAUDE-BACKEND-DEPLOY-RCA | Review backend deploy failure path and plan secret/config-source fix | 2026-04-17 | Complete — see Section 42 of IMPLEMENTATION_SUMMARY.md; two Codex tasks created: BACKEND-DEPLOY-VALIDATION-FIX and WORKER-VENDORED-DEPS |

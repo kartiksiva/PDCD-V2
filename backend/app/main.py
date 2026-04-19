@@ -96,6 +96,7 @@ async def _job_or_404(job_id: str) -> Dict[str, Any]:
 @app.get("/health")
 def health() -> Dict[str, Any]:
     required_env = [
+        "DATABASE_URL",
         "AZURE_STORAGE_ACCOUNT_NAME",
         "AZURE_SERVICE_BUS_NAMESPACE",
         "AZURE_SERVICE_BUS_CONNECTION_STRING",
@@ -103,8 +104,6 @@ def health() -> Dict[str, Any]:
         "AZURE_SERVICE_BUS_QUEUE_PROCESSING",
         "AZURE_SERVICE_BUS_QUEUE_REVIEWING",
         "KEYVAULT_NAME",
-        "AZURE_SQL_SERVER_NAME",
-        "AZURE_SQL_DATABASE_NAME",
         "AZURE_OPENAI_ACCOUNT_NAME",
         "AZURE_SPEECH_ACCOUNT_NAME",
     ]

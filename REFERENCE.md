@@ -66,12 +66,13 @@ PDCD-V2/
 │       ├── test_lifecycle.py       # full job create→simulate→finalize→delete lifecycle
 │       ├── test_auth_enforcement.py # 401/403 on all protected endpoints
 │       ├── test_error_cases.py     # 409/410/413/400 error paths
-│       └── test_exports.py         # PDF/DOCX/Markdown/JSON export format checks
+│       ├── test_exports.py         # PDF/DOCX/Markdown/JSON export format checks
+│       └── test_postgres_smoke.py  # Alembic + API lifecycle smoke path on PostgreSQL
 ├── .github/
 │   └── workflows/
 │       ├── deploy-backend.yml
 │       ├── deploy-frontend.yml
-│       └── deploy-workers.yml  # parallel worker App Service deployments
+│       └── deploy-workers.yml  # worker Container Apps + Service Bus scale deployments
 ├── prd.md
 ├── AGENTS.md
 ├── GEMINI.md
@@ -92,7 +93,7 @@ PDCD-V2/
 | ORM | SQLAlchemy | 2.0.38 |
 | DB migrations | Alembic | 1.13.3 |
 | DB (local) | SQLite | built-in |
-| DB (prod) | Azure SQL Server | via pyodbc 5.2.0 |
+| DB (prod) | Azure Database for PostgreSQL Flexible Server | via psycopg 3.2.6 |
 | Async support | anyio | 4.9.0 |
 | Message queue | Azure Service Bus | 7.12.1 |
 | Blob storage | Azure Blob Storage | 12.25.0 |
@@ -123,7 +124,7 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `DATABASE_URL` | SQLAlchemy connection string | `sqlite:///./pfcd.db` |
+| `DATABASE_URL` | SQLAlchemy connection string | local default `sqlite:///./pfcd.db`; PostgreSQL example `postgresql+psycopg://pfcd_user:password@127.0.0.1:5432/pfcd` |
 | `AZURE_STORAGE_CONNECTION_STRING` | Blob storage | local fallback if unset |
 | `AZURE_STORAGE_CONTAINER_EVIDENCE` | Blob container for frame captures/evidence assets | `evidence` |
 | `AZURE_SERVICE_BUS_CONNECTION_STRING` | Service Bus namespace | `""` (skips queue dispatch) |
@@ -132,7 +133,7 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 | `AZURE_SERVICE_BUS_QUEUE_REVIEWING` | Queue name | `reviewing` |
 | `PFCD_WORKER_ROLE` | Worker phase (`extracting`/`processing`/`reviewing`) | — |
 | `PFCD_CLEANUP_INTERVAL_SECONDS` | Cleanup worker poll interval | `300` |
-| `PFCD_API_KEY` | Static API key for `X-API-Key` header | `""` (auth disabled if unset) |
+| `PFCD_API_KEY` | Optional static API key for `X-API-Key` header | `""` (auth disabled if unset) |
 | `PFCD_PROVIDER` | Chat/transcription provider (`azure_openai` or `openai`) | `azure_openai` |
 | `AZURE_OPENAI_ENDPOINT` | Azure OpenAI REST endpoint | required for agents |
 | `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME` | Chat model deployment name (canonical) | required for agents |
@@ -157,7 +158,9 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `VITE_API_BASE` | Frontend API origin override | `""` |
-| `VITE_API_KEY` | Client-side API key sent as `X-API-Key` | `""` |
+| `VITE_API_KEY` | Optional client-side API key sent as `X-API-Key` | `""` |
+
+`PFCD_API_KEY` / `VITE_API_KEY` are optional deployment guards, not a product-level authentication flow. Leave them unset for local/demo runs that should stay open.
 
 **ffmpeg dependency:** `media_preprocessor.py` calls `ffmpeg` via subprocess. Azure App Service (Linux) does not include `ffmpeg` by default. For local dev, install with `brew install ffmpeg` on macOS or `apt install ffmpeg` on Linux. For Azure production, Docker workers with a custom image are required (Phase 5b). When `ffmpeg` is absent, files larger than 24 MB fall back to `[transcription_skipped:file_too_large]`, matching the pre-Phase 5 behavior.
 
@@ -183,9 +186,9 @@ cd backend
 
 Use `.venv/bin/pytest` (not system `pytest`) to ensure the correct Python 3.11 venv is used.
 
-Tests use `tmp_path` fixture with an isolated SQLite database; no Azure credentials required. They monkeypatch `DATABASE_URL` and reload modules to pick up the change.
+Most tests use `tmp_path` fixtures with an isolated SQLite database; no Azure credentials are required. PostgreSQL smoke coverage is available through `tests/integration/test_postgres_smoke.py` when `PFCD_POSTGRES_SMOKE_DATABASE_URL` is set.
 
-**Test naming convention:** `tests/<layer>/<feature>_test.<ext>` with behavior-focused names (e.g., `test_video_without_audio_forces_review`).
+**Test naming convention:** `tests/<layer>/test_*.py` with behavior-focused names (e.g., `test_video_without_audio_forces_review`).
 
 ---
 
@@ -233,11 +236,13 @@ All Azure resources are in resource group `app-pfcd-v2`.
 | Service Bus | `pfcd-[env]-bus` (queues: extracting, processing, reviewing) |
 | Log Analytics Workspace | `pfcd-[env]-logs` (shared diagnostics for Container Apps) |
 | Container Apps Environment | `pfcd-[env]-env` (shared environment for API + workers) |
-| SQL Server | `pfcd-[env]-sql` |
-| SQL Database | `pfcd-[env]-jobs` |
+| Container App API | `pfcd-[env]-api` (external ingress, `/health` probe on port 8000) |
+| Container App Workers | `pfcd-[env]-worker-{extracting,processing,reviewing}` (no ingress, Service Bus queue scaling) |
+| PostgreSQL Flexible Server | `pfcd-[env]-pg` |
+| PostgreSQL Database | `pfcd-[env]-jobs` |
 | Key Vault | `pfcd-[env]-kv` |
-| App Service Plan | `pfcd-[env]-asp` (Linux) |
-| Web App | `pfcd-[env]-api` (Python 3.11) |
+| App Service Plan | `pfcd-[env]-asp` (legacy rollback path; provision only with `PROVISION_LEGACY_APP_SERVICE=true`) |
+| Web App | `pfcd-[env]-api` (legacy backend App Service rollback window; no longer bootstrapped by default) |
 | Azure OpenAI | `pfcd-[env]-oai` (model: gpt-4o-mini) |
 | Azure Speech | `pfcd-[env]-speech` |
 
@@ -250,6 +255,7 @@ SPEECH_ACCOUNT_LOCATION=eastus bash infra/dev-bootstrap.sh
 The script is idempotent — safe to re-run.
 
 Pass `SP_CLIENT_ID=<github-actions-service-principal-client-id>` when you want the bootstrap script to grant the CI principal both `Storage Blob Data Contributor` on the storage account and `AcrPush` on the registry during provisioning.
+Pass `PROVISION_LEGACY_APP_SERVICE=true` only when you explicitly want the old App Service rollback resources created alongside the Container Apps baseline.
 
 **Authentication:** All Azure SDK clients use `DefaultAzureCredential` (supports Managed Identity, CLI login, and environment variables). Secrets are stored in Key Vault and injected at runtime.
 
@@ -260,23 +266,39 @@ Pass `SP_CLIENT_ID=<github-actions-service-principal-client-id>` when you want t
 **File:** `.github/workflows/deploy-backend.yml`
 
 - Triggers on push to `main` with changes under `backend/**`
-- Deploys via `az webapp deploy` (zip upload)
-- Required secrets: `AZURE_CREDENTIALS`, `AZURE_RESOURCE_GROUP`, `AZURE_WEBAPP_NAME`
-- No automated tests run in CI yet — add pytest step when integration tests exist
+- Runs the SQLite-backed unit/integration suite plus a PostgreSQL smoke path before deploy
+- Builds `backend/Dockerfile --target api`, pushes `pfcd-backend-api:${GITHUB_SHA}` to ACR, and deploys the backend as an Azure Container App revision
+- Bootstraps the backend Container App with a public image on first deploy so the system-assigned identity exists before assigning `AcrPull` and `Key Vault Secrets User`
+- Applies the final backend runtime as a YAML-based Container App update with:
+  - external ingress on port 8000
+  - HTTP `/health` startup/liveness/readiness probes
+  - Key Vault-backed secret refs for `DATABASE_URL`, `AZURE_STORAGE_CONNECTION_STRING`, and `AZURE_SERVICE_BUS_CONNECTION_STRING`
+- Required secrets / vars: `AZURE_CREDENTIALS`, `AZURE_RESOURCE_GROUP`, `AZURE_WEBAPP_NAME`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME` (or deprecated alias), `AZURE_CONTAINER_REGISTRY`, `AZURE_CONTAINER_APPS_ENVIRONMENT`, `AZURE_STORAGE_ACCOUNT`, `AZURE_KEY_VAULT_NAME`, `AZURE_SERVICE_BUS_NAMESPACE`, `AZURE_OPENAI_ACCOUNT_NAME`, `AZURE_SPEECH_ACCOUNT_NAME`
 
 **File:** `.github/workflows/deploy-workers.yml`
 
 - Triggers on push to `main` with changes under `backend/**`
-- Builds one worker zip, uploads it to the storage account `scratch` container, writes a SAS-backed package URL artifact, then deploys in parallel to `pfcd-dev-worker-extracting`, `pfcd-dev-worker-processing`, `pfcd-dev-worker-reviewing` via `WEBSITE_RUN_FROM_PACKAGE`
-- Required secrets: `AZURE_CREDENTIALS`, `AZURE_RESOURCE_GROUP`, `AZURE_WORKER_EXTRACTING_NAME`, `AZURE_WORKER_PROCESSING_NAME`, `AZURE_WORKER_REVIEWING_NAME`
-- Required GitHub Actions variable: `AZURE_STORAGE_ACCOUNT`
+- Runs the SQLite-backed unit/integration suite plus a PostgreSQL smoke path before deploy
+- Builds `backend/Dockerfile --target worker`, pushes `pfcd-worker:${GITHUB_SHA}` to ACR, and deploys the three worker roles through a matrix job
+- Bootstraps each worker Container App with a public image on first deploy so the system-assigned identity exists before assigning `AcrPull`, `Key Vault Secrets User`, and `Azure Service Bus Data Owner`
+- Applies the final worker runtime as a YAML-based Container App update with:
+  - ingress disabled
+  - `PFCD_WORKER_ROLE` pinned per app (`extracting`, `processing`, `reviewing`)
+  - Key Vault-backed secret refs for `DATABASE_URL`, `AZURE_STORAGE_CONNECTION_STRING`, and `AZURE_SERVICE_BUS_CONNECTION_STRING`
+  - an `azure-servicebus` custom scale rule using `identity: system`, `messageCount: 1`, and the matching queue name
+- Required secrets / vars: `AZURE_CREDENTIALS`, `AZURE_RESOURCE_GROUP`, `AZURE_WORKER_EXTRACTING_NAME`, `AZURE_WORKER_PROCESSING_NAME`, `AZURE_WORKER_REVIEWING_NAME`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME` (or deprecated alias), `AZURE_CONTAINER_REGISTRY`, `AZURE_CONTAINER_APPS_ENVIRONMENT`, `AZURE_STORAGE_ACCOUNT`, `AZURE_KEY_VAULT_NAME`, `AZURE_SERVICE_BUS_NAMESPACE`, `AZURE_OPENAI_ACCOUNT_NAME`, `AZURE_SPEECH_ACCOUNT_NAME`
 
 ### GitHub Variables
 
 | Variable | Used by | Purpose |
 |----------|---------|---------|
-| `AZURE_STORAGE_ACCOUNT` | `deploy-workers.yml` | Storage account resource name used to upload `worker.zip` to `scratch` and generate the `WEBSITE_RUN_FROM_PACKAGE` SAS URL |
-| `AZURE_CONTAINER_REGISTRY` | upcoming Container Apps deploy workflows | ACR login server for image push/pull, e.g. `pfcddevregistry.azurecr.io` |
+| `AZURE_STORAGE_ACCOUNT` | `deploy-backend.yml`, `deploy-workers.yml` | Storage account resource name surfaced to the runtime, e.g. `pfcddevstorage` |
+| `AZURE_CONTAINER_REGISTRY` | `deploy-backend.yml`, `deploy-workers.yml` | ACR login server for image push/pull, e.g. `pfcddevregistry.azurecr.io` |
+| `AZURE_CONTAINER_APPS_ENVIRONMENT` | `deploy-backend.yml`, `deploy-workers.yml` | Shared ACA environment name, e.g. `pfcd-dev-env` |
+| `AZURE_KEY_VAULT_NAME` | `deploy-backend.yml`, `deploy-workers.yml` | Key Vault name used for ACA secret refs, e.g. `pfcd-dev-kv` |
+| `AZURE_SERVICE_BUS_NAMESPACE` | `deploy-backend.yml`, `deploy-workers.yml` | Service Bus namespace name surfaced to the runtime and KEDA scaler, e.g. `pfcd-dev-bus` |
+| `AZURE_OPENAI_ACCOUNT_NAME` | `deploy-backend.yml`, `deploy-workers.yml` | Azure OpenAI account name used by `/health` diagnostics and runtime env parity |
+| `AZURE_SPEECH_ACCOUNT_NAME` | `deploy-backend.yml`, `deploy-workers.yml` | Azure Speech account name used by `/health` diagnostics and runtime env parity |
 
 ---
 

@@ -1,0 +1,37 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    image: pfcd-backend-api:smoke
+    environment:
+      DATABASE_URL: sqlite:///./pfcd.db
+      AZURE_STORAGE_ACCOUNT_NAME: smoke-storage
+      AZURE_SERVICE_BUS_NAMESPACE: smoke-servicebus
+      AZURE_SERVICE_BUS_CONNECTION_STRING: Endpoint=sb://smoke.local/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=not-a-real-key
+      AZURE_SERVICE_BUS_QUEUE_EXTRACTING: extracting
+      AZURE_SERVICE_BUS_QUEUE_PROCESSING: processing
+      AZURE_SERVICE_BUS_QUEUE_REVIEWING: reviewing
+      KEYVAULT_NAME: smoke-kv
+      AZURE_OPENAI_ACCOUNT_NAME: smoke-openai
+      AZURE_SPEECH_ACCOUNT_NAME: smoke-speech
+    ports:
+      - "${PFCD_SMOKE_API_PORT:-8000}:8000"
+
+  worker-extracting:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+    image: pfcd-worker-extracting:smoke
+    environment:
+      PFCD_WORKER_ROLE: extracting
+      DATABASE_URL: sqlite:///./pfcd.db
+      AZURE_SERVICE_BUS_CONNECTION_STRING: Endpoint=sb://smoke.local/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=not-a-real-key
+      AZURE_SERVICE_BUS_QUEUE_EXTRACTING: extracting
+      AZURE_SERVICE_BUS_QUEUE_PROCESSING: processing
+      AZURE_SERVICE_BUS_QUEUE_REVIEWING: reviewing
+      AZURE_OPENAI_ENDPOINT: https://smoke-openai.openai.azure.com/
+      AZURE_OPENAI_CHAT_DEPLOYMENT_NAME: smoke-chat
+      AZURE_OPENAI_API_VERSION: "2024-10-21"

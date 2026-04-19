@@ -1,0 +1,16 @@
+.git
+.gitignore
+.pytest_cache
+.ruff_cache
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite
+storage/
+uploads/
+dist/
+node_modules/
+
