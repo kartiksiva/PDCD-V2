@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import time
 from dataclasses import dataclass
 from typing import Dict, Optional
 
+from azure.core.exceptions import AzureError
 from azure.storage.blob import BlobServiceClient, ContentSettings
 
 logger = logging.getLogger(__name__)
@@ -16,6 +18,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_EXPORT_CONTAINER = "exports"
 DEFAULT_EXPORT_BASE_PATH = "./storage/exports"
 _EVIDENCE_CONTAINER = os.environ.get("AZURE_STORAGE_CONTAINER_EVIDENCE", "evidence")
+_FRAME_UPLOAD_MAX_ATTEMPTS = max(1, int(os.environ.get("PFCD_FRAME_UPLOAD_MAX_ATTEMPTS", "3")))
+_FRAME_UPLOAD_RETRY_BASE_SECONDS = max(
+    0.0,
+    float(os.environ.get("PFCD_FRAME_UPLOAD_RETRY_BASE_SECONDS", "0.5")),
+)
 
 
 @dataclass(frozen=True)
@@ -145,6 +152,25 @@ def upload_frame(job_id: str, frame_index: int, jpg_bytes: bytes) -> str | None:
     Returns the storage key (blob path or local file path) on success, None on any
     failure. Never raises.
     """
+    def _run_with_retries(operation):
+        for attempt in range(1, _FRAME_UPLOAD_MAX_ATTEMPTS + 1):
+            try:
+                return operation()
+            except (AzureError, OSError, TimeoutError) as exc:
+                if attempt >= _FRAME_UPLOAD_MAX_ATTEMPTS:
+                    raise
+                delay = min(5.0, _FRAME_UPLOAD_RETRY_BASE_SECONDS * float(2 ** (attempt - 1)))
+                logger.warning(
+                    "Retrying frame upload for job %s frame %d in %.2fs after attempt %d/%d failed: %s",
+                    job_id,
+                    frame_index,
+                    delay,
+                    attempt,
+                    _FRAME_UPLOAD_MAX_ATTEMPTS,
+                    exc,
+                )
+                time.sleep(delay)
+
     try:
         account_url = os.environ.get("AZURE_STORAGE_ACCOUNT_URL")
         if not account_url:
@@ -155,34 +181,38 @@ def upload_frame(job_id: str, frame_index: int, jpg_bytes: bytes) -> str | None:
 
         blob_name = f"{job_id}/frames/frame_{frame_index:04d}.jpg"
 
+        def _upload_blob(blob_client) -> str:
+            _run_with_retries(
+                lambda: blob_client.upload_blob(
+                    jpg_bytes,
+                    overwrite=True,
+                    content_settings=ContentSettings(content_type="image/jpeg"),
+                )
+            )
+            return blob_name
+
         if account_url:
             from azure.identity import DefaultAzureCredential
 
             client = BlobServiceClient(account_url=account_url, credential=DefaultAzureCredential())
             blob_client = client.get_blob_client(_EVIDENCE_CONTAINER, blob_name)
-            blob_client.upload_blob(
-                jpg_bytes,
-                overwrite=True,
-                content_settings=ContentSettings(content_type="image/jpeg"),
-            )
-            return blob_name
+            return _upload_blob(blob_client)
 
         if connection_string:
             client = BlobServiceClient.from_connection_string(connection_string)
             blob_client = client.get_blob_client(_EVIDENCE_CONTAINER, blob_name)
-            blob_client.upload_blob(
-                jpg_bytes,
-                overwrite=True,
-                content_settings=ContentSettings(content_type="image/jpeg"),
-            )
-            return blob_name
+            return _upload_blob(blob_client)
 
         base = os.environ.get("EXPORTS_BASE_PATH", DEFAULT_EXPORT_BASE_PATH)
         local_path = os.path.join(base, job_id, "frames", f"frame_{frame_index:04d}.jpg")
-        os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        with open(local_path, "wb") as handle:
-            handle.write(jpg_bytes)
-        return local_path
+
+        def _write_local() -> str:
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+            with open(local_path, "wb") as handle:
+                handle.write(jpg_bytes)
+            return local_path
+
+        return _run_with_retries(_write_local)
     except Exception as exc:
         logger.warning("Frame upload failed for job %s frame %d: %s", job_id, frame_index, exc)
         return None

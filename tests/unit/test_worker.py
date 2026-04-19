@@ -236,6 +236,47 @@ def test_worker_duplicate_message_skipped(tmp_path, monkeypatch):
     assert not run_phase_called, "Duplicate message should have been skipped"
 
 
+def test_retry_attempts_keep_same_payload_hash():
+    from app.servicebus import build_message
+
+    trace_id = str(uuid4())
+    first = build_message("job-1", "extracting", 0, requested_by="test", trace_id=trace_id)
+    retry = build_message("job-1", "extracting", 1, requested_by="test", trace_id=trace_id)
+
+    assert first["payload_hash"] == retry["payload_hash"]
+
+
+def test_worker_skips_retry_message_when_only_attempt_differs(tmp_path, monkeypatch):
+    db_path = tmp_path / "worker-retry-dedup.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+
+    _, repo_mod = _reload_modules()
+    from app.servicebus import build_message
+    from app.workers.runner import Worker
+
+    repository = repo_mod.JobRepository.from_env()
+    repository.init_db()
+
+    job = _make_job()
+    job_id = job["job_id"]
+    trace_id = str(uuid4())
+    first = build_message(job_id, "extracting", attempt=0, requested_by="test", trace_id=trace_id)
+    retry = build_message(job_id, "extracting", attempt=1, requested_by="test", trace_id=trace_id)
+    job["last_completed_phase"] = "extracting"
+    job["payload_hash"] = first["payload_hash"]
+    repository.upsert_job(job_id, job)
+
+    worker = Worker("extracting")
+    worker.repo = repository
+    worker.orchestrator = MagicMock()
+
+    run_phase_called = []
+    with patch.object(worker, "_run_phase", side_effect=lambda *a: run_phase_called.append(True)):
+        worker.handle_message(MagicMock(), retry)
+
+    assert not run_phase_called, "Retry variant of an already-processed message should be skipped"
+
+
 def test_worker_skips_out_of_order_earlier_phase(tmp_path, monkeypatch):
     """If a later phase is already completed, earlier-phase messages are skipped."""
     db_path = tmp_path / "worker-out-of-order.db"
@@ -363,6 +404,67 @@ def test_run_recreates_receiver_after_servicebus_error(monkeypatch):
     assert fake_orchestrator.receive_calls == 2
 
 
+def test_run_uses_configured_receive_wait_and_idle_backoff(monkeypatch):
+    from app.workers import runner as runner_mod
+
+    monkeypatch.setenv("PFCD_WORKER_ROLE", "processing")
+    monkeypatch.setenv("PFCD_WORKER_RECEIVE_WAIT_SECONDS", "9")
+    monkeypatch.setenv("PFCD_WORKER_IDLE_BACKOFF_BASE_SECONDS", "0.25")
+    monkeypatch.setattr(runner_mod.logging, "basicConfig", lambda **_: None)
+    monkeypatch.setattr(runner_mod, "_maybe_start_health_server", lambda: None)
+
+    sleeps = []
+    monkeypatch.setattr(runner_mod.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    class _FakeReceiver:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def receive_messages(self, **kwargs: Any):
+            self.calls += 1
+            assert kwargs["max_wait_time"] == 9
+            if self.calls == 1:
+                return []
+            raise KeyboardInterrupt()
+
+        def complete_message(self, _message: Any) -> None:
+            raise AssertionError("No messages should be completed in this test")
+
+        def dead_letter_message(self, _message: Any, **__: Any) -> None:
+            raise AssertionError("No messages should be dead-lettered in this test")
+
+        def abandon_message(self, _message: Any) -> None:
+            raise AssertionError("No messages should be abandoned in this test")
+
+    class _FakeOrchestrator:
+        def __init__(self) -> None:
+            self.enabled = True
+            self.waits = []
+            self.receiver = _FakeReceiver()
+
+        @contextmanager
+        def receive(self, _phase: str, max_wait_time: int = 5):
+            self.waits.append(max_wait_time)
+            yield self.receiver
+
+    fake_orchestrator = _FakeOrchestrator()
+
+    class _FakeWorker:
+        def __init__(self, _phase: str) -> None:
+            self.orchestrator = fake_orchestrator
+
+        def handle_message(self, _message: Any, _body: Any) -> None:
+            raise AssertionError("No messages should be handled in this test")
+
+    monkeypatch.setattr(runner_mod, "Worker", _FakeWorker)
+
+    with pytest.raises(KeyboardInterrupt):
+        runner_mod.run()
+
+    assert fake_orchestrator.waits == [9]
+    assert sleeps == [0.25]
+
+
 def test_connection_backoff_seconds_is_bounded(monkeypatch):
     from app.workers.runner import _connection_backoff_seconds
 
@@ -375,6 +477,14 @@ def test_connection_backoff_seconds_is_bounded(monkeypatch):
     assert first == 2.25
     assert second == 4.25
     assert capped == 60.25
+
+
+def test_idle_backoff_seconds_is_bounded():
+    from app.workers import runner as runner_mod
+
+    assert runner_mod._idle_backoff_seconds(0) == 0.0
+    assert runner_mod._idle_backoff_seconds(1) == 0.5
+    assert runner_mod._idle_backoff_seconds(4) == 4.0
 
 
 # ---------------------------------------------------------------------------

@@ -38,6 +38,7 @@ backend/storage/
 # macOS / editor artefacts
 .DS_Store
 .Rhistory
+.worktrees/
 
 # Build artefacts (CI zip deploys)
 *.zip
