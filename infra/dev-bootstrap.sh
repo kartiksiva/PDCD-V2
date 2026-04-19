@@ -15,6 +15,10 @@ WEBAPP_NAME="${WEBAPP_NAME:-${PROJECT}-${ENVIRONMENT}-api}"
 WORKER_EXTRACTING_NAME="${WORKER_EXTRACTING_NAME:-${PROJECT}-${ENVIRONMENT}-worker-extracting}"
 WORKER_PROCESSING_NAME="${WORKER_PROCESSING_NAME:-${PROJECT}-${ENVIRONMENT}-worker-processing}"
 WORKER_REVIEWING_NAME="${WORKER_REVIEWING_NAME:-${PROJECT}-${ENVIRONMENT}-worker-reviewing}"
+CONTAINER_REGISTRY_NAME="${CONTAINER_REGISTRY_NAME:-${PROJECT}${ENVIRONMENT}registry}"
+CONTAINER_REGISTRY_SKU="${CONTAINER_REGISTRY_SKU:-Basic}"
+CONTAINER_APPS_ENVIRONMENT_NAME="${CONTAINER_APPS_ENVIRONMENT_NAME:-${PROJECT}-${ENVIRONMENT}-env}"
+LOG_ANALYTICS_WORKSPACE_NAME="${LOG_ANALYTICS_WORKSPACE_NAME:-${PROJECT}-${ENVIRONMENT}-logs}"
 STORAGE_ACCOUNT="${STORAGE_ACCOUNT:-${PROJECT}${ENVIRONMENT}storage}"
 SERVICE_BUS_NAMESPACE="${SERVICE_BUS_NAMESPACE:-${PROJECT}-${ENVIRONMENT}-bus}"
 SERVICE_BUS_QUEUE="${SERVICE_BUS_QUEUE:-jobs}"
@@ -248,6 +252,120 @@ ensure_postgres() {
   info "PostgreSQL admin password is stored in Key Vault as 'postgres-admin-password'"
 }
 
+ensure_container_registry() {
+  local registry_scope
+  registry_scope="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.ContainerRegistry/registries/${CONTAINER_REGISTRY_NAME}"
+
+  if ! az acr show --resource-group "$RESOURCE_GROUP" --name "$CONTAINER_REGISTRY_NAME" >/dev/null 2>&1; then
+    az acr create \
+      --name "$CONTAINER_REGISTRY_NAME" \
+      --resource-group "$RESOURCE_GROUP" \
+      --location "$LOCATION" \
+      --sku "$CONTAINER_REGISTRY_SKU" \
+      --admin-enabled false \
+      --tags $COMMON_TAGS \
+      --output none
+  fi
+
+  if [[ -n "${SP_CLIENT_ID:-}" ]]; then
+    local sp_object_id
+    sp_object_id="$(az ad sp show --id "$SP_CLIENT_ID" --query id -o tsv 2>/dev/null || true)"
+    if [[ -n "$sp_object_id" ]]; then
+      az role assignment create \
+        --assignee-object-id "$sp_object_id" \
+        --assignee-principal-type ServicePrincipal \
+        --role "AcrPush" \
+        --scope "$registry_scope" \
+        --output none >/dev/null \
+        || true
+    fi
+  fi
+}
+
+ensure_log_analytics_workspace() {
+  if ! az monitor log-analytics workspace show \
+    --resource-group "$RESOURCE_GROUP" \
+    --workspace-name "$LOG_ANALYTICS_WORKSPACE_NAME" >/dev/null 2>&1; then
+    az monitor log-analytics workspace create \
+      --resource-group "$RESOURCE_GROUP" \
+      --workspace-name "$LOG_ANALYTICS_WORKSPACE_NAME" \
+      --location "$LOCATION" \
+      --tags $COMMON_TAGS \
+      --output none
+  fi
+}
+
+ensure_container_apps_environment() {
+  local workspace_customer_id workspace_shared_key
+  workspace_customer_id="$(az monitor log-analytics workspace show \
+    --resource-group "$RESOURCE_GROUP" \
+    --workspace-name "$LOG_ANALYTICS_WORKSPACE_NAME" \
+    --query customerId -o tsv)"
+  workspace_shared_key="$(az monitor log-analytics workspace get-shared-keys \
+    --resource-group "$RESOURCE_GROUP" \
+    --workspace-name "$LOG_ANALYTICS_WORKSPACE_NAME" \
+    --query primarySharedKey -o tsv)"
+
+  if ! az containerapp env show \
+    --resource-group "$RESOURCE_GROUP" \
+    --name "$CONTAINER_APPS_ENVIRONMENT_NAME" >/dev/null 2>&1; then
+    az containerapp env create \
+      --name "$CONTAINER_APPS_ENVIRONMENT_NAME" \
+      --resource-group "$RESOURCE_GROUP" \
+      --location "$LOCATION" \
+      --logs-destination log-analytics \
+      --logs-workspace-id "$workspace_customer_id" \
+      --logs-workspace-key "$workspace_shared_key" \
+      --tags $COMMON_TAGS \
+      --output none
+  fi
+}
+
+assign_container_app_runtime_roles() {
+  local storage_scope service_bus_scope key_vault_scope container_app_name container_app_principal_id
+  storage_scope="/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.Storage/storageAccounts/$STORAGE_ACCOUNT"
+  service_bus_scope="/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ServiceBus/namespaces/$SERVICE_BUS_NAMESPACE"
+  key_vault_scope="/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.KeyVault/vaults/$KEY_VAULT_NAME"
+
+  for container_app_name in \
+    "$WEBAPP_NAME" \
+    "$WORKER_EXTRACTING_NAME" \
+    "$WORKER_PROCESSING_NAME" \
+    "$WORKER_REVIEWING_NAME"; do
+    container_app_principal_id="$(az containerapp show \
+      --name "$container_app_name" \
+      --resource-group "$RESOURCE_GROUP" \
+      --query identity.principalId -o tsv 2>/dev/null || true)"
+
+    if [[ -z "$container_app_principal_id" || "$container_app_principal_id" == "null" ]]; then
+      info "container app identity not available yet for: $container_app_name (RBAC deferred until app exists)"
+      continue
+    fi
+
+    az role assignment create \
+      --assignee-object-id "$container_app_principal_id" \
+      --assignee-principal-type ServicePrincipal \
+      --role "Storage Blob Data Contributor" \
+      --scope "$storage_scope" \
+      --output none \
+      || true
+    az role assignment create \
+      --assignee-object-id "$container_app_principal_id" \
+      --assignee-principal-type ServicePrincipal \
+      --role "Azure Service Bus Data Owner" \
+      --scope "$service_bus_scope" \
+      --output none \
+      || true
+    az role assignment create \
+      --assignee-object-id "$container_app_principal_id" \
+      --assignee-principal-type ServicePrincipal \
+      --role "Key Vault Secrets User" \
+      --scope "$key_vault_scope" \
+      --output none \
+      || true
+  done
+}
+
 ensure_app_service() {
   local storage_scope
   storage_scope="/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.Storage/storageAccounts/$STORAGE_ACCOUNT"
@@ -472,19 +590,16 @@ ensure_storage_account
 ensure_servicebus
 ensure_key_vault
 ensure_postgres
+ensure_container_registry
+ensure_log_analytics_workspace
+ensure_container_apps_environment
+assign_container_app_runtime_roles
 ensure_app_service
 ensure_cognitive_services
 ensure_budget
 
 info "Bootstrap complete for environment '$ENVIRONMENT' in $RESOURCE_GROUP"
+echo "Container registry: ${CONTAINER_REGISTRY_NAME}.azurecr.io"
+echo "Container Apps environment: ${CONTAINER_APPS_ENVIRONMENT_NAME}"
 az resource show --ids "/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.Web/sites/$WEBAPP_NAME" --query "defaultHostName" -o tsv | sed 's|^|API host: https://|' | sed 's|$|/|' | tr -d '\n'
 echo
-  if ! az sql server firewall-rule show --resource-group "$RESOURCE_GROUP" --server "$SQL_SERVER_NAME" --name "AllowAzureServices" >/dev/null 2>&1; then
-    az sql server firewall-rule create \
-      --resource-group "$RESOURCE_GROUP" \
-      --server "$SQL_SERVER_NAME" \
-      --name "AllowAzureServices" \
-      --start-ip-address "0.0.0.0" \
-      --end-ip-address "0.0.0.0" \
-      --output none
-  fi
