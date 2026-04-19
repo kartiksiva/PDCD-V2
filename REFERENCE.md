@@ -229,7 +229,10 @@ All Azure resources are in resource group `app-pfcd-v2`.
 | Resource | Name Pattern |
 |----------|--------------|
 | Storage Account | `pfcd[env]storage` (containers: uploads, evidence, exports, scratch) |
+| Azure Container Registry | `pfcd[env]registry` (login server `pfcd[env]registry.azurecr.io`, admin user disabled) |
 | Service Bus | `pfcd-[env]-bus` (queues: extracting, processing, reviewing) |
+| Log Analytics Workspace | `pfcd-[env]-logs` (shared diagnostics for Container Apps) |
+| Container Apps Environment | `pfcd-[env]-env` (shared environment for API + workers) |
 | SQL Server | `pfcd-[env]-sql` |
 | SQL Database | `pfcd-[env]-jobs` |
 | Key Vault | `pfcd-[env]-kv` |
@@ -245,6 +248,8 @@ SPEECH_ACCOUNT_LOCATION=eastus bash infra/dev-bootstrap.sh
 ```
 
 The script is idempotent — safe to re-run.
+
+Pass `SP_CLIENT_ID=<github-actions-service-principal-client-id>` when you want the bootstrap script to grant the CI principal both `Storage Blob Data Contributor` on the storage account and `AcrPush` on the registry during provisioning.
 
 **Authentication:** All Azure SDK clients use `DefaultAzureCredential` (supports Managed Identity, CLI login, and environment variables). Secrets are stored in Key Vault and injected at runtime.
 
@@ -271,6 +276,7 @@ The script is idempotent — safe to re-run.
 | Variable | Used by | Purpose |
 |----------|---------|---------|
 | `AZURE_STORAGE_ACCOUNT` | `deploy-workers.yml` | Storage account resource name used to upload `worker.zip` to `scratch` and generate the `WEBSITE_RUN_FROM_PACKAGE` SAS URL |
+| `AZURE_CONTAINER_REGISTRY` | upcoming Container Apps deploy workflows | ACR login server for image push/pull, e.g. `pfcddevregistry.azurecr.io` |
 
 ---
 
