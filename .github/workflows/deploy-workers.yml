@@ -18,6 +18,9 @@ permissions:
 
 env:
   AZURE_OPENAI_CHAT_DEPLOYMENT_NAME_RESOLVED: ${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME != '' && secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME || secrets.AZURE_OPENAI_DEPLOYMENT_NAME }}
+  SERVICE_BUS_QUEUE_EXTRACTING: ${{ vars.AZURE_SERVICE_BUS_QUEUE_EXTRACTING != '' && vars.AZURE_SERVICE_BUS_QUEUE_EXTRACTING || 'extracting' }}
+  SERVICE_BUS_QUEUE_PROCESSING: ${{ vars.AZURE_SERVICE_BUS_QUEUE_PROCESSING != '' && vars.AZURE_SERVICE_BUS_QUEUE_PROCESSING || 'processing' }}
+  SERVICE_BUS_QUEUE_REVIEWING: ${{ vars.AZURE_SERVICE_BUS_QUEUE_REVIEWING != '' && vars.AZURE_SERVICE_BUS_QUEUE_REVIEWING || 'reviewing' }}
 
 jobs:
   test:
@@ -138,12 +141,15 @@ jobs:
           case "${{ matrix.role }}" in
             extracting)
               app_name="${WORKER_EXTRACTING_NAME}"
+              queue_name="${SERVICE_BUS_QUEUE_EXTRACTING}"
               ;;
             processing)
               app_name="${WORKER_PROCESSING_NAME}"
+              queue_name="${SERVICE_BUS_QUEUE_PROCESSING}"
               ;;
             reviewing)
               app_name="${WORKER_REVIEWING_NAME}"
+              queue_name="${SERVICE_BUS_QUEUE_REVIEWING}"
               ;;
           esac
 
@@ -153,7 +159,7 @@ jobs:
           fi
 
           echo "WORKER_APP_NAME=${app_name}" >> "$GITHUB_ENV"
-          echo "WORKER_QUEUE_NAME=${{ matrix.role }}" >> "$GITHUB_ENV"
+          echo "WORKER_QUEUE_NAME=${queue_name}" >> "$GITHUB_ENV"
 
       - name: Validate worker deployment settings
         run: |
@@ -284,7 +290,7 @@ jobs:
                   image: ${WORKER_IMAGE}
                   env:
                     - name: PFCD_WORKER_ROLE
-                      value: "${WORKER_QUEUE_NAME}"
+                      value: "${{ matrix.role }}"
                     - name: PFCD_API_KEY
                       value: "${PFCD_API_KEY_VALUE}"
                     - name: DATABASE_URL
@@ -302,11 +308,11 @@ jobs:
                     - name: AZURE_SERVICE_BUS_NAMESPACE
                       value: "${{ vars.AZURE_SERVICE_BUS_NAMESPACE }}"
                     - name: AZURE_SERVICE_BUS_QUEUE_EXTRACTING
-                      value: "extracting"
+                      value: "${SERVICE_BUS_QUEUE_EXTRACTING}"
                     - name: AZURE_SERVICE_BUS_QUEUE_PROCESSING
-                      value: "processing"
+                      value: "${SERVICE_BUS_QUEUE_PROCESSING}"
                     - name: AZURE_SERVICE_BUS_QUEUE_REVIEWING
-                      value: "reviewing"
+                      value: "${SERVICE_BUS_QUEUE_REVIEWING}"
                     - name: KEYVAULT_NAME
                       value: "${{ vars.AZURE_KEY_VAULT_NAME }}"
                     - name: AZURE_OPENAI_ACCOUNT_NAME
@@ -347,19 +353,95 @@ jobs:
       - name: Verify worker revision state
         run: |
           for i in $(seq 1 30); do
-            provisioning_state="$(az containerapp show \
-              --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-              --name "${WORKER_APP_NAME}" \
-              --query properties.provisioningState -o tsv)"
             latest_revision="$(az containerapp show \
               --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
               --name "${WORKER_APP_NAME}" \
               --query properties.latestRevisionName -o tsv)"
-            echo "${WORKER_APP_NAME} provisioning attempt ${i}/30: ${provisioning_state} (${latest_revision})"
-            if [ "${provisioning_state}" = "Succeeded" ]; then
+
+            if [ -z "${latest_revision}" ] || [ "${latest_revision}" = "null" ]; then
+              echo "${WORKER_APP_NAME} revision attempt ${i}/30: latest revision not available yet"
+              sleep 10
+              continue
+            fi
+
+            revision_provisioning_state="$(az containerapp revision show \
+              --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+              --name "${WORKER_APP_NAME}" \
+              --revision "${latest_revision}" \
+              --query properties.provisioningState -o tsv)"
+            revision_health_state="$(az containerapp revision show \
+              --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+              --name "${WORKER_APP_NAME}" \
+              --revision "${latest_revision}" \
+              --query properties.healthState -o tsv)"
+            revision_running_state="$(az containerapp revision show \
+              --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+              --name "${WORKER_APP_NAME}" \
+              --revision "${latest_revision}" \
+              --query properties.runningState -o tsv)"
+            revision_replicas="$(az containerapp revision show \
+              --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+              --name "${WORKER_APP_NAME}" \
+              --revision "${latest_revision}" \
+              --query properties.replicas -o tsv)"
+
+            echo "${WORKER_APP_NAME} revision attempt ${i}/30: revision=${latest_revision} provisioning=${revision_provisioning_state} health=${revision_health_state} running=${revision_running_state} replicas=${revision_replicas}"
+
+            if [ "${revision_provisioning_state}" = "Provisioning failed" ] || [ "${revision_running_state}" = "Activation failed" ] || [ "${revision_running_state}" = "Degraded" ] || [ "${revision_running_state}" = "Failed" ]; then
+              echo "ERROR: ${WORKER_APP_NAME} latest revision is unhealthy."
+              az containerapp revision show \
+                --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+                --name "${WORKER_APP_NAME}" \
+                --revision "${latest_revision}" \
+                -o yaml
+              exit 1
+            fi
+
+            if [ "${revision_provisioning_state}" != "Provisioned" ]; then
+              sleep 10
+              continue
+            fi
+
+            if [ "${revision_running_state}" = "Scale to 0" ]; then
               exit 0
             fi
+
+            replica_names="$(az containerapp replica list \
+              --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+              --name "${WORKER_APP_NAME}" \
+              --revision "${latest_revision}" \
+              --query "[].name" -o tsv)"
+
+            if [ -z "${replica_names}" ]; then
+              sleep 10
+              continue
+            fi
+
+            all_replicas_ready=true
+            for replica_name in ${replica_names}; do
+              replica_running_state="$(az containerapp replica show \
+                --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+                --name "${WORKER_APP_NAME}" \
+                --revision "${latest_revision}" \
+                --replica "${replica_name}" \
+                --query properties.runningState -o tsv)"
+              not_ready_containers="$(az containerapp replica show \
+                --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+                --name "${WORKER_APP_NAME}" \
+                --revision "${latest_revision}" \
+                --replica "${replica_name}" \
+                --query "length(properties.containers[?ready != \`true\`])" -o tsv)"
+              echo "${WORKER_APP_NAME} replica ${replica_name}: running=${replica_running_state} not_ready_containers=${not_ready_containers}"
+              if [ "${replica_running_state}" != "Running" ] || [ "${not_ready_containers}" != "0" ]; then
+                all_replicas_ready=false
+              fi
+            done
+
+            if [ "${all_replicas_ready}" = "true" ]; then
+              exit 0
+            fi
+
             sleep 10
           done
-          echo "ERROR: ${WORKER_APP_NAME} did not reach a succeeded provisioning state."
+          echo "ERROR: ${WORKER_APP_NAME} latest revision did not become ready."
           exit 1

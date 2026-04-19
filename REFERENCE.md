@@ -268,6 +268,8 @@ Pass `SP_CLIENT_ID=<github-actions-service-principal-client-id>` when you want t
   - external ingress on port 8000
   - HTTP `/health` startup/liveness/readiness probes
   - Key Vault-backed secret refs for `DATABASE_URL`, `AZURE_STORAGE_CONNECTION_STRING`, and `AZURE_SERVICE_BUS_CONNECTION_STRING`
+- Final deploy verification passes only on a healthy `200` `/health` payload and logs degraded `503` payloads before failing the workflow
+- Optional GitHub Actions variables `AZURE_SERVICE_BUS_QUEUE_EXTRACTING`, `AZURE_SERVICE_BUS_QUEUE_PROCESSING`, and `AZURE_SERVICE_BUS_QUEUE_REVIEWING` override the default queue names injected into the backend ACA manifest
 - Required secrets / vars: `AZURE_CREDENTIALS`, `AZURE_RESOURCE_GROUP`, `AZURE_WEBAPP_NAME`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME` (or deprecated alias), `AZURE_CONTAINER_REGISTRY`, `AZURE_CONTAINER_APPS_ENVIRONMENT`, `AZURE_STORAGE_ACCOUNT`, `AZURE_KEY_VAULT_NAME`, `AZURE_SERVICE_BUS_NAMESPACE`, `AZURE_OPENAI_ACCOUNT_NAME`, `AZURE_SPEECH_ACCOUNT_NAME`
 
 **File:** `.github/workflows/deploy-workers.yml`
@@ -281,6 +283,8 @@ Pass `SP_CLIENT_ID=<github-actions-service-principal-client-id>` when you want t
   - `PFCD_WORKER_ROLE` pinned per app (`extracting`, `processing`, `reviewing`)
   - Key Vault-backed secret refs for `DATABASE_URL`, `AZURE_STORAGE_CONNECTION_STRING`, and `AZURE_SERVICE_BUS_CONNECTION_STRING`
   - an `azure-servicebus` custom scale rule using `identity: system`, `messageCount: 1`, and the matching queue name
+- Final deploy verification checks the latest revision's ACA revision state and, when replicas are running, replica/container readiness instead of relying only on ARM provisioning state
+- Optional GitHub Actions variables `AZURE_SERVICE_BUS_QUEUE_EXTRACTING`, `AZURE_SERVICE_BUS_QUEUE_PROCESSING`, and `AZURE_SERVICE_BUS_QUEUE_REVIEWING` override the default queue names injected into the worker env and KEDA scaler metadata
 - Required secrets / vars: `AZURE_CREDENTIALS`, `AZURE_RESOURCE_GROUP`, `AZURE_WORKER_EXTRACTING_NAME`, `AZURE_WORKER_PROCESSING_NAME`, `AZURE_WORKER_REVIEWING_NAME`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME` (or deprecated alias), `AZURE_CONTAINER_REGISTRY`, `AZURE_CONTAINER_APPS_ENVIRONMENT`, `AZURE_STORAGE_ACCOUNT`, `AZURE_KEY_VAULT_NAME`, `AZURE_SERVICE_BUS_NAMESPACE`, `AZURE_OPENAI_ACCOUNT_NAME`, `AZURE_SPEECH_ACCOUNT_NAME`
 
 ### GitHub Variables
@@ -292,6 +296,9 @@ Pass `SP_CLIENT_ID=<github-actions-service-principal-client-id>` when you want t
 | `AZURE_CONTAINER_APPS_ENVIRONMENT` | `deploy-backend.yml`, `deploy-workers.yml` | Shared ACA environment name, e.g. `pfcd-dev-env` |
 | `AZURE_KEY_VAULT_NAME` | `deploy-backend.yml`, `deploy-workers.yml` | Key Vault name used for ACA secret refs, e.g. `pfcd-dev-kv` |
 | `AZURE_SERVICE_BUS_NAMESPACE` | `deploy-backend.yml`, `deploy-workers.yml` | Service Bus namespace name surfaced to the runtime and KEDA scaler, e.g. `pfcd-dev-bus` |
+| `AZURE_SERVICE_BUS_QUEUE_EXTRACTING` | `deploy-backend.yml`, `deploy-workers.yml` | Optional override for the extracting queue name; defaults to `extracting` |
+| `AZURE_SERVICE_BUS_QUEUE_PROCESSING` | `deploy-backend.yml`, `deploy-workers.yml` | Optional override for the processing queue name; defaults to `processing` |
+| `AZURE_SERVICE_BUS_QUEUE_REVIEWING` | `deploy-backend.yml`, `deploy-workers.yml` | Optional override for the reviewing queue name; defaults to `reviewing` |
 | `AZURE_OPENAI_ACCOUNT_NAME` | `deploy-backend.yml`, `deploy-workers.yml` | Azure OpenAI account name used by `/health` diagnostics and runtime env parity |
 | `AZURE_SPEECH_ACCOUNT_NAME` | `deploy-backend.yml`, `deploy-workers.yml` | Azure Speech account name used by `/health` diagnostics and runtime env parity |
 

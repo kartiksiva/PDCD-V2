@@ -2189,3 +2189,67 @@ Executed the worker migration slice by replacing the App Service package deploym
 
 - Confirm the worker ACA YAML is accepted by Azure exactly as written and that each Service Bus queue scales its matching worker from zero.
 - Complete PostgreSQL cutover cleanup (`#27` Part B) now that backend and worker Container App workflows exist in repo.
+
+---
+
+## Section 64: Codex Delivery — GitHub Issue #34 ACA Deploy Verification + Rollback Compatibility Fixes (2026-04-19)
+
+Remediated the four deployment-path regressions found after the ACA migration review without reopening unrelated migration scope.
+
+### Completed
+
+- Restored the legacy App Service rollback warmup surface in [backend/app/workers/runner.py](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/app/workers/runner.py):
+  - reintroduced a minimal background HTTP listener
+  - starts only when `WEBSITES_PORT` is present, so ACA workers keep their existing runtime behavior
+- Added targeted worker regression coverage in [tests/unit/test_worker.py](/Users/karthicks/kAgents/Projects/PFCD-V2/tests/unit/test_worker.py) for:
+  - HTTP listener bootstrap wiring
+  - `WEBSITES_PORT`-gated warmup compatibility behavior
+- Tightened [.github/workflows/deploy-backend.yml](/Users/karthicks/kAgents/Projects/PFCD-V2/.github/workflows/deploy-backend.yml):
+  - backend deploy verification now passes only on a healthy `200` `/health` payload
+  - degraded `503` payloads are printed to logs and fail the workflow
+  - backend ACA queue env vars now resolve from optional GitHub Actions queue overrides instead of hardcoded defaults
+- Tightened [.github/workflows/deploy-workers.yml](/Users/karthicks/kAgents/Projects/PFCD-V2/.github/workflows/deploy-workers.yml):
+  - worker queue names now resolve from optional GitHub Actions queue overrides and stay aligned across worker env + scaler metadata
+  - latest revision verification now checks ACA revision provisioning/running state and inspects replica/container readiness when replicas are active
+  - `Scale to 0` remains a valid success path for idle workers with zero min replicas
+- Added workflow regression coverage in [tests/unit/test_deploy_workflows.py](/Users/karthicks/kAgents/Projects/PFCD-V2/tests/unit/test_deploy_workflows.py) for:
+  - backend health check no longer treating `503` as success
+  - worker deploy verification using revision + replica checks
+  - backend/worker queue override support
+- Updated [REFERENCE.md](/Users/karthicks/kAgents/Projects/PFCD-V2/REFERENCE.md) to document the stricter deploy checks and the optional queue override GitHub variables.
+
+### Validation
+
+- `cd /tmp/pfcd-v2-issue34 && /Users/karthicks/kAgents/Projects/PFCD-V2/backend/.venv/bin/pytest tests/unit/test_worker.py -k "health_server or maybe_start_health_server" -v`
+- `cd /tmp/pfcd-v2-issue34 && /Users/karthicks/kAgents/Projects/PFCD-V2/backend/.venv/bin/pytest tests/unit/test_deploy_workflows.py -v`
+
+### Residual risk
+
+- ACA revision/replica verification is based on Azure revision and replica state surfaced by the CLI/API; a live deploy is still needed to confirm the exact state transitions in this environment.
+- The legacy App Service rollback path is now compatible with warmup again, but it remains a rollback-only path and should still be exercised in Azure before being relied on during an incident.
+
+---
+
+## Section 65: Codex Delivery — PR #35 Review Fix for Queue Override Runtime Regression (2026-04-19)
+
+Addressed the blocking review comment on PR `#35` after verifying the workflow/runtime contract mismatch in the worker role env handling.
+
+### Completed
+
+- Corrected [.github/workflows/deploy-workers.yml](/Users/karthicks/kAgents/Projects/PFCD-V2/.github/workflows/deploy-workers.yml) so worker runtime phase selection stays on the logical matrix role:
+  - `PFCD_WORKER_ROLE` now remains `extracting` / `processing` / `reviewing`
+  - custom queue names continue to flow only through the `AZURE_SERVICE_BUS_QUEUE_*` env vars and the ACA scaler `queueName` metadata
+- Expanded [tests/unit/test_deploy_workflows.py](/Users/karthicks/kAgents/Projects/PFCD-V2/tests/unit/test_deploy_workflows.py) to lock the fix:
+  - rejects `${WORKER_QUEUE_NAME}` as the `PFCD_WORKER_ROLE` source
+  - requires the workflow to keep the logical matrix role for `PFCD_WORKER_ROLE`
+
+### Why
+
+- `backend/app/workers/runner.py` and `backend/app/servicebus.py` treat `PFCD_WORKER_ROLE` as the logical phase key used to select queue config attributes.
+- Feeding a custom queue name into `PFCD_WORKER_ROLE` breaks `getattr(queue_config, phase)` for override deployments even though the default queue names still appeared to work.
+
+### Validation
+
+- `cd /tmp/pfcd-v2-issue34 && /Users/karthicks/kAgents/Projects/PFCD-V2/backend/.venv/bin/pytest tests/unit/test_worker.py tests/unit/test_deploy_workflows.py -v`
+- `cd /tmp/pfcd-v2-issue34 && ruby -e 'require "yaml"; YAML.load_file(".github/workflows/deploy-backend.yml"); YAML.load_file(".github/workflows/deploy-workers.yml")'`
+- `cd /tmp/pfcd-v2-issue34 && git diff --check`

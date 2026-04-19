@@ -63,6 +63,9 @@ jobs:
     env:
       AZURE_OPENAI_CHAT_DEPLOYMENT_NAME_RESOLVED: ${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME != '' && secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME || secrets.AZURE_OPENAI_DEPLOYMENT_NAME }}
       BACKEND_IMAGE_TAG: ${{ vars.AZURE_CONTAINER_REGISTRY }}/pfcd-backend-api:${{ github.sha }}
+      SERVICE_BUS_QUEUE_EXTRACTING: ${{ vars.AZURE_SERVICE_BUS_QUEUE_EXTRACTING != '' && vars.AZURE_SERVICE_BUS_QUEUE_EXTRACTING || 'extracting' }}
+      SERVICE_BUS_QUEUE_PROCESSING: ${{ vars.AZURE_SERVICE_BUS_QUEUE_PROCESSING != '' && vars.AZURE_SERVICE_BUS_QUEUE_PROCESSING || 'processing' }}
+      SERVICE_BUS_QUEUE_REVIEWING: ${{ vars.AZURE_SERVICE_BUS_QUEUE_REVIEWING != '' && vars.AZURE_SERVICE_BUS_QUEUE_REVIEWING || 'reviewing' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -234,11 +237,11 @@ jobs:
                     - name: AZURE_SERVICE_BUS_NAMESPACE
                       value: "${{ vars.AZURE_SERVICE_BUS_NAMESPACE }}"
                     - name: AZURE_SERVICE_BUS_QUEUE_EXTRACTING
-                      value: "extracting"
+                      value: "${SERVICE_BUS_QUEUE_EXTRACTING}"
                     - name: AZURE_SERVICE_BUS_QUEUE_PROCESSING
-                      value: "processing"
+                      value: "${SERVICE_BUS_QUEUE_PROCESSING}"
                     - name: AZURE_SERVICE_BUS_QUEUE_REVIEWING
-                      value: "reviewing"
+                      value: "${SERVICE_BUS_QUEUE_REVIEWING}"
                     - name: KEYVAULT_NAME
                       value: "${{ vars.AZURE_KEY_VAULT_NAME }}"
                     - name: AZURE_OPENAI_ACCOUNT_NAME
@@ -302,9 +305,18 @@ jobs:
 
             if [ -n "$fqdn" ] && [ "$fqdn" != "null" ]; then
               status_code="$(curl -sS -o health-response.json -w '%{http_code}' --max-time 10 "https://${fqdn}/health" || true)"
-              if [ "$status_code" = "200" ] || [ "$status_code" = "503" ]; then
+              if [ "$status_code" = "200" ]; then
                 cat health-response.json
-                exit 0
+                if grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' health-response.json; then
+                  exit 0
+                fi
+                echo "ERROR: backend health endpoint returned 200 without an ok payload."
+                exit 1
+              fi
+              if [ "$status_code" = "503" ]; then
+                echo "ERROR: backend reported degraded health."
+                cat health-response.json
+                exit 1
               fi
             fi
 
@@ -312,5 +324,5 @@ jobs:
             sleep 10
           done
 
-          echo "ERROR: backend container app health endpoint did not respond with 200/503 within 10 minutes"
+          echo "ERROR: backend container app health endpoint did not report a healthy 200 response within 10 minutes"
           exit 1
