@@ -7,7 +7,7 @@ This folder contains an executable script to create a **development** Azure envi
 - Storage account + containers (`uploads`, `evidence`, `exports`, `scratch`)
 - Service Bus namespace + phase queues (`extracting`, `processing`, `reviewing`)
 - Key Vault + secret entries
-- Azure SQL Server + SQL Database
+- Azure Database for PostgreSQL Flexible Server + database
 - App Service Plan + Linux Web App (`PYTHON:3.11`)
 - Azure OpenAI + Speech accounts
 - Cost budget hook (best effort; may require manual portal step depending on CLI/API)
@@ -27,8 +27,7 @@ SPEECH_ACCOUNT_LOCATION=eastus bash infra/dev-bootstrap.sh
 - If the deployment step fails, export a supported model version string for your region and rerun with:
   `OPENAI_MODEL_NAME=<name> OPENAI_MODEL_VERSION=<version> bash infra/dev-bootstrap.sh`
 - Key Vault is created with RBAC enabled; access is granted via `Key Vault Secrets Officer` role assignment to the signed-in user.
-- SQL server firewall rule `AllowAzureServices` is applied to allow Azure-hosted services to connect in dev.
-- SQL connection string includes `Encrypt=yes&TrustServerCertificate=yes` for ODBC Driver 18 compatibility.
+- PostgreSQL flexible server is created with public access for Azure-hosted services and a PostgreSQL `DATABASE_URL` that uses `sslmode=require`.
 - Budget creation is intentionally non-blocking in the script to account for command API differences.
 
 ## Verification
@@ -44,7 +43,7 @@ SPEECH_ACCOUNT_LOCATION=eastus bash infra/dev-bootstrap.sh
 - No App Service publish-profile secrets are required for backend or worker deploys on this path.
 
 Key Vault-backed settings created by the script:
-- `DATABASE_URL` -> secret `sql-connection-string`
+- `DATABASE_URL` -> secret `postgres-connection-string`
 - `AZURE_STORAGE_CONNECTION_STRING` -> secret `storage-connection-string`
 - `AZURE_SERVICE_BUS_CONNECTION_STRING` -> secret `service-bus-connection-string`
 
@@ -63,4 +62,4 @@ az webapp restart --name pfcd-dev-api --resource-group app-pfcd-v2
 - `OPENAI_SKU_NAME`, `SERVICE_BUS_SKU`
 - `SERVICE_BUS_QUEUE_EXTRACTING`, `SERVICE_BUS_QUEUE_PROCESSING`, `SERVICE_BUS_QUEUE_REVIEWING`
 - `SP_CLIENT_ID` (optional; grants the CI service principal blob-write access on the storage account)
-- `MONTHLY_BUDGET`, `BUDGET_NAME`, `SQL_ADMIN_USER`, `SQL_ADMIN_PASSWORD`
+- `MONTHLY_BUDGET`, `BUDGET_NAME`, `POSTGRES_ADMIN_USER`, `POSTGRES_ADMIN_PASSWORD`

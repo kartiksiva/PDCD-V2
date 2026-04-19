@@ -92,7 +92,7 @@ PDCD-V2/
 | ORM | SQLAlchemy | 2.0.38 |
 | DB migrations | Alembic | 1.13.3 |
 | DB (local) | SQLite | built-in |
-| DB (prod) | Azure SQL Server | via pyodbc 5.2.0 |
+| DB (prod) | Azure Database for PostgreSQL Flexible Server | via psycopg 3.2.6 |
 | Async support | anyio | 4.9.0 |
 | Message queue | Azure Service Bus | 7.12.1 |
 | Blob storage | Azure Blob Storage | 12.25.0 |
@@ -123,7 +123,7 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `DATABASE_URL` | SQLAlchemy connection string | `sqlite:///./pfcd.db` |
+| `DATABASE_URL` | SQLAlchemy connection string | local default `sqlite:///./pfcd.db`; PostgreSQL example `postgresql+psycopg://pfcd_user:password@127.0.0.1:5432/pfcd` |
 | `AZURE_STORAGE_CONNECTION_STRING` | Blob storage | local fallback if unset |
 | `AZURE_STORAGE_CONTAINER_EVIDENCE` | Blob container for frame captures/evidence assets | `evidence` |
 | `AZURE_SERVICE_BUS_CONNECTION_STRING` | Service Bus namespace | `""` (skips queue dispatch) |
