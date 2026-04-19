@@ -67,6 +67,18 @@ def _load_message(raw_body: Any) -> Dict[str, Any]:
     return json.loads(bytes(raw_body).decode("utf-8"))
 
 
+def _read_message_body(message_body: Any) -> bytes:
+    chunks = []
+    total = 0
+    for chunk in message_body:
+        chunk_len = len(chunk)
+        if total + chunk_len > MAX_MESSAGE_BODY_BYTES:
+            raise ValueError(f"Message body exceeds {MAX_MESSAGE_BODY_BYTES // (1024 * 1024)}MB limit")
+        total += chunk_len
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 class Worker:
     def __init__(self, phase: str) -> None:
         self.phase = phase
@@ -348,16 +360,7 @@ def run() -> None:
                         break
                     for message in messages:
                         try:
-                            chunks = []
-                            total = 0
-                            for chunk in message.body:
-                                total += len(chunk)
-                                if total > MAX_MESSAGE_BODY_BYTES:
-                                    raise ValueError(
-                                        f"Message body exceeds {MAX_MESSAGE_BODY_BYTES // (1024 * 1024)}MB limit"
-                                    )
-                                chunks.append(chunk)
-                            body = b"".join(chunks)
+                            body = _read_message_body(message.body)
                             worker.handle_message(message, body)
                             receiver.complete_message(message)
                         except json.JSONDecodeError as exc:

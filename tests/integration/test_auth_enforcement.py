@@ -71,7 +71,7 @@ def test_dev_simulate_with_auth_key_passes(app_client_with_auth):
     ("POST", "/api/jobs", {"input_files": [{"source_type": "transcript", "size_bytes": 1}]}),
     ("GET", "/api/jobs/{uid}", None),
     ("GET", "/api/jobs/{uid}/draft", None),
-    ("PUT", "/api/jobs/{uid}/draft", {"pdd": {}}),
+    ("PUT", "/api/jobs/{uid}/draft", {"draft_version": 1, "pdd": {}}),
     ("POST", "/api/jobs/{uid}/finalize", None),
     ("DELETE", "/api/jobs/{uid}", None),
 ])

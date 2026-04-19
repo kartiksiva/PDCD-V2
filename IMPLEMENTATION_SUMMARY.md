@@ -2253,3 +2253,48 @@ Addressed the blocking review comment on PR `#35` after verifying the workflow/r
 - `cd /tmp/pfcd-v2-issue34 && /Users/karthicks/kAgents/Projects/PFCD-V2/backend/.venv/bin/pytest tests/unit/test_worker.py tests/unit/test_deploy_workflows.py -v`
 - `cd /tmp/pfcd-v2-issue34 && ruby -e 'require "yaml"; YAML.load_file(".github/workflows/deploy-backend.yml"); YAML.load_file(".github/workflows/deploy-workers.yml")'`
 - `cd /tmp/pfcd-v2-issue34 && git diff --check`
+
+---
+
+## Section 66: Codex Delivery — Critical GHCO Bug Bundle (#36-#40) (2026-04-19)
+
+Resolved the five `priority:critical` GitHub issues on branch `codex/fix-critical-ghco-issues` as one coordinated patch because the concurrency fixes in `#37` and `#38` share the same state-management surface.
+
+### Completed
+
+- Fixed upload path traversal in [backend/app/main.py](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/app/main.py):
+  - `POST /api/upload` now sanitizes filenames before joining them under `UPLOADS_DIR`
+  - stored `file_name` and `location` now reflect the safe basename instead of attacker-controlled relative paths
+- Fixed orchestrator resource cleanup in [backend/app/main.py](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/app/main.py):
+  - FastAPI lifespan shutdown now always calls `ORCHESTRATOR.close()`
+  - added unit coverage to verify shutdown cleanup runs
+- Fixed worker message-body bounds handling in [backend/app/workers/runner.py](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/app/workers/runner.py):
+  - extracted `_read_message_body()` helper
+  - size guard now checks `total + len(chunk)` before appending a chunk, enforcing the cap more defensively
+- Added job-level optimistic locking for concurrent state writes in [backend/app/models.py](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/app/models.py), [backend/app/repository.py](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/app/repository.py), and [backend/alembic/versions/20260419_0004_add_job_version.py](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/alembic/versions/20260419_0004_add_job_version.py):
+  - new `jobs.version` column with SQLAlchemy version tracking
+  - `JobRepository.upsert_job()` now rejects stale payload versions and surfaces a `ConcurrentModificationError`
+  - API write paths now translate stale writes into HTTP `409`
+- Fixed draft update isolation in [backend/app/job_logic.py](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/app/job_logic.py), [backend/app/main.py](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/app/main.py), and [frontend/src/api.js](/Users/karthicks/kAgents/Projects/PFCD-V2/frontend/src/api.js):
+  - `DraftUpdateRequest` now requires `draft_version`
+  - `PUT /api/jobs/{job_id}/draft` rejects stale versions with `409`
+  - successful draft saves increment `draft.version`
+  - frontend `saveDraft()` now sends the current draft version automatically
+- Expanded regression coverage across [tests/unit/test_main.py](/Users/karthicks/kAgents/Projects/PFCD-V2/tests/unit/test_main.py), [tests/unit/test_worker_message_body.py](/Users/karthicks/kAgents/Projects/PFCD-V2/tests/unit/test_worker_message_body.py), [tests/unit/test_repository.py](/Users/karthicks/kAgents/Projects/PFCD-V2/tests/unit/test_repository.py), [tests/unit/test_draft_edit.py](/Users/karthicks/kAgents/Projects/PFCD-V2/tests/unit/test_draft_edit.py), and the affected integration suites to lock the new request contract and critical bug paths.
+
+### Decisions
+
+- Used one job-level optimistic lock for all stateful job writes instead of separate ad-hoc guards per endpoint, because worker transitions and finalize/draft writes operate on the same `jobs` row.
+- Kept the draft-specific concurrency check separate from the job version so the UI can detect stale editor state directly and refresh the draft without guessing.
+- Limited this pass to the five `priority:critical` issues only; higher-severity-but-noncritical follow-ups remain in their own issue groups.
+
+### Validation
+
+- `PYTHONPATH=backend pytest tests/unit/test_main.py tests/unit/test_worker_message_body.py tests/unit/test_repository.py tests/unit/test_draft_edit.py tests/integration/test_lifecycle.py tests/integration/test_error_cases.py tests/integration/test_exports.py -q`
+- `PYTHONPATH=backend pytest tests/unit tests/integration -q`
+- `git diff --check`
+
+### Residual risk
+
+- Existing deployed databases need the new Alembic migration applied before optimistic locking is available outside fresh-schema environments.
+- The frontend now sends `draft_version`, so any external clients calling `PUT /api/jobs/{job_id}/draft` must update to the new contract or they will receive request validation errors.

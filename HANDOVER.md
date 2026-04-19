@@ -43,6 +43,7 @@ Shared coordination board. Read and updated by both Claude and Codex at session 
 
 | ID | Task | PR / Commit |
 |----|------|-------------|
+| CRITICAL-GHCO-BUNDLE | Resolve GitHub critical issues #36-#40 on consolidated branch `codex/fix-critical-ghco-issues` | PR #43 |
 | ISSUE-19-ACA-INFRA | Provision Azure Container Registry and shared Container Apps environment for GitHub issue #19 | — |
 
 ---

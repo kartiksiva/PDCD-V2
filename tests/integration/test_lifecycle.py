@@ -117,23 +117,58 @@ def test_update_draft_saves_changes(app_client):
     job_id = app_client.client.post("/api/jobs", json=payload).json()["job_id"]
     app_client.client.post(f"/dev/jobs/{job_id}/simulate")
 
+    draft_resp = app_client.client.get(f"/api/jobs/{job_id}/draft")
+    assert draft_resp.status_code == 200
     updated_pdd = {"purpose": "Integration-test updated purpose", "steps": []}
     put_resp = app_client.client.put(
         f"/api/jobs/{job_id}/draft",
-        json={"pdd": updated_pdd},
+        json={"draft_version": draft_resp.json()["draft"]["version"], "pdd": updated_pdd},
     )
     assert put_resp.status_code == 200
     assert put_resp.json()["user_saved_draft"] is True
 
     get_resp = app_client.client.get(f"/api/jobs/{job_id}/draft")
     assert get_resp.json()["draft"]["pdd"]["purpose"] == "Integration-test updated purpose"
+    assert get_resp.json()["draft"]["version"] == 2
+
+
+def test_update_draft_rejects_stale_draft_version(app_client):
+    payload = {
+        "input_files": [
+            {"source_type": "transcript", "file_name": "t.vtt", "size_bytes": 512}
+        ]
+    }
+    job_id = app_client.client.post("/api/jobs", json=payload).json()["job_id"]
+    app_client.client.post(f"/dev/jobs/{job_id}/simulate")
+
+    first_draft = app_client.client.get(f"/api/jobs/{job_id}/draft")
+    assert first_draft.status_code == 200
+    stale_version = first_draft.json()["draft"]["version"]
+
+    first_save = app_client.client.put(
+        f"/api/jobs/{job_id}/draft",
+        json={"draft_version": stale_version, "assumptions": ["first save"]},
+    )
+    assert first_save.status_code == 200
+
+    stale_save = app_client.client.put(
+        f"/api/jobs/{job_id}/draft",
+        json={"draft_version": stale_version, "assumptions": ["stale save"]},
+    )
+    assert stale_save.status_code == 409
+    assert "version" in stale_save.json()["detail"].lower()
 
 
 def test_finalize_job_returns_completed(seeded_needs_review_job):
     job_id, ctx = seeded_needs_review_job
+    draft_resp = ctx.client.get(f"/api/jobs/{job_id}/draft")
+    assert draft_resp.status_code == 200
     save_resp = ctx.client.put(
         f"/api/jobs/{job_id}/draft",
-        json={"assumptions": ["Saved before finalize"]},
+        json={
+            "draft_version": draft_resp.json()["draft"]["version"],
+            "assumptions": ["Saved before finalize"],
+        },
     )
     assert save_resp.status_code == 200
     resp = ctx.client.post(f"/api/jobs/{job_id}/finalize")

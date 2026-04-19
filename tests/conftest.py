@@ -117,9 +117,15 @@ def seeded_needs_review_job(app_client):
 def seeded_completed_job(seeded_needs_review_job):
     """(job_id, AppContext) with the job fully finalized (status=completed)."""
     job_id, ctx = seeded_needs_review_job
+    draft_resp = ctx.client.get(f"/api/jobs/{job_id}/draft")
+    assert draft_resp.status_code == 200, f"get draft failed: {draft_resp.text}"
+    draft_version = draft_resp.json()["draft"]["version"]
     save_resp = ctx.client.put(
         f"/api/jobs/{job_id}/draft",
-        json={"assumptions": ["Saved by seeded_completed_job fixture"]},
+        json={
+            "draft_version": draft_version,
+            "assumptions": ["Saved by seeded_completed_job fixture"],
+        },
     )
     assert save_resp.status_code == 200, f"save draft failed: {save_resp.text}"
     resp = ctx.client.post(f"/api/jobs/{job_id}/finalize")

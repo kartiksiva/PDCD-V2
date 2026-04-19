@@ -41,7 +41,10 @@ def test_get_draft_on_queued_job_returns_409(app_client):
 
 def test_put_draft_on_queued_job_returns_409(app_client):
     job_id = _create_queued(app_client.client)
-    resp = app_client.client.put(f"/api/jobs/{job_id}/draft", json={"pdd": {}})
+    resp = app_client.client.put(
+        f"/api/jobs/{job_id}/draft",
+        json={"draft_version": 1, "pdd": {}},
+    )
     assert resp.status_code == 409
 
 
@@ -69,9 +72,14 @@ def test_simulate_then_finalize_without_save_returns_409(app_client):
 def test_finalize_blocked_by_blocker_flag_returns_409(app_client):
     job_id = _create_queued(app_client.client)
     _simulate(app_client.client, job_id)
+    draft_resp = app_client.client.get(f"/api/jobs/{job_id}/draft")
+    assert draft_resp.status_code == 200
     save_resp = app_client.client.put(
         f"/api/jobs/{job_id}/draft",
-        json={"assumptions": ["Saved before blocker check"]},
+        json={
+            "draft_version": draft_resp.json()["draft"]["version"],
+            "assumptions": ["Saved before blocker check"],
+        },
     )
     assert save_resp.status_code == 200
 
@@ -135,3 +143,20 @@ def test_upload_oversize_file_returns_413(app_client):
         files={"file": ("big.txt", b"x" * 11, "text/plain")},
     )
     assert resp.status_code == 413
+
+
+def test_upload_sanitizes_path_traversal_filename(app_client, tmp_path):
+    uploads_dir = tmp_path / "uploads"
+    app_client.module.UPLOADS_DIR = str(uploads_dir)
+
+    resp = app_client.client.post(
+        "/api/upload",
+        files={"file": ("../evil.txt", b"owned", "text/plain")},
+    )
+
+    assert resp.status_code == 201
+    body = resp.json()
+    stored_path = uploads_dir / body["upload_id"] / "evil.txt"
+    assert body["location"] == str(stored_path)
+    assert stored_path.read_bytes() == b"owned"
+    assert not (tmp_path / "evil.txt").exists()

@@ -61,7 +61,7 @@ def test_all_write_methods_require_auth(monkeypatch, tmp_path):
     job_id = str(uuid4())
     cases = [
         ("POST", "/api/jobs", {}),
-        ("PUT", f"/api/jobs/{job_id}/draft", {}),
+        ("PUT", f"/api/jobs/{job_id}/draft", {"draft_version": 1}),
         ("POST", f"/api/jobs/{job_id}/finalize", {}),
         ("DELETE", f"/api/jobs/{job_id}", {}),
     ]

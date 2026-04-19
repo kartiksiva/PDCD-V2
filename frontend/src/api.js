@@ -39,7 +39,12 @@ export async function finalizeJob(jobId) {
 }
 
 export async function saveDraft(jobId, draft, speakerResolutions = null) {
-  const body = { pdd: draft.pdd, sipoc: draft.sipoc, assumptions: draft.assumptions }
+  const body = {
+    draft_version: draft.version ?? 1,
+    pdd: draft.pdd,
+    sipoc: draft.sipoc,
+    assumptions: draft.assumptions,
+  }
   if (speakerResolutions !== null) body.speaker_resolutions = speakerResolutions
   const res = await _fetch(`/jobs/${jobId}/draft`, {
     method: 'PUT',
