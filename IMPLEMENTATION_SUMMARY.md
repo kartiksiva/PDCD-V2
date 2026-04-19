@@ -2298,3 +2298,41 @@ Resolved the five `priority:critical` GitHub issues on branch `codex/fix-critica
 
 - Existing deployed databases need the new Alembic migration applied before optimistic locking is available outside fresh-schema environments.
 - The frontend now sends `draft_version`, so any external clients calling `PUT /api/jobs/{job_id}/draft` must update to the new contract or they will receive request validation errors.
+
+---
+
+## Section 67: Codex Delivery — GitHub Issue #41 High-Severity Reliability Fixes (2026-04-19)
+
+Resolved the five-item high-severity backend reliability bundle on isolated branch `codex/fix-high-severity-bugs`.
+
+### Completed
+
+- Hardened [backend/app/main.py](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/app/main.py) finalize flow so export-generation failures no longer strand jobs in `FINALIZING`:
+  - export build/save is wrapped in a single failure boundary
+  - any exception now marks the job `FAILED`, records `error.phase = "finalize"`, appends `finalize_failed`, and best-effort deletes partial export files
+- Fixed retry deduplication in [backend/app/servicebus.py](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/app/servicebus.py) by excluding non-semantic fields (`attempt`, `payload_hash`) from the message hash, so retried deliveries of the same logical work item reuse the same `payload_hash`
+- Added an operator-tunable receive/backoff strategy in [backend/app/workers/runner.py](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/app/workers/runner.py):
+  - `PFCD_WORKER_RECEIVE_WAIT_SECONDS` controls the Service Bus long-poll receive window
+  - empty polls now use bounded exponential idle backoff instead of the previous fixed unconditional sleep
+- Locked the cleanup atomicity expectation in [backend/app/workers/cleanup.py](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/app/workers/cleanup.py) with an explicit retry comment and regression coverage proving `cleanup_pending` stays set when storage deletion fails
+- Added transient retry handling to [backend/app/storage.py](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/app/storage.py) frame uploads:
+  - bounded retries for Azure/storage/network-style exceptions before returning `None`
+  - retry cadence controlled by `PFCD_FRAME_UPLOAD_MAX_ATTEMPTS` and `PFCD_FRAME_UPLOAD_RETRY_BASE_SECONDS`
+- Added `.worktrees/` to [.gitignore](/Users/karthicks/kAgents/Projects/PFCD-V2/.gitignore) on this branch so isolated workspaces remain untracked
+
+### Tests
+
+- Added/updated regression coverage in:
+  - [tests/integration/test_error_cases.py](/Users/karthicks/kAgents/Projects/PFCD-V2/tests/integration/test_error_cases.py) for finalize export failure -> persisted `FAILED` status
+  - [tests/unit/test_worker.py](/Users/karthicks/kAgents/Projects/PFCD-V2/tests/unit/test_worker.py) for retry hash stability, retry-message dedup, and receive/backoff configuration
+  - [tests/unit/test_cleanup.py](/Users/karthicks/kAgents/Projects/PFCD-V2/tests/unit/test_cleanup.py) for preserving `cleanup_pending` on storage purge failure
+  - [tests/unit/test_frame_persist.py](/Users/karthicks/kAgents/Projects/PFCD-V2/tests/unit/test_frame_persist.py) for transient blob upload retries
+
+### Validation
+
+- `pytest tests/unit/test_worker.py tests/unit/test_cleanup.py tests/unit/test_frame_persist.py tests/integration/test_error_cases.py tests/integration/test_lifecycle.py tests/integration/test_exports.py -q`
+  - Result: `68 passed, 1 warning`
+
+### Open follow-up
+
+- The new worker receive/backoff knobs are implemented in code but not yet documented in `REFERENCE.md`; add them if operations wants these surfaced in the environment table.

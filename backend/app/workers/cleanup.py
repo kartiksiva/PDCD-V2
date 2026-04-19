@@ -60,6 +60,7 @@ class CleanupWorker:
                 logger.info("Purged data for job %s", job_id)
             except Exception as exc:
                 logger.error("Failed to purge job %s: %s", job_id, exc, exc_info=True)
+                # Keep cleanup_pending=True so the next cleanup pass can retry the purge.
                 try:
                     self.repo.append_job_event(job_id, "cleanup_failed", {"phase": "purge", "message": str(exc)})
                 except Exception:

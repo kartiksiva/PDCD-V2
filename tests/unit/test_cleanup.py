@@ -166,3 +166,22 @@ def test_full_cleanup_cycle(tmp_path, monkeypatch):
         ).fetchall()
     event_types = [r[0] for r in rows]
     assert event_types == ["cleanup_completed"]
+
+
+def test_cleanup_storage_failure_leaves_cleanup_pending(tmp_path, monkeypatch):
+    repository = _make_repo(tmp_path, monkeypatch)
+
+    import importlib
+    import app.workers.cleanup as cleanup_mod
+    importlib.reload(cleanup_mod)
+
+    mock_storage = MagicMock()
+    mock_storage.delete_job_exports.side_effect = RuntimeError("blob delete failed")
+    worker = cleanup_mod.CleanupWorker(repo=repository, storage=mock_storage)
+
+    job_id = _create_job(repository, cleanup_pending=True, status="expired")
+
+    worker.purge_pending_jobs()
+
+    job = repository.get_job(job_id)
+    assert job["cleanup_pending"] is True

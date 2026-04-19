@@ -103,6 +103,28 @@ def test_finalize_on_missing_job_returns_404(app_client):
     assert resp.status_code == 404
 
 
+def test_finalize_export_failure_marks_job_failed(app_client, monkeypatch):
+    job_id = _create_queued(app_client.client)
+    _simulate(app_client.client, job_id)
+    save_resp = app_client.client.put(
+        f"/api/jobs/{job_id}/draft",
+        json={"assumptions": ["Saved before finalize failure test"], "draft_version": 1},
+    )
+    assert save_resp.status_code == 200
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("pdf export broke")
+
+    monkeypatch.setattr(app_client.module, "build_export_pdf", _boom)
+
+    resp = app_client.client.post(f"/api/jobs/{job_id}/finalize")
+    assert resp.status_code == 500
+
+    job = app_client.repo.get_job(job_id)
+    assert job["status"] == "failed"
+    assert job["error"] == {"message": "pdf export broke", "phase": "finalize"}
+
+
 # ---------------------------------------------------------------------------
 # Export guard conditions
 # ---------------------------------------------------------------------------

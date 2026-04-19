@@ -337,72 +337,91 @@ async def finalize_job(job_id: str) -> Dict[str, Any]:
         {"job_id": job_id, "at": _utc_now()},
     )
 
-    job["finalized_draft"] = copy.deepcopy(job["draft"])
-    job["finalized_draft"]["finalized_at"] = _utc_now()
-    evidence_bundle = build_evidence_bundle(job["finalized_draft"], job)
-    exports_payload = {
-        "job_id": job_id,
-        "status": JobStatus.COMPLETED.value,
-        "provider_effective": job["provider_effective"],
-        "draft": job["finalized_draft"],
-        "review_notes": job["review_notes"],
-        "exports_manifest": {"format": "json", "evidence_bundle": evidence_bundle},
-    }
-    json_bytes = json.dumps(exports_payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
-    markdown_bytes = await anyio.to_thread.run_sync(
-        lambda: build_export_markdown(job["finalized_draft"], evidence_bundle).encode("utf-8")
-    )
-    pdf_bytes = await anyio.to_thread.run_sync(
-        lambda: build_export_pdf(job["finalized_draft"], evidence_bundle)
-    )
-    docx_bytes = await anyio.to_thread.run_sync(
-        lambda: build_export_docx(job["finalized_draft"], evidence_bundle, job_id)
-    )
-
-    json_meta = await anyio.to_thread.run_sync(
-        EXPORT_STORAGE.save_bytes, job_id, "json", json_bytes, "application/json"
-    )
-    md_meta = await anyio.to_thread.run_sync(
-        EXPORT_STORAGE.save_bytes, job_id, "markdown", markdown_bytes, "text/markdown; charset=utf-8"
-    )
-    pdf_meta = await anyio.to_thread.run_sync(
-        lambda: EXPORT_STORAGE.save_bytes(
-            job_id, "pdf", pdf_bytes, "application/pdf", download_name=f"pdd-{job_id}.pdf"
+    try:
+        finalized_draft = copy.deepcopy(job["draft"])
+        finalized_draft["finalized_at"] = _utc_now()
+        evidence_bundle = build_evidence_bundle(finalized_draft, job)
+        exports_payload = {
+            "job_id": job_id,
+            "status": JobStatus.COMPLETED.value,
+            "provider_effective": job["provider_effective"],
+            "draft": finalized_draft,
+            "review_notes": job["review_notes"],
+            "exports_manifest": {"format": "json", "evidence_bundle": evidence_bundle},
+        }
+        json_bytes = json.dumps(exports_payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+        markdown_bytes = await anyio.to_thread.run_sync(
+            lambda: build_export_markdown(finalized_draft, evidence_bundle).encode("utf-8")
         )
-    )
-    docx_meta = await anyio.to_thread.run_sync(
-        lambda: EXPORT_STORAGE.save_bytes(
+        pdf_bytes = await anyio.to_thread.run_sync(
+            lambda: build_export_pdf(finalized_draft, evidence_bundle)
+        )
+        docx_bytes = await anyio.to_thread.run_sync(
+            lambda: build_export_docx(finalized_draft, evidence_bundle, job_id)
+        )
+
+        json_meta = await anyio.to_thread.run_sync(
+            EXPORT_STORAGE.save_bytes, job_id, "json", json_bytes, "application/json"
+        )
+        md_meta = await anyio.to_thread.run_sync(
+            EXPORT_STORAGE.save_bytes, job_id, "markdown", markdown_bytes, "text/markdown; charset=utf-8"
+        )
+        pdf_meta = await anyio.to_thread.run_sync(
+            lambda: EXPORT_STORAGE.save_bytes(
+                job_id, "pdf", pdf_bytes, "application/pdf", download_name=f"pdd-{job_id}.pdf"
+            )
+        )
+        docx_meta = await anyio.to_thread.run_sync(
+            lambda: EXPORT_STORAGE.save_bytes(
+                job_id,
+                "docx",
+                docx_bytes,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                download_name=f"pdd-{job_id}.docx",
+            )
+        )
+
+        job["finalized_draft"] = finalized_draft
+        job["exports"] = {
+            "json": json_meta.__dict__,
+            "markdown": md_meta.__dict__,
+            "pdf": pdf_meta.__dict__,
+            "docx": docx_meta.__dict__,
+            "endpoints": {
+                "json": f"/api/jobs/{job_id}/exports/json",
+                "markdown": f"/api/jobs/{job_id}/exports/markdown",
+                "pdf": f"/api/jobs/{job_id}/exports/pdf",
+                "docx": f"/api/jobs/{job_id}/exports/docx",
+            },
+        }
+        job["status"] = JobStatus.COMPLETED.value
+        job["updated_at"] = _utc_now()
+        await _repo_upsert_job(job_id, job)
+        await anyio.to_thread.run_sync(
+            JOB_REPO.append_job_event,
             job_id,
-            "docx",
-            docx_bytes,
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            download_name=f"pdd-{job_id}.docx",
+            "finalize_completed",
+            {"job_id": job_id, "at": _utc_now()},
         )
-    )
-
-    job["exports"] = {
-        "json": json_meta.__dict__,
-        "markdown": md_meta.__dict__,
-        "pdf": pdf_meta.__dict__,
-        "docx": docx_meta.__dict__,
-        "endpoints": {
-            "json": f"/api/jobs/{job_id}/exports/json",
-            "markdown": f"/api/jobs/{job_id}/exports/markdown",
-            "pdf": f"/api/jobs/{job_id}/exports/pdf",
-            "docx": f"/api/jobs/{job_id}/exports/docx",
-        },
-    }
-    job["status"] = JobStatus.COMPLETED.value
-    job["updated_at"] = _utc_now()
-    await _repo_upsert_job(job_id, job)
-    await anyio.to_thread.run_sync(
-        JOB_REPO.append_job_event,
-        job_id,
-        "finalize_completed",
-        {"job_id": job_id, "at": _utc_now()},
-    )
-    logger.info("Job finalized: job_id=%s", job_id)
-    return {"job_id": job_id, "status": job["status"], "exports": job["exports"]}
+        logger.info("Job finalized: job_id=%s", job_id)
+        return {"job_id": job_id, "status": job["status"], "exports": job["exports"]}
+    except Exception as exc:
+        logger.error("Finalize failed for job %s: %s", job_id, exc, exc_info=True)
+        try:
+            await anyio.to_thread.run_sync(EXPORT_STORAGE.delete_job_exports, job_id)
+        except Exception:
+            logger.warning("Failed to clean partial exports for job %s after finalize error", job_id, exc_info=True)
+        job["status"] = JobStatus.FAILED.value
+        job["error"] = {"message": str(exc), "phase": "finalize"}
+        job["updated_at"] = _utc_now()
+        await _repo_upsert_job(job_id, job)
+        await anyio.to_thread.run_sync(
+            JOB_REPO.append_job_event,
+            job_id,
+            "finalize_failed",
+            {"job_id": job_id, "at": _utc_now(), "message": str(exc)},
+        )
+        raise HTTPException(status_code=500, detail="Failed to generate exports.") from exc
 
 
 @api_router.get("/jobs/{job_id}/exports/{fmt}")

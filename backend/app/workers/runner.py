@@ -313,16 +313,41 @@ def _connection_backoff_seconds(consecutive_errors: int) -> float:
     return base + random.uniform(0.0, 1.0)
 
 
+def _receive_wait_seconds() -> int:
+    value = os.environ.get("PFCD_WORKER_RECEIVE_WAIT_SECONDS", "5").strip()
+    if value.isdigit():
+        return max(1, min(int(value), 30))
+    return 5
+
+
+def _idle_backoff_seconds(consecutive_empty_receives: int) -> float:
+    if consecutive_empty_receives <= 0:
+        return 0.0
+    base_value = os.environ.get("PFCD_WORKER_IDLE_BACKOFF_BASE_SECONDS", "0.5").strip()
+    max_value = os.environ.get("PFCD_WORKER_IDLE_BACKOFF_MAX_SECONDS", "5.0").strip()
+    try:
+        base = max(0.0, float(base_value))
+    except ValueError:
+        base = 0.5
+    try:
+        max_backoff = max(base, float(max_value))
+    except ValueError:
+        max_backoff = 5.0
+    return min(max_backoff, base * float(2 ** (consecutive_empty_receives - 1)))
+
+
 def run() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     _health_server = _maybe_start_health_server()
     phase = _resolve_phase()
+    receive_wait_seconds = _receive_wait_seconds()
     logger.info(
-        "Worker runtime OpenAI config: role=%s endpoint=%s chat_deployment=%s api_version=%s",
+        "Worker runtime OpenAI config: role=%s endpoint=%s chat_deployment=%s api_version=%s receive_wait=%ss",
         phase,
         os.environ.get("AZURE_OPENAI_ENDPOINT"),
         os.environ.get("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME"),
         os.environ.get("AZURE_OPENAI_API_VERSION"),
+        receive_wait_seconds,
     )
     worker = Worker(phase)
     if not worker.orchestrator.enabled:
@@ -331,7 +356,7 @@ def run() -> None:
     consecutive_connection_errors = 0
     while True:
         try:
-            with worker.orchestrator.receive(phase) as receiver:
+            with worker.orchestrator.receive(phase, max_wait_time=receive_wait_seconds) as receiver:
                 if receiver is None:
                     raise RuntimeError("Service Bus receiver not initialized.")
                 if consecutive_connection_errors > 0:
@@ -342,9 +367,13 @@ def run() -> None:
                     )
                 consecutive_connection_errors = 0
                 logger.info("Worker listening on phase %s", phase)
+                consecutive_empty_receives = 0
                 while True:
                     try:
-                        messages = receiver.receive_messages(max_message_count=1, max_wait_time=5)
+                        messages = receiver.receive_messages(
+                            max_message_count=1,
+                            max_wait_time=receive_wait_seconds,
+                        )
                     except SBConnectionError as exc:
                         consecutive_connection_errors += 1
                         delay = _connection_backoff_seconds(consecutive_connection_errors)
@@ -358,6 +387,13 @@ def run() -> None:
                         )
                         time.sleep(delay)
                         break
+                    if not messages:
+                        consecutive_empty_receives += 1
+                        delay = _idle_backoff_seconds(consecutive_empty_receives)
+                        if delay > 0:
+                            time.sleep(delay)
+                        continue
+                    consecutive_empty_receives = 0
                     for message in messages:
                         try:
                             body = _read_message_body(message.body)
@@ -369,7 +405,6 @@ def run() -> None:
                         except Exception as exc:
                             logger.error("Unhandled error processing message; abandoning: %s", exc, exc_info=True)
                             receiver.abandon_message(message)
-                    time.sleep(0.5)
         except SBConnectionError as exc:
             consecutive_connection_errors += 1
             delay = _connection_backoff_seconds(consecutive_connection_errors)

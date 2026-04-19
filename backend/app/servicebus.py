@@ -16,6 +16,7 @@ from azure.servicebus import ServiceBusClient, ServiceBusMessage, ServiceBusRece
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_RETRIES = 3
+_NON_DEDUP_FIELDS = {"attempt", "payload_hash"}
 
 
 @dataclass(frozen=True)
@@ -42,7 +43,10 @@ def _connection_string() -> Optional[str]:
 
 
 def _payload_hash(message: Dict[str, Any]) -> str:
-    payload = json.dumps(message, sort_keys=True, separators=(",", ":"))
+    dedup_payload = {
+        key: value for key, value in message.items() if key not in _NON_DEDUP_FIELDS
+    }
+    payload = json.dumps(dedup_payload, sort_keys=True, separators=(",", ":"))
     return sha256(payload.encode("utf-8")).hexdigest()
 
 
