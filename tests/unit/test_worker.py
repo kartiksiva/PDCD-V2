@@ -269,7 +269,6 @@ def test_run_recreates_receiver_after_servicebus_error(monkeypatch):
     from app.workers import runner as runner_mod
 
     monkeypatch.setenv("PFCD_WORKER_ROLE", "processing")
-    monkeypatch.setattr(runner_mod, "_start_health_server", lambda: None)
     monkeypatch.setattr(runner_mod.logging, "basicConfig", lambda **_: None)
     monkeypatch.setattr(runner_mod, "_connection_backoff_seconds", lambda _: 0.0)
     monkeypatch.setattr(runner_mod.time, "sleep", lambda _: None)
