@@ -2336,3 +2336,43 @@ Resolved the five-item high-severity backend reliability bundle on isolated bran
 ### Open follow-up
 
 - The new worker receive/backoff knobs are implemented in code but not yet documented in `REFERENCE.md`; add them if operations wants these surfaced in the environment table.
+
+---
+
+## Section 68: Codex Delivery — GitHub Issue #42 Medium-Severity Reliability and Configuration Fixes (2026-04-19)
+
+Closed the medium-severity backlog from GitHub issue `#42` on an isolated branch with targeted runtime, schema, configuration, and frontend contract hardening.
+
+### Completed
+
+- Added first-class `input_files[].upload_id` resolution in [backend/app/main.py](/Users/karthicks/kAgents/Projects/PFCD-V2/.worktrees/codex-fix-medium-severity-issues/backend/app/main.py) so `POST /api/jobs` can reuse previously uploaded files safely:
+  - resolves `upload_id` to the existing upload path under `UPLOADS_DIR`
+  - rejects missing upload references with `400`
+  - persists resolved `storage_key`, file name, and size metadata for downstream workers
+- Updated [frontend/src/components/CreateJob.jsx](/Users/karthicks/kAgents/Projects/PFCD-V2/.worktrees/codex-fix-medium-severity-issues/frontend/src/components/CreateJob.jsx) to send `upload_id` alongside each uploaded file so the frontend and backend now use the same persisted upload contract.
+- Hardened job payload persistence in [backend/app/job_logic.py](/Users/karthicks/kAgents/Projects/PFCD-V2/.worktrees/codex-fix-medium-severity-issues/backend/app/job_logic.py):
+  - `ttl_expires_at` now respects `PFCD_JOB_TTL_DAYS` instead of a hardcoded seven-day window
+  - transcript loading prefers persisted `storage_key` data instead of reconstructing keys from file names
+  - video manifest entries now retain the original `storage_key`
+- Added the missing TTL cleanup index on `jobs.ttl_expires_at` in [backend/app/models.py](/Users/karthicks/kAgents/Projects/PFCD-V2/.worktrees/codex-fix-medium-severity-issues/backend/app/models.py) and [backend/alembic/versions/20260419_0004_add_jobs_ttl_index.py](/Users/karthicks/kAgents/Projects/PFCD-V2/.worktrees/codex-fix-medium-severity-issues/backend/alembic/versions/20260419_0004_add_jobs_ttl_index.py).
+- Tightened runtime configuration behavior:
+  - [backend/app/main.py](/Users/karthicks/kAgents/Projects/PFCD-V2/.worktrees/codex-fix-medium-severity-issues/backend/app/main.py) now validates `PFCD_CORS_ORIGINS`, warns on insecure HTTP origins outside production, and fails fast on HTTP origins in production
+  - [backend/app/workers/runner.py](/Users/karthicks/kAgents/Projects/PFCD-V2/.worktrees/codex-fix-medium-severity-issues/backend/app/workers/runner.py) now requires `PFCD_WORKER_ROLE` instead of silently defaulting to `extracting`
+  - [frontend/src/api.js](/Users/karthicks/kAgents/Projects/PFCD-V2/.worktrees/codex-fix-medium-severity-issues/frontend/src/api.js) now warns in dev builds that `VITE_API_KEY` is an internal/demo convenience, not a public auth mechanism
+- Added LLM timeout enforcement in [backend/app/agents/extraction.py](/Users/karthicks/kAgents/Projects/PFCD-V2/.worktrees/codex-fix-medium-severity-issues/backend/app/agents/extraction.py) and [backend/app/agents/processing.py](/Users/karthicks/kAgents/Projects/PFCD-V2/.worktrees/codex-fix-medium-severity-issues/backend/app/agents/processing.py):
+  - both phases now respect `PFCD_LLM_TIMEOUT_SECONDS`
+  - stalled model calls fail with explicit timeout errors instead of hanging indefinitely
+- Improved migration visibility in [backend/app/repository.py](/Users/karthicks/kAgents/Projects/PFCD-V2/.worktrees/codex-fix-medium-severity-issues/backend/app/repository.py) by warning when the runtime database revision does not match Alembic head, while preserving the current `create_all()` bootstrap behavior.
+- Updated [REFERENCE.md](/Users/karthicks/kAgents/Projects/PFCD-V2/.worktrees/codex-fix-medium-severity-issues/REFERENCE.md) with the new TTL/timeout/CORS settings, the `upload_id` job contract, and explicit notes that upload endpoints still require platform-side rate limiting on public deployments.
+- Ignored the repo-root `storage/` runtime directory in [.gitignore](/Users/karthicks/kAgents/Projects/PFCD-V2/.worktrees/codex-fix-medium-severity-issues/.gitignore) so local test artefacts do not pollute the branch.
+
+### Validation
+
+- `cd /Users/karthicks/kAgents/Projects/PFCD-V2/.worktrees/codex-fix-medium-severity-issues && pytest tests/unit/test_repository.py tests/unit/test_main_config.py tests/unit/test_job_logic.py tests/unit/test_worker.py tests/unit/test_agents.py tests/integration/test_lifecycle.py -q`
+- `cd /Users/karthicks/kAgents/Projects/PFCD-V2/.worktrees/codex-fix-medium-severity-issues && pytest tests/unit tests/integration -q`
+- `cd /Users/karthicks/kAgents/Projects/PFCD-V2/.worktrees/codex-fix-medium-severity-issues && git diff --check`
+
+### Decisions
+
+- Kept the migration warning in `Repository.init_db()` advisory-only rather than auto-running Alembic, because silently mutating schema state at process start would broaden current deployment behavior.
+- Limited the rate-limiting fix to documentation and operator guidance because this repo still relies on shared/demo API-key semantics and does not yet have an application-layer quota model.

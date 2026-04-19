@@ -80,6 +80,7 @@ export default function CreateJob({ onCreated }) {
           file_name: u.file_name,
           size_bytes: u.size_bytes,
           mime_type: u.mime_type,
+          upload_id: u.upload_id,
         })),
       })
       onCreated(data.job_id)

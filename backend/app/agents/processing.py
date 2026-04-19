@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any, Dict
 
 from app.job_logic import _utc_now
@@ -133,6 +134,15 @@ async def _call_processing(deployment: str, system_prompt: str, user_content: st
     )
 
 
+def _llm_timeout_seconds() -> float:
+    raw = os.environ.get("PFCD_LLM_TIMEOUT_SECONDS", "120").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return 120.0
+    return max(1.0, value)
+
+
 def run_processing(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
     """Call Azure OpenAI to generate PDD + SIPOC from extracted evidence.
 
@@ -159,7 +169,16 @@ def run_processing(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
         sipoc_schema=_SIPOC_SCHEMA,
     )
 
-    raw, pt, ct = asyncio.run(_call_processing(deployment, _SYSTEM_PROMPT, user_prompt))
+    timeout_seconds = _llm_timeout_seconds()
+    try:
+        raw, pt, ct = asyncio.run(
+            asyncio.wait_for(
+                _call_processing(deployment, _SYSTEM_PROMPT, user_prompt),
+                timeout=timeout_seconds,
+            )
+        )
+    except asyncio.TimeoutError as exc:
+        raise RuntimeError(f"Processing LLM call timed out after {timeout_seconds:.0f}s") from exc
     draft = json.loads(raw)
 
     # Ensure required top-level keys are present

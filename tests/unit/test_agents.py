@@ -12,6 +12,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 from uuid import uuid4
 
+import pytest
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -139,6 +141,24 @@ def test_extraction_usage_tokens_supports_object_usage():
     assert completion_tokens == 45
 
 
+def test_extraction_times_out_long_llm_call(monkeypatch):
+    import asyncio
+
+    from app.agents.extraction import run_extraction
+
+    job = _make_job()
+    job["_transcript_text_inline"] = "some transcript text"
+
+    async def _never_returns(*_args, **_kwargs):
+        await asyncio.sleep(10)
+
+    monkeypatch.setenv("PFCD_LLM_TIMEOUT_SECONDS", "0.01")
+
+    with patch("app.agents.extraction._call_extraction", side_effect=_never_returns):
+        with pytest.raises(RuntimeError, match="timed out"):
+            run_extraction(job, _balanced_profile())
+
+
 def test_processing_usage_tokens_supports_dict_usage():
     from app.agents.processing import _extract_usage_tokens
 
@@ -157,6 +177,29 @@ def test_processing_usage_tokens_defaults_to_zero_when_missing():
 
     assert prompt_tokens == 0
     assert completion_tokens == 0
+
+
+def test_processing_times_out_long_llm_call(monkeypatch):
+    import asyncio
+
+    from app.agents.processing import run_processing
+
+    job = _make_job()
+    job["extracted_evidence"] = {
+        "evidence_items": [],
+        "speakers_detected": [],
+        "process_domain": "test",
+        "transcript_quality": "low",
+    }
+
+    async def _never_returns(*_args, **_kwargs):
+        await asyncio.sleep(10)
+
+    monkeypatch.setenv("PFCD_LLM_TIMEOUT_SECONDS", "0.01")
+
+    with patch("app.agents.processing._call_processing", side_effect=_never_returns):
+        with pytest.raises(RuntimeError, match="timed out"):
+            run_processing(job, _balanced_profile())
 
 
 # ---------------------------------------------------------------------------

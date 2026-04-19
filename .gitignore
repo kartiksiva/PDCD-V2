@@ -26,6 +26,7 @@ build/
 
 # Local export storage
 backend/storage/
+storage/
 
 # Environment files
 .env

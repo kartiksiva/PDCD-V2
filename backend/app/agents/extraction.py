@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import Any, Dict, List, Tuple
 
 from app.agents.adapters.registry import AdapterRegistry
@@ -97,6 +98,15 @@ async def _call_extraction(deployment: str, system_prompt: str, user_content: st
     )
 
 
+def _llm_timeout_seconds() -> float:
+    raw = os.environ.get("PFCD_LLM_TIMEOUT_SECONDS", "120").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return 120.0
+    return max(1.0, value)
+
+
 def _normalize_input(job: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
     """
     Use registered adapters to normalize job input into extraction content.
@@ -174,13 +184,20 @@ def run_extraction(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
     deployment = profile_conf.get("model")
     if not deployment:
         raise RuntimeError("profile_conf.model is required for extraction.")
-    raw, pt, ct = asyncio.run(
-        _call_extraction(
-            deployment,
-            _SYSTEM_PROMPT,
-            _USER_PROMPT_TEMPLATE.format(transcript_text=content_text) + _build_speaker_hint(job),
+    timeout_seconds = _llm_timeout_seconds()
+    try:
+        raw, pt, ct = asyncio.run(
+            asyncio.wait_for(
+                _call_extraction(
+                    deployment,
+                    _SYSTEM_PROMPT,
+                    _USER_PROMPT_TEMPLATE.format(transcript_text=content_text) + _build_speaker_hint(job),
+                ),
+                timeout=timeout_seconds,
+            )
         )
-    )
+    except asyncio.TimeoutError as exc:
+        raise RuntimeError(f"Extraction LLM call timed out after {timeout_seconds:.0f}s") from exc
 
     extracted = json.loads(raw)
     job["extracted_evidence"] = extracted

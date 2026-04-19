@@ -48,6 +48,22 @@ def test_create_job_rejects_oversized_file(app_client):
     assert resp.status_code == 413
 
 
+def test_create_job_rejects_missing_upload_id(app_client):
+    payload = {
+        "input_files": [
+            {
+                "source_type": "transcript",
+                "file_name": "t.vtt",
+                "size_bytes": 512,
+                "upload_id": "missing-upload-id",
+            }
+        ]
+    }
+    resp = app_client.client.post("/api/jobs", json=payload)
+    assert resp.status_code == 400
+    assert "upload_id" in resp.text
+
+
 def test_get_job_returns_queued_state(app_client):
     payload = {
         "input_files": [
@@ -60,6 +76,31 @@ def test_get_job_returns_queued_state(app_client):
     resp = app_client.client.get(f"/api/jobs/{job_id}")
     assert resp.status_code == 200
     assert resp.json()["status"] == "queued"
+
+
+def test_create_job_accepts_existing_upload_id(app_client):
+    upload_resp = app_client.client.post(
+        "/api/upload",
+        files={"file": ("t.vtt", b"WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nhello", "text/vtt")},
+    )
+    assert upload_resp.status_code == 201
+    upload = upload_resp.json()
+
+    payload = {
+        "input_files": [
+            {
+                "source_type": "transcript",
+                "file_name": upload["file_name"],
+                "size_bytes": upload["size_bytes"],
+                "mime_type": upload["mime_type"],
+                "upload_id": upload["upload_id"],
+            }
+        ]
+    }
+    resp = app_client.client.post("/api/jobs", json=payload)
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["input_manifest"]["inputs"][0]["upload_id"] == upload["upload_id"]
 
 
 def test_get_missing_job_returns_404(app_client):

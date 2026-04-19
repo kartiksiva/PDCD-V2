@@ -271,9 +271,9 @@ class Worker:
 
 def _resolve_phase() -> str:
     role = os.environ.get("PFCD_WORKER_ROLE", "").strip().lower()
-    if role:
-        return role
-    return "extracting"
+    if not role:
+        raise RuntimeError("PFCD_WORKER_ROLE environment variable is required")
+    return role
 
 
 def _start_health_server(port: int) -> HTTPServer:
