@@ -62,6 +62,7 @@ class JobCreateRequest(BaseModel):
 
 
 class DraftUpdateRequest(BaseModel):
+    draft_version: int
     pdd: Optional[Dict[str, Any]] = None
     sipoc: Optional[List[Dict[str, Any]]] = None
     assumptions: Optional[List[str]] = None
@@ -157,6 +158,7 @@ def default_job_payload(payload: JobCreateRequest) -> Dict[str, Any]:
     profile_conf = profile_config(payload.profile)
 
     return {
+        "version": 1,
         "status": JobStatus.QUEUED.value,
         "created_at": _utc_now(),
         "updated_at": _utc_now(),

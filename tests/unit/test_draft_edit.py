@@ -78,9 +78,10 @@ def test_update_draft_response_includes_review_notes(monkeypatch, tmp_path):
 
     with TestClient(main_mod.app, raise_server_exceptions=False) as client:
         job_id = _create_and_simulate(client)
+        draft = client.get(f"/api/jobs/{job_id}/draft").json()["draft"]
         response = client.put(
             f"/api/jobs/{job_id}/draft",
-            json={"pdd": _full_pdd(), "sipoc": _full_sipoc()},
+            json={"draft_version": draft["version"], "pdd": _full_pdd(), "sipoc": _full_sipoc()},
         )
 
     assert response.status_code == 200
@@ -96,9 +97,10 @@ def test_update_draft_re_review_clears_pdd_blocker(monkeypatch, tmp_path):
 
     with TestClient(main_mod.app, raise_server_exceptions=False) as client:
         job_id = _create_and_simulate(client)
+        draft = client.get(f"/api/jobs/{job_id}/draft").json()["draft"]
         response = client.put(
             f"/api/jobs/{job_id}/draft",
-            json={"pdd": _full_pdd("Test Purpose"), "sipoc": _full_sipoc()},
+            json={"draft_version": draft["version"], "pdd": _full_pdd("Test Purpose"), "sipoc": _full_sipoc()},
         )
 
     assert response.status_code == 200
@@ -113,14 +115,16 @@ def test_update_draft_re_review_triggers_pdd_blocker(monkeypatch, tmp_path):
 
     with TestClient(main_mod.app, raise_server_exceptions=False) as client:
         job_id = _create_and_simulate(client)
+        draft = client.get(f"/api/jobs/{job_id}/draft").json()["draft"]
         first_save = client.put(
             f"/api/jobs/{job_id}/draft",
-            json={"pdd": _full_pdd("Initial Purpose"), "sipoc": _full_sipoc()},
+            json={"draft_version": draft["version"], "pdd": _full_pdd("Initial Purpose"), "sipoc": _full_sipoc()},
         )
         assert first_save.status_code == 200
+        next_version = first_save.json()["draft"]["version"]
         response = client.put(
             f"/api/jobs/{job_id}/draft",
-            json={"pdd": _full_pdd(""), "sipoc": _full_sipoc()},
+            json={"draft_version": next_version, "pdd": _full_pdd(""), "sipoc": _full_sipoc()},
         )
 
     assert response.status_code == 200

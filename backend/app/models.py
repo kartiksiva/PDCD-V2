@@ -12,6 +12,7 @@ class Job(Base):
     __tablename__ = "jobs"
 
     job_id = Column(String(64), primary_key=True)
+    version = Column(Integer, nullable=False, default=1)
     status = Column(String(32), nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False)
     updated_at = Column(DateTime(timezone=True), nullable=False)
@@ -36,6 +37,7 @@ class Job(Base):
     cleanup_pending = Column(Boolean, nullable=False, default=False)
     ttl_expires_at = Column(DateTime(timezone=True), nullable=True)
     error = Column(Text, nullable=True)
+    __mapper_args__ = {"version_id_col": version}
 
 
 class InputManifest(Base):

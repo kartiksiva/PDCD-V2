@@ -90,9 +90,14 @@ def test_postgres_alembic_and_api_lifecycle_smoke(monkeypatch: pytest.MonkeyPatc
     simulate_response = client.post(f"/dev/jobs/{job_id}/simulate")
     assert simulate_response.status_code == 200, simulate_response.text
 
+    draft_response = client.get(f"/api/jobs/{job_id}/draft")
+    assert draft_response.status_code == 200, draft_response.text
     save_response = client.put(
         f"/api/jobs/{job_id}/draft",
-        json={"assumptions": ["Validated against PostgreSQL smoke DB"]},
+        json={
+            "draft_version": draft_response.json()["draft"]["version"],
+            "assumptions": ["Validated against PostgreSQL smoke DB"],
+        },
     )
     assert save_response.status_code == 200, save_response.text
 

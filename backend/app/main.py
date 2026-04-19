@@ -32,7 +32,7 @@ from app.job_logic import (
     _utc_now,
     default_job_payload,
 )
-from app.repository import JobRepository
+from app.repository import ConcurrentModificationError, JobRepository
 from app.servicebus import ServiceBusOrchestrator, build_message
 from app.storage import ExportStorage
 
@@ -49,7 +49,10 @@ ORCHESTRATOR = ServiceBusOrchestrator()
 async def _lifespan(app: FastAPI):
     await anyio.to_thread.run_sync(JOB_REPO.init_db)
     logger.info("Database initialised")
-    yield
+    try:
+        yield
+    finally:
+        ORCHESTRATOR.close()
 
 
 app = FastAPI(
@@ -82,7 +85,16 @@ async def _repo_get_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 async def _repo_upsert_job(job_id: str, payload: Dict[str, Any]) -> None:
-    await anyio.to_thread.run_sync(JOB_REPO.upsert_job, job_id, payload)
+    try:
+        await anyio.to_thread.run_sync(JOB_REPO.upsert_job, job_id, payload)
+    except ConcurrentModificationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _safe_upload_name(filename: str | None) -> str:
+    candidate = os.path.basename((filename or "upload").replace("\\", "/")).strip()
+    candidate = candidate.lstrip(".")
+    return candidate or "upload"
 
 
 
@@ -140,9 +152,10 @@ async def upload_file(file: UploadFile = File(...)) -> Dict[str, Any]:
     if size_bytes > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail=f"File exceeds 500MB limit.")
 
+    safe_name = _safe_upload_name(file.filename)
     dest_dir = os.path.join(UPLOADS_DIR, upload_id)
     await anyio.to_thread.run_sync(lambda: os.makedirs(dest_dir, exist_ok=True))
-    dest_path = os.path.join(dest_dir, file.filename or "upload")
+    dest_path = os.path.join(dest_dir, safe_name)
     def _write():
         with open(dest_path, "wb") as fh:
             fh.write(content)
@@ -151,7 +164,7 @@ async def upload_file(file: UploadFile = File(...)) -> Dict[str, Any]:
     source_type = MIME_TO_SOURCE_TYPE.get(file.content_type or "", "document")
     return {
         "upload_id": upload_id,
-        "file_name": file.filename,
+        "file_name": safe_name,
         "size_bytes": size_bytes,
         "mime_type": file.content_type,
         "source_type": source_type,
@@ -234,6 +247,15 @@ async def update_draft(job_id: str, payload: DraftUpdateRequest) -> Dict[str, An
     job = await _job_or_404(job_id)
     if job["draft"] is None:
         raise HTTPException(status_code=409, detail="Draft not available for update.")
+    current_draft_version = int((job.get("draft") or {}).get("version", 1))
+    if payload.draft_version != current_draft_version:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Draft version conflict for {job_id}: expected {payload.draft_version}, "
+                f"current {current_draft_version}"
+            ),
+        )
     if payload.pdd is not None:
         job["draft"]["pdd"] = payload.pdd
     if payload.sipoc is not None:
@@ -246,6 +268,7 @@ async def update_draft(job_id: str, payload: DraftUpdateRequest) -> Dict[str, An
     job["user_saved_draft"] = True
     job["user_saved_at"] = job["updated_at"]
     job["draft"]["user_reconciled_at"] = _utc_now()
+    job["draft"]["version"] = current_draft_version + 1
     await _repo_upsert_job(job_id, job)
     # Re-run the pure-Python reviewing gate so flags reflect the edited draft.
     from app.agents.reviewing import run_reviewing
@@ -548,6 +571,7 @@ async def dev_simulate(job_id: str) -> Dict[str, Any]:
         },
         "assumptions": [],
         "generated_at": _utc_now(),
+        "version": 1,
     }
 
     job["status"] = JobStatus.NEEDS_REVIEW.value

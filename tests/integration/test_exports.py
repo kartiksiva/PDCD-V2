@@ -95,9 +95,14 @@ def test_scenario_a_happy_path(app_client):
     }
     job_id = app_client.client.post("/api/jobs", json=payload).json()["job_id"]
     app_client.client.post(f"/dev/jobs/{job_id}/simulate")
+    draft_resp = app_client.client.get(f"/api/jobs/{job_id}/draft")
+    assert draft_resp.status_code == 200
     save_resp = app_client.client.put(
         f"/api/jobs/{job_id}/draft",
-        json={"assumptions": ["Saved before finalize in export scenario"]},
+        json={
+            "draft_version": draft_resp.json()["draft"]["version"],
+            "assumptions": ["Saved before finalize in export scenario"],
+        },
     )
     assert save_resp.status_code == 200
 

@@ -11,10 +11,15 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 from sqlalchemy import delete, select
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.db import ENGINE, session_scope
 from app.job_logic import JobStatus, _utc_now
 from app.models import AgentRun, Draft, ExportPayload, InputManifest, Job, JobEvent, ReviewNotes
+
+
+class ConcurrentModificationError(RuntimeError):
+    """Raised when a job update loses an optimistic-lock race."""
 
 
 class JobRepository:
@@ -79,6 +84,7 @@ class JobRepository:
 
         payload = {
             "job_id": job.job_id,
+            "version": job.version,
             "status": job.status,
             "created_at": self._to_iso(job.created_at),
             "updated_at": self._to_iso(job.updated_at),
@@ -169,128 +175,141 @@ class JobRepository:
 
     def upsert_job(self, job_id: str, payload: Dict[str, Any]) -> None:
         logger.debug("Upserting job %s status=%s", job_id, payload.get("status"))
-        with session_scope() as session:
-            job = session.get(Job, job_id)
-            if not job:
-                job = Job(job_id=job_id)
-                session.add(job)
-
-            job.status = payload.get("status", job.status)
-            job.created_at = self._to_datetime(payload.get("created_at")) or job.created_at or self._to_datetime(_utc_now())
-            job.updated_at = self._to_datetime(payload.get("updated_at")) or job.updated_at or self._to_datetime(_utc_now())
-            job.profile_requested = payload.get("profile_requested", job.profile_requested or "balanced")
-            job.provider_effective = self._serialize(payload.get("provider_effective", {}))
-            job.has_video = bool(payload.get("has_video"))
-            job.has_audio = bool(payload.get("has_audio"))
-            job.has_transcript = bool(payload.get("has_transcript"))
-            job.teams_metadata = self._serialize(payload.get("teams_metadata", {}))
-            job.transcript_media_consistency = self._serialize(payload.get("transcript_media_consistency", {}))
-            job.agent_signals = self._serialize(payload.get("agent_signals", {}))
-            job.agent_review = self._serialize(payload.get("agent_review", {}))
-            job.speaker_resolutions = self._serialize(payload.get("speaker_resolutions", {}))
-            job.user_saved_draft = bool(payload.get("user_saved_draft"))
-            job.user_saved_at = self._to_datetime(payload.get("user_saved_at"))
-            job.current_phase = payload.get("current_phase")
-            job.last_completed_phase = payload.get("last_completed_phase")
-            job.phase_attempt = int(payload.get("phase_attempt", 0))
-            job.payload_hash = payload.get("payload_hash")
-            job.active_agent_run_id = payload.get("active_agent_run_id")
-            job.deleted_at = self._to_datetime(payload.get("deleted_at"))
-            job.cleanup_pending = bool(payload.get("cleanup_pending"))
-            job.ttl_expires_at = self._to_datetime(payload.get("ttl_expires_at"))
-            if payload.get("error") is not None:
-                job.error = self._serialize(payload.get("error"))
-            else:
-                job.error = None
-
-            input_manifest = session.get(InputManifest, job_id)
-            if not input_manifest:
-                input_manifest = InputManifest(job_id=job_id, payload=self._serialize(payload.get("input_manifest", {})))
-                session.add(input_manifest)
-            else:
-                input_manifest.payload = self._serialize(payload.get("input_manifest", {}))
-
-            review_notes = session.get(ReviewNotes, job_id)
-            review_payload = payload.get("review_notes", {"flags": [], "assumptions": []})
-            if not review_notes:
-                review_notes = ReviewNotes(job_id=job_id, payload=self._serialize(review_payload))
-                session.add(review_notes)
-            else:
-                review_notes.payload = self._serialize(review_payload)
-
-            existing_drafts = {
-                d.draft_kind: d
-                for d in session.execute(
-                    select(Draft).where(Draft.job_id == job_id)
-                ).scalars().all()
-            }
-            draft_by_kind: Dict[str, Dict[str, Any]] = {}
-            if payload.get("draft") is not None:
-                draft_by_kind["draft"] = payload["draft"]
-            if payload.get("finalized_draft") is not None:
-                draft_by_kind["finalized"] = payload["finalized_draft"]
-
-            for draft_kind, draft_payload in draft_by_kind.items():
-                draft_row = existing_drafts.get(draft_kind)
-                if not draft_row:
-                    draft_row = Draft(job_id=job_id, draft_kind=draft_kind)
-                    session.add(draft_row)
-                draft_row.payload = self._serialize(draft_payload)
-                draft_row.version = int(draft_payload.get("version", 1))
-                draft_row.generated_at = self._to_datetime(draft_payload.get("generated_at"))
-                draft_row.user_reconciled_at = self._to_datetime(draft_payload.get("user_reconciled_at"))
-                draft_row.finalized_at = self._to_datetime(draft_payload.get("finalized_at"))
-                draft_row.updated_at = self._to_datetime(payload.get("updated_at"))
-
-            # Incremental insert: only write runs that don't already exist in the DB.
-            # This preserves audit history across upsert calls and is safe against
-            # concurrent writes — each agent_run_id is a UUID generated once.
-            existing_run_ids: set[str] = set(
-                session.execute(
-                    select(AgentRun.agent_run_id).where(AgentRun.job_id == job_id)
-                ).scalars().all()
-            )
-            for run in payload.get("agent_runs", []):
-                run_id = run.get("agent_run_id") or str(uuid4())
-                if run_id in existing_run_ids:
-                    existing = session.get(AgentRun, run_id)
-                    if existing:
-                        existing.agent = run.get("agent", existing.agent)
-                        existing.model = run.get("model", existing.model)
-                        existing.profile = run.get("profile", existing.profile)
-                        existing.status = run.get("status", existing.status)
-                        existing.duration_ms = int(run.get("duration_ms") or 0)
-                        existing.cost_estimate_usd = float(run.get("cost_estimate_usd") or 0.0)
-                        existing.confidence_delta = float(run.get("confidence_delta") or 0.0)
-                        existing.message = run.get("message")
-                        existing.created_at = self._to_datetime(run.get("created_at")) or existing.created_at
-                        existing.updated_at = self._to_datetime(run.get("updated_at") or _utc_now())
-                    continue
-                existing_run_ids.add(run_id)  # guard against duplicates within this payload
-                session.add(
-                    AgentRun(
-                        agent_run_id=run_id,
-                        job_id=job_id,
-                        agent=run.get("agent", "unknown"),
-                        model=run.get("model", "unknown"),
-                        profile=run.get("profile", "balanced"),
-                        status=run.get("status", "unknown"),
-                        duration_ms=int(run.get("duration_ms") or 0),
-                        cost_estimate_usd=float(run.get("cost_estimate_usd") or 0.0),
-                        confidence_delta=float(run.get("confidence_delta") or 0.0),
-                        message=run.get("message"),
-                        created_at=self._to_datetime(run.get("created_at") or _utc_now()),
-                        updated_at=self._to_datetime(run.get("updated_at")),
-                    )
-                )
-
-            exports = session.get(ExportPayload, job_id)
-            if payload.get("exports") is not None:
-                exports_payload = self._serialize(payload.get("exports", {}))
-                if not exports:
-                    session.add(ExportPayload(job_id=job_id, payload=exports_payload))
+        persisted_version: int | None = None
+        try:
+            with session_scope() as session:
+                job = session.get(Job, job_id)
+                if not job:
+                    job = Job(job_id=job_id, version=int(payload.get("version") or 1))
+                    session.add(job)
                 else:
-                    exports.payload = exports_payload
+                    expected_version = int(payload.get("version") or job.version)
+                    if expected_version != job.version:
+                        raise ConcurrentModificationError(
+                            f"Job version conflict for {job_id}: expected {expected_version}, current {job.version}"
+                        )
+
+                job.status = payload.get("status", job.status)
+                job.created_at = self._to_datetime(payload.get("created_at")) or job.created_at or self._to_datetime(_utc_now())
+                job.updated_at = self._to_datetime(payload.get("updated_at")) or job.updated_at or self._to_datetime(_utc_now())
+                job.profile_requested = payload.get("profile_requested", job.profile_requested or "balanced")
+                job.provider_effective = self._serialize(payload.get("provider_effective", {}))
+                job.has_video = bool(payload.get("has_video"))
+                job.has_audio = bool(payload.get("has_audio"))
+                job.has_transcript = bool(payload.get("has_transcript"))
+                job.teams_metadata = self._serialize(payload.get("teams_metadata", {}))
+                job.transcript_media_consistency = self._serialize(payload.get("transcript_media_consistency", {}))
+                job.agent_signals = self._serialize(payload.get("agent_signals", {}))
+                job.agent_review = self._serialize(payload.get("agent_review", {}))
+                job.speaker_resolutions = self._serialize(payload.get("speaker_resolutions", {}))
+                job.user_saved_draft = bool(payload.get("user_saved_draft"))
+                job.user_saved_at = self._to_datetime(payload.get("user_saved_at"))
+                job.current_phase = payload.get("current_phase")
+                job.last_completed_phase = payload.get("last_completed_phase")
+                job.phase_attempt = int(payload.get("phase_attempt", 0))
+                job.payload_hash = payload.get("payload_hash")
+                job.active_agent_run_id = payload.get("active_agent_run_id")
+                job.deleted_at = self._to_datetime(payload.get("deleted_at"))
+                job.cleanup_pending = bool(payload.get("cleanup_pending"))
+                job.ttl_expires_at = self._to_datetime(payload.get("ttl_expires_at"))
+                if payload.get("error") is not None:
+                    job.error = self._serialize(payload.get("error"))
+                else:
+                    job.error = None
+
+                input_manifest = session.get(InputManifest, job_id)
+                if not input_manifest:
+                    input_manifest = InputManifest(job_id=job_id, payload=self._serialize(payload.get("input_manifest", {})))
+                    session.add(input_manifest)
+                else:
+                    input_manifest.payload = self._serialize(payload.get("input_manifest", {}))
+
+                review_notes = session.get(ReviewNotes, job_id)
+                review_payload = payload.get("review_notes", {"flags": [], "assumptions": []})
+                if not review_notes:
+                    review_notes = ReviewNotes(job_id=job_id, payload=self._serialize(review_payload))
+                    session.add(review_notes)
+                else:
+                    review_notes.payload = self._serialize(review_payload)
+
+                existing_drafts = {
+                    d.draft_kind: d
+                    for d in session.execute(
+                        select(Draft).where(Draft.job_id == job_id)
+                    ).scalars().all()
+                }
+                draft_by_kind: Dict[str, Dict[str, Any]] = {}
+                if payload.get("draft") is not None:
+                    draft_by_kind["draft"] = payload["draft"]
+                if payload.get("finalized_draft") is not None:
+                    draft_by_kind["finalized"] = payload["finalized_draft"]
+
+                for draft_kind, draft_payload in draft_by_kind.items():
+                    draft_row = existing_drafts.get(draft_kind)
+                    if not draft_row:
+                        draft_row = Draft(job_id=job_id, draft_kind=draft_kind)
+                        session.add(draft_row)
+                    draft_row.payload = self._serialize(draft_payload)
+                    draft_row.version = int(draft_payload.get("version", 1))
+                    draft_row.generated_at = self._to_datetime(draft_payload.get("generated_at"))
+                    draft_row.user_reconciled_at = self._to_datetime(draft_payload.get("user_reconciled_at"))
+                    draft_row.finalized_at = self._to_datetime(draft_payload.get("finalized_at"))
+                    draft_row.updated_at = self._to_datetime(payload.get("updated_at"))
+
+                existing_run_ids: set[str] = set(
+                    session.execute(
+                        select(AgentRun.agent_run_id).where(AgentRun.job_id == job_id)
+                    ).scalars().all()
+                )
+                for run in payload.get("agent_runs", []):
+                    run_id = run.get("agent_run_id") or str(uuid4())
+                    if run_id in existing_run_ids:
+                        existing = session.get(AgentRun, run_id)
+                        if existing:
+                            existing.agent = run.get("agent", existing.agent)
+                            existing.model = run.get("model", existing.model)
+                            existing.profile = run.get("profile", existing.profile)
+                            existing.status = run.get("status", existing.status)
+                            existing.duration_ms = int(run.get("duration_ms") or 0)
+                            existing.cost_estimate_usd = float(run.get("cost_estimate_usd") or 0.0)
+                            existing.confidence_delta = float(run.get("confidence_delta") or 0.0)
+                            existing.message = run.get("message")
+                            existing.created_at = self._to_datetime(run.get("created_at")) or existing.created_at
+                            existing.updated_at = self._to_datetime(run.get("updated_at") or _utc_now())
+                        continue
+                    existing_run_ids.add(run_id)
+                    session.add(
+                        AgentRun(
+                            agent_run_id=run_id,
+                            job_id=job_id,
+                            agent=run.get("agent", "unknown"),
+                            model=run.get("model", "unknown"),
+                            profile=run.get("profile", "balanced"),
+                            status=run.get("status", "unknown"),
+                            duration_ms=int(run.get("duration_ms") or 0),
+                            cost_estimate_usd=float(run.get("cost_estimate_usd") or 0.0),
+                            confidence_delta=float(run.get("confidence_delta") or 0.0),
+                            message=run.get("message"),
+                            created_at=self._to_datetime(run.get("created_at") or _utc_now()),
+                            updated_at=self._to_datetime(run.get("updated_at")),
+                        )
+                    )
+
+                exports = session.get(ExportPayload, job_id)
+                if payload.get("exports") is not None:
+                    exports_payload = self._serialize(payload.get("exports", {}))
+                    if not exports:
+                        session.add(ExportPayload(job_id=job_id, payload=exports_payload))
+                    else:
+                        exports.payload = exports_payload
+
+                session.flush()
+                persisted_version = int(job.version)
+        except StaleDataError as exc:
+            raise ConcurrentModificationError(f"Concurrent job update detected for {job_id}") from exc
+
+        if persisted_version is not None:
+            payload["version"] = persisted_version
 
     def append_job_event(self, job_id: str, event_type: str, payload: Dict[str, Any]) -> None:
         with session_scope() as session:

@@ -66,3 +66,38 @@ def test_job_events(tmp_path, monkeypatch):
         count = result.scalar()
 
     assert count == 1
+
+
+def test_job_upsert_rejects_stale_version(tmp_path, monkeypatch):
+    db_path = tmp_path / "pfcd-stale.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+
+    _, repo = _reload_modules()
+    from app.job_logic import InputFile, JobCreateRequest, default_job_payload
+
+    repository = repo.JobRepository.from_env()
+    repository.init_db()
+
+    payload = default_job_payload(
+        JobCreateRequest(
+            profile="balanced",
+            input_files=[InputFile(source_type="video", size_bytes=123)],
+        )
+    )
+    job_id = str(uuid4())
+    payload["job_id"] = job_id
+
+    repository.upsert_job(job_id, payload)
+    loaded = repository.get_job(job_id)
+    newer = dict(loaded)
+    newer["status"] = "processing"
+    repository.upsert_job(job_id, newer)
+
+    stale = dict(loaded)
+    stale["status"] = "failed"
+
+    try:
+        repository.upsert_job(job_id, stale)
+        assert False, "Expected stale write to fail"
+    except repo.ConcurrentModificationError:
+        pass
