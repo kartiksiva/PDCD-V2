@@ -6,7 +6,9 @@ import json
 import logging
 import os
 import random
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict
 from uuid import uuid4
 
@@ -262,6 +264,36 @@ def _resolve_phase() -> str:
     return "extracting"
 
 
+def _start_health_server(port: int) -> HTTPServer:
+    """Expose a minimal HTTP endpoint for legacy App Service warmup checks."""
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("0.0.0.0", port), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    logger.info("Legacy warmup listener active on port %d", server.server_port)
+    return server
+
+
+def _maybe_start_health_server() -> HTTPServer | None:
+    port = os.environ.get("WEBSITES_PORT", "").strip()
+    if not port:
+        return None
+    try:
+        return _start_health_server(int(port))
+    except ValueError:
+        logger.warning("Skipping legacy warmup listener: invalid WEBSITES_PORT=%r", port)
+        return None
+
+
 def _connection_backoff_seconds(consecutive_errors: int) -> float:
     """Return bounded exponential backoff with small jitter for reconnect attempts."""
     exponent = min(max(1, consecutive_errors), 6)
@@ -271,6 +303,7 @@ def _connection_backoff_seconds(consecutive_errors: int) -> float:
 
 def run() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    _health_server = _maybe_start_health_server()
     phase = _resolve_phase()
     logger.info(
         "Worker runtime OpenAI config: role=%s endpoint=%s chat_deployment=%s api_version=%s",

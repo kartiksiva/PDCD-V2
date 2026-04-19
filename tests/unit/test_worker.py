@@ -264,6 +264,49 @@ def test_worker_skips_out_of_order_earlier_phase(tmp_path, monkeypatch):
     assert not run_phase_called, "Out-of-order earlier phase should have been skipped"
 
 
+def test_start_health_server_binds_and_starts_thread():
+    """Legacy App Service rollback path needs a background HTTP listener."""
+    from app.workers import runner as runner_mod
+
+    started = []
+    fake_server = MagicMock()
+    fake_server.server_port = 8123
+    fake_thread = MagicMock()
+    fake_thread.start.side_effect = lambda: started.append(True)
+
+    with patch.object(runner_mod, "HTTPServer", return_value=fake_server) as http_server:
+        with patch.object(runner_mod.threading, "Thread", return_value=fake_thread) as thread_cls:
+            server = runner_mod._start_health_server(8000)
+
+    assert server is fake_server
+    http_server.assert_called_once()
+    assert http_server.call_args.args[0] == ("0.0.0.0", 8000)
+    thread_cls.assert_called_once_with(target=fake_server.serve_forever, daemon=True)
+    assert started == [True]
+
+
+def test_maybe_start_health_server_honors_websites_port(monkeypatch):
+    from app.workers import runner as runner_mod
+
+    calls = []
+    monkeypatch.setenv("WEBSITES_PORT", "8123")
+    monkeypatch.setattr(runner_mod, "_start_health_server", lambda port: calls.append(port) or object())
+
+    server = runner_mod._maybe_start_health_server()
+
+    assert server is not None
+    assert calls == [8123]
+
+
+def test_maybe_start_health_server_skips_without_websites_port(monkeypatch):
+    from app.workers import runner as runner_mod
+
+    monkeypatch.delenv("WEBSITES_PORT", raising=False)
+    monkeypatch.setattr(runner_mod, "_start_health_server", lambda port: (_ for _ in ()).throw(AssertionError(port)))
+
+    assert runner_mod._maybe_start_health_server() is None
+
+
 def test_run_recreates_receiver_after_servicebus_error(monkeypatch):
     """run() should recreate the receiver after Service Bus connection failures."""
     from app.workers import runner as runner_mod
