@@ -2080,9 +2080,6 @@ Closed both Codex tasks created from Claude's Section 42 RCA.
 `deploy-workers.yml` `build` job: added `sudo apt-get install -y unixodbc-dev`, `actions/setup-python@v5 (3.11)`, and `pip install --quiet --target backend/antenv/lib/python${PY_MINOR}/site-packages -r backend/requirements.txt` before the zip step; added `rm -rf antenv` after. `antenv/` is included in `worker.zip` (not excluded). Workers now ship fully vendored packages under `WEBSITE_RUN_FROM_PACKAGE` — immune to host/runtime drift. Pattern identical to backend.
 
 Both tasks closed. Board queue now empty.
-
----
-
 ## Section 59: Codex Delivery — GitHub Issue #19 ACR + Container Apps Environment Bootstrap (2026-04-18)
 
 GitHub issue `#19 Provision Azure Container Registry and Container Apps environment` requested a narrow infrastructure bootstrap update ahead of the Container Apps deployment work in `#20` and `#21`.
@@ -2122,3 +2119,73 @@ GitHub issue `#19 Provision Azure Container Registry and Container Apps environm
 
 - The actual repo variable `AZURE_CONTAINER_REGISTRY` and the effective `AcrPush` scope on `AZURE_CREDENTIALS` still need operator-side confirmation in GitHub/Azure; this issue only documents and bootstraps the infra-side expectations.
 - The deferred RBAC helper will report skips until the Container Apps from `#20` and `#21` exist, which is expected for this issue's scope.
+
+---
+
+## Section 62: Codex Delivery — GitHub Issue #20 Backend API to Azure Container Apps (2026-04-19)
+
+Executed the first Container Apps migration slice for the backend API by replacing the App Service package deployment workflow with an image-based Azure Container Apps deployment path.
+
+### Completed
+
+- Rewrote [.github/workflows/deploy-backend.yml](/Users/karthicks/kAgents/Projects/PFCD-V2/.github/workflows/deploy-backend.yml) from App Service zip deploy to Azure Container Apps:
+  - keeps the existing unit/integration + PostgreSQL smoke test gate
+  - installs the Azure Container Apps CLI extension
+  - builds `backend/Dockerfile --target api`
+  - pushes `pfcd-backend-api:${GITHUB_SHA}` to ACR
+  - bootstraps the backend Container App with a public image on first deploy so the system-assigned identity exists before the private-image revision is applied
+  - grants the backend Container App identity `AcrPull` on ACR and `Key Vault Secrets User` on the vault
+  - renders a YAML manifest for the final backend revision with:
+    - external ingress
+    - port `8000`
+    - HTTP `/health` startup/liveness/readiness probes
+    - Key Vault-backed secret refs for `DATABASE_URL`, `AZURE_STORAGE_CONNECTION_STRING`, and `AZURE_SERVICE_BUS_CONNECTION_STRING`
+  - verifies the deployed backend using the ACA FQDN and accepts either `200 {"status":"ok"}` or `503 {"status":"degraded"}` from `/health`
+- Updated [REFERENCE.md](/Users/karthicks/kAgents/Projects/PFCD-V2/REFERENCE.md):
+  - CI/CD section now documents the backend ACA deploy path and the new required GitHub variables
+  - Azure infrastructure table now lists `pfcd-[env]-api` as the active backend Container App while keeping the App Service entry marked as legacy during cutover
+
+### Decisions
+
+- Used a two-step ACA deploy shape (`public bootstrap image` -> `role assignment` -> `private ACR image revision`) because system-assigned managed identities do not exist until the Container App resource is created.
+- Kept runtime secrets Azure-native by referencing Key Vault from the Container App manifest instead of moving `DATABASE_URL`, storage, and Service Bus connection strings into GitHub secrets.
+- Preserved the existing backend app name secret (`AZURE_WEBAPP_NAME`) to keep the migration narrow even though the active resource is now a Container App rather than an App Service Web App.
+
+### Open follow-up
+
+- Worker migration (`#21`) is still required before the platform is fully on Azure Container Apps.
+- `infra/dev-bootstrap.sh` still provisions the legacy App Service plan / web apps by default; that drift should be cleaned up after the ACA backend and worker paths are both stable.
+
+---
+
+## Section 63: Codex Delivery — GitHub Issue #21 Workers to Azure Container Apps + KEDA (2026-04-19)
+
+Executed the worker migration slice by replacing the App Service package deployment workflow and warmup shim with a Container Apps + Service Bus scaling path.
+
+### Completed
+
+- Rewrote [.github/workflows/deploy-workers.yml](/Users/karthicks/kAgents/Projects/PFCD-V2/.github/workflows/deploy-workers.yml) from App Service zip deploy to Azure Container Apps:
+  - keeps the existing unit/integration + PostgreSQL smoke test gate
+  - builds `backend/Dockerfile --target worker`
+  - pushes `pfcd-worker:${GITHUB_SHA}` to ACR
+  - deploys `extracting`, `processing`, and `reviewing` workers through a matrix job
+  - bootstraps each worker Container App with a public image on first deploy so the system-assigned identity exists before the final private-image revision is applied
+  - grants each worker identity `AcrPull`, `Key Vault Secrets User`, and `Azure Service Bus Data Owner`
+  - renders a YAML manifest for the final worker revision with:
+    - ingress disabled
+    - `PFCD_WORKER_ROLE` pinned per worker app
+    - Key Vault-backed secret refs for `DATABASE_URL`, `AZURE_STORAGE_CONNECTION_STRING`, and `AZURE_SERVICE_BUS_CONNECTION_STRING`
+    - an `azure-servicebus` custom scale rule using `identity: system`
+- Removed the App Service-only HTTP warmup shim from [backend/app/workers/runner.py](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/app/workers/runner.py), including its HTTP server and threading imports.
+- Updated [REFERENCE.md](/Users/karthicks/kAgents/Projects/PFCD-V2/REFERENCE.md) so the repo layout, Azure infrastructure, CI/CD notes, and GitHub Actions variable table now describe the worker ACA/KEDA deployment path rather than the old `WEBSITE_RUN_FROM_PACKAGE` flow.
+
+### Decisions
+
+- Kept worker runtime Service Bus access on the existing `AZURE_SERVICE_BUS_CONNECTION_STRING` path to avoid coupling infrastructure migration with a runtime auth rewrite.
+- Used managed identity specifically for the Container Apps Service Bus scaler so queue-depth scaling no longer depends on a scaler-side connection string.
+- Left active queue-processing verification to the live Azure deploy path; the repo change establishes the CI/CD and manifest shape, but production validation still needs a real deployment run.
+
+### Open follow-up
+
+- Confirm the worker ACA YAML is accepted by Azure exactly as written and that each Service Bus queue scales its matching worker from zero.
+- Complete PostgreSQL cutover cleanup (`#27` Part B) now that backend and worker Container App workflows exist in repo.

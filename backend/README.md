@@ -71,8 +71,8 @@ alembic upgrade head
 Required/optional environment variables:
 
 - `DATABASE_URL` (optional, default: `sqlite:///./pfcd.db`)
-- Azure SQL example (ODBC 18):
-  - `mssql+pyodbc://<user>:<password>@<server>:1433/<database>?driver=ODBC+Driver+18+for+SQL+Server`
+- PostgreSQL example:
+  - `postgresql+psycopg://<user>:<password>@<server>:5432/<database>?sslmode=require`
 - `AZURE_STORAGE_CONNECTION_STRING` (optional, enables Blob exports)
 - `AZURE_STORAGE_CONTAINER_EXPORTS` (optional, default: `exports`)
 - `EXPORTS_BASE_PATH` (optional, default: `./storage/exports` for local exports)

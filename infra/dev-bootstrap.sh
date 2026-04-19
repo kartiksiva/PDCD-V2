@@ -26,8 +26,8 @@ SERVICE_BUS_QUEUE_EXTRACTING="${SERVICE_BUS_QUEUE_EXTRACTING:-extracting}"
 SERVICE_BUS_QUEUE_PROCESSING="${SERVICE_BUS_QUEUE_PROCESSING:-processing}"
 SERVICE_BUS_QUEUE_REVIEWING="${SERVICE_BUS_QUEUE_REVIEWING:-reviewing}"
 SERVICE_BUS_SKU="${SERVICE_BUS_SKU:-Standard}"
-SQL_SERVER_NAME="${SQL_SERVER_NAME:-${PROJECT}-${ENVIRONMENT}-sql}"
-SQL_DATABASE_NAME="${SQL_DATABASE_NAME:-${PROJECT}-${ENVIRONMENT}-jobs}"
+POSTGRES_SERVER_NAME="${POSTGRES_SERVER_NAME:-${PROJECT}-${ENVIRONMENT}-pg}"
+POSTGRES_DATABASE_NAME="${POSTGRES_DATABASE_NAME:-${PROJECT}-${ENVIRONMENT}-jobs}"
 KEY_VAULT_NAME="${KEY_VAULT_NAME:-${PROJECT}-${ENVIRONMENT}-kv}"
 OPENAI_ACCOUNT_NAME="${OPENAI_ACCOUNT_NAME:-${PROJECT}-${ENVIRONMENT}-oai}"
 SPEECH_ACCOUNT_NAME="${SPEECH_ACCOUNT_NAME:-${PROJECT}-${ENVIRONMENT}-speech}"
@@ -39,8 +39,12 @@ OPENAI_MODEL_VERSION="${OPENAI_MODEL_VERSION:-2024-07-18}"
 OPENAI_SKU_CAPACITY="${OPENAI_SKU_CAPACITY:-1}"
 OPENAI_SKU_NAME="${OPENAI_SKU_NAME:-GlobalStandard}"
 
-SQL_ADMIN_USER="${SQL_ADMIN_USER:-pfcd_admin}"
-SQL_ADMIN_PASSWORD="${SQL_ADMIN_PASSWORD:-$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24)}"
+POSTGRES_VERSION="${POSTGRES_VERSION:-16}"
+POSTGRES_SKU_NAME="${POSTGRES_SKU_NAME:-Standard_B1ms}"
+POSTGRES_TIER="${POSTGRES_TIER:-Burstable}"
+POSTGRES_STORAGE_SIZE="${POSTGRES_STORAGE_SIZE:-32}"
+POSTGRES_ADMIN_USER="${POSTGRES_ADMIN_USER:-pfcdadmin}"
+POSTGRES_ADMIN_PASSWORD="${POSTGRES_ADMIN_PASSWORD:-$(openssl rand -base64 30 | tr -dc 'A-Za-z0-9' | head -c 24)}"
 
 readonly COMMON_TAGS="Environment=$ENVIRONMENT Project=$PROJECT CostProfile=development"
 
@@ -203,43 +207,49 @@ ensure_key_vault() {
   fi
 }
 
-ensure_sql() {
-  if ! az sql server show --name "$SQL_SERVER_NAME" --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
-    az sql server create \
-      --name "$SQL_SERVER_NAME" \
+ensure_postgres() {
+  if ! az postgres flexible-server show --name "$POSTGRES_SERVER_NAME" --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
+    az postgres flexible-server create \
+      --name "$POSTGRES_SERVER_NAME" \
       --resource-group "$RESOURCE_GROUP" \
       --location "$LOCATION" \
-      --admin-user "$SQL_ADMIN_USER" \
-      --admin-password "$SQL_ADMIN_PASSWORD" \
-      --enable-public-network true \
-      --minimal-tls-version "1.2" \
+      --admin-user "$POSTGRES_ADMIN_USER" \
+      --admin-password "$POSTGRES_ADMIN_PASSWORD" \
+      --sku-name "$POSTGRES_SKU_NAME" \
+      --tier "$POSTGRES_TIER" \
+      --storage-size "$POSTGRES_STORAGE_SIZE" \
+      --version "$POSTGRES_VERSION" \
+      --public-access 0.0.0.0 \
+      --database-name "$POSTGRES_DATABASE_NAME" \
       --output none
   fi
 
-  az sql server update \
-    --name "$SQL_SERVER_NAME" \
+  az postgres flexible-server update \
+    --name "$POSTGRES_SERVER_NAME" \
     --resource-group "$RESOURCE_GROUP" \
-    --admin-password "$SQL_ADMIN_PASSWORD" \
+    --admin-password "$POSTGRES_ADMIN_PASSWORD" \
     --output none \
     || true
 
-  if ! az sql db show --name "$SQL_DATABASE_NAME" --server "$SQL_SERVER_NAME" --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
-    az sql db create \
-      --name "$SQL_DATABASE_NAME" \
+  if ! az postgres flexible-server db show \
       --resource-group "$RESOURCE_GROUP" \
-      --server "$SQL_SERVER_NAME" \
-      --edition Basic \
+      --server-name "$POSTGRES_SERVER_NAME" \
+      --database-name "$POSTGRES_DATABASE_NAME" >/dev/null 2>&1; then
+    az postgres flexible-server db create \
+      --resource-group "$RESOURCE_GROUP" \
+      --server-name "$POSTGRES_SERVER_NAME" \
+      --database-name "$POSTGRES_DATABASE_NAME" \
       --output none
   fi
 
-  az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "sql-admin-user" --value "$SQL_ADMIN_USER" --output none
-  az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "sql-admin-password" --value "$SQL_ADMIN_PASSWORD" --output none
+  az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "postgres-admin-user" --value "$POSTGRES_ADMIN_USER" --output none
+  az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "postgres-admin-password" --value "$POSTGRES_ADMIN_PASSWORD" --output none
 
-  local sql_conn
-  sql_conn="mssql+pyodbc://${SQL_ADMIN_USER}:${SQL_ADMIN_PASSWORD}@${SQL_SERVER_NAME}.database.windows.net:1433/${SQL_DATABASE_NAME}?driver=ODBC+Driver+18+for+SQL+Server&Encrypt=yes&TrustServerCertificate=yes"
-  az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "sql-connection-string" --value "$sql_conn" --output none
+  local postgres_conn
+  postgres_conn="postgresql+psycopg://${POSTGRES_ADMIN_USER}:${POSTGRES_ADMIN_PASSWORD}@${POSTGRES_SERVER_NAME}.postgres.database.azure.com:5432/${POSTGRES_DATABASE_NAME}?sslmode=require"
+  az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "postgres-connection-string" --value "$postgres_conn" --output none
 
-  info "SQL admin password is stored in Key Vault as 'sql-admin-password'"
+  info "PostgreSQL admin password is stored in Key Vault as 'postgres-admin-password'"
 }
 
 ensure_container_registry() {
@@ -401,8 +411,8 @@ ensure_app_service() {
       AZURE_SERVICE_BUS_QUEUE_PROCESSING="$SERVICE_BUS_QUEUE_PROCESSING" \
       AZURE_SERVICE_BUS_QUEUE_REVIEWING="$SERVICE_BUS_QUEUE_REVIEWING" \
       KEYVAULT_NAME="$KEY_VAULT_NAME" \
-      AZURE_SQL_SERVER_NAME="$SQL_SERVER_NAME" \
-      AZURE_SQL_DATABASE_NAME="$SQL_DATABASE_NAME" \
+      AZURE_POSTGRES_SERVER_NAME="$POSTGRES_SERVER_NAME" \
+      AZURE_POSTGRES_DATABASE_NAME="$POSTGRES_DATABASE_NAME" \
       AZURE_OPENAI_ACCOUNT_NAME="$OPENAI_ACCOUNT_NAME" \
       AZURE_SPEECH_ACCOUNT_NAME="$SPEECH_ACCOUNT_NAME" \
       AZURE_OPENAI_CHAT_DEPLOYMENT_NAME="$OPENAI_DEPLOYMENT_NAME" \
@@ -412,7 +422,7 @@ ensure_app_service() {
       AZURE_OPENAI_MODEL_VERSION="$OPENAI_MODEL_VERSION" \
       AZURE_OPENAI_SKU_NAME="$OPENAI_SKU_NAME" \
       APP_COST_PROFILE=development \
-      DATABASE_URL="@Microsoft.KeyVault(SecretUri=https://${KEY_VAULT_NAME}.vault.azure.net/secrets/sql-connection-string)" \
+      DATABASE_URL="@Microsoft.KeyVault(SecretUri=https://${KEY_VAULT_NAME}.vault.azure.net/secrets/postgres-connection-string)" \
       AZURE_STORAGE_CONNECTION_STRING="@Microsoft.KeyVault(SecretUri=https://${KEY_VAULT_NAME}.vault.azure.net/secrets/storage-connection-string)" \
       AZURE_SERVICE_BUS_CONNECTION_STRING="@Microsoft.KeyVault(SecretUri=https://${KEY_VAULT_NAME}.vault.azure.net/secrets/service-bus-connection-string)" \
       AZURE_STORAGE_CONTAINER_EXPORTS="exports" \
@@ -473,8 +483,8 @@ ensure_app_service() {
         AZURE_SERVICE_BUS_QUEUE_PROCESSING="$SERVICE_BUS_QUEUE_PROCESSING" \
         AZURE_SERVICE_BUS_QUEUE_REVIEWING="$SERVICE_BUS_QUEUE_REVIEWING" \
         KEYVAULT_NAME="$KEY_VAULT_NAME" \
-        AZURE_SQL_SERVER_NAME="$SQL_SERVER_NAME" \
-        AZURE_SQL_DATABASE_NAME="$SQL_DATABASE_NAME" \
+        AZURE_POSTGRES_SERVER_NAME="$POSTGRES_SERVER_NAME" \
+        AZURE_POSTGRES_DATABASE_NAME="$POSTGRES_DATABASE_NAME" \
         AZURE_OPENAI_ACCOUNT_NAME="$OPENAI_ACCOUNT_NAME" \
         AZURE_SPEECH_ACCOUNT_NAME="$SPEECH_ACCOUNT_NAME" \
         AZURE_OPENAI_ENDPOINT="https://${OPENAI_ACCOUNT_NAME}.openai.azure.com/" \
@@ -487,7 +497,7 @@ ensure_app_service() {
         APP_COST_PROFILE=development \
         WEBSITES_CONTAINER_START_TIME_LIMIT=600 \
         WEBSITES_PORT=8000 \
-        DATABASE_URL="@Microsoft.KeyVault(SecretUri=https://${KEY_VAULT_NAME}.vault.azure.net/secrets/sql-connection-string)" \
+        DATABASE_URL="@Microsoft.KeyVault(SecretUri=https://${KEY_VAULT_NAME}.vault.azure.net/secrets/postgres-connection-string)" \
         AZURE_STORAGE_CONNECTION_STRING="@Microsoft.KeyVault(SecretUri=https://${KEY_VAULT_NAME}.vault.azure.net/secrets/storage-connection-string)" \
         AZURE_SERVICE_BUS_CONNECTION_STRING="@Microsoft.KeyVault(SecretUri=https://${KEY_VAULT_NAME}.vault.azure.net/secrets/service-bus-connection-string)" \
         AZURE_STORAGE_CONTAINER_EXPORTS="exports" \
@@ -579,7 +589,7 @@ ensure_rg
 ensure_storage_account
 ensure_servicebus
 ensure_key_vault
-ensure_sql
+ensure_postgres
 ensure_container_registry
 ensure_log_analytics_workspace
 ensure_container_apps_environment
@@ -593,12 +603,3 @@ echo "Container registry: ${CONTAINER_REGISTRY_NAME}.azurecr.io"
 echo "Container Apps environment: ${CONTAINER_APPS_ENVIRONMENT_NAME}"
 az resource show --ids "/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.Web/sites/$WEBAPP_NAME" --query "defaultHostName" -o tsv | sed 's|^|API host: https://|' | sed 's|$|/|' | tr -d '\n'
 echo
-  if ! az sql server firewall-rule show --resource-group "$RESOURCE_GROUP" --server "$SQL_SERVER_NAME" --name "AllowAzureServices" >/dev/null 2>&1; then
-    az sql server firewall-rule create \
-      --resource-group "$RESOURCE_GROUP" \
-      --server "$SQL_SERVER_NAME" \
-      --name "AllowAzureServices" \
-      --start-ip-address "0.0.0.0" \
-      --end-ip-address "0.0.0.0" \
-      --output none
-  fi
