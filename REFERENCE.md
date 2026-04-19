@@ -71,7 +71,7 @@ PDCD-V2/
 │   └── workflows/
 │       ├── deploy-backend.yml
 │       ├── deploy-frontend.yml
-│       └── deploy-workers.yml  # parallel worker App Service deployments
+│       └── deploy-workers.yml  # worker Container Apps + queue-scaling deployments
 ├── prd.md
 ├── AGENTS.md
 ├── GEMINI.md
@@ -273,21 +273,27 @@ Pass `SP_CLIENT_ID=<github-actions-service-principal-client-id>` when you want t
 **File:** `.github/workflows/deploy-workers.yml`
 
 - Triggers on push to `main` with changes under `backend/**`
-- Builds one worker zip, uploads it to the storage account `scratch` container, writes a SAS-backed package URL artifact, then deploys in parallel to `pfcd-dev-worker-extracting`, `pfcd-dev-worker-processing`, `pfcd-dev-worker-reviewing` via `WEBSITE_RUN_FROM_PACKAGE`
-- Required secrets: `AZURE_CREDENTIALS`, `AZURE_RESOURCE_GROUP`, `AZURE_WORKER_EXTRACTING_NAME`, `AZURE_WORKER_PROCESSING_NAME`, `AZURE_WORKER_REVIEWING_NAME`
-- Required GitHub Actions variable: `AZURE_STORAGE_ACCOUNT`
+- Runs the SQLite-backed unit/integration suite plus a PostgreSQL smoke path before deploy
+- Builds `backend/Dockerfile --target worker`, pushes `pfcd-worker:${GITHUB_SHA}` to ACR, and deploys the three worker roles through a matrix job
+- Bootstraps each worker Container App with a public image on first deploy so the system-assigned identity exists before assigning `AcrPull`, `Key Vault Secrets User`, and `Azure Service Bus Data Owner`
+- Applies the final worker runtime as a YAML-based Container App update with:
+  - ingress disabled
+  - `PFCD_WORKER_ROLE` pinned per app (`extracting`, `processing`, `reviewing`)
+  - Key Vault-backed secret refs for `DATABASE_URL`, `AZURE_STORAGE_CONNECTION_STRING`, and `AZURE_SERVICE_BUS_CONNECTION_STRING`
+  - an `azure-servicebus` custom scale rule using `identity: system`, `messageCount: 1`, and the matching queue name
+- Required secrets / vars: `AZURE_CREDENTIALS`, `AZURE_RESOURCE_GROUP`, `AZURE_WORKER_EXTRACTING_NAME`, `AZURE_WORKER_PROCESSING_NAME`, `AZURE_WORKER_REVIEWING_NAME`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME` (or deprecated alias), `AZURE_CONTAINER_REGISTRY`, `AZURE_CONTAINER_APPS_ENVIRONMENT`, `AZURE_STORAGE_ACCOUNT`, `AZURE_KEY_VAULT_NAME`, `AZURE_SERVICE_BUS_NAMESPACE`, `AZURE_OPENAI_ACCOUNT_NAME`, `AZURE_SPEECH_ACCOUNT_NAME`
 
 ### GitHub Variables
 
 | Variable | Used by | Purpose |
 |----------|---------|---------|
 | `AZURE_STORAGE_ACCOUNT` | `deploy-backend.yml`, `deploy-workers.yml` | Storage account resource name surfaced to the runtime, e.g. `pfcddevstorage` |
-| `AZURE_CONTAINER_REGISTRY` | `deploy-backend.yml`, upcoming Container Apps worker workflows | ACR login server for image push/pull, e.g. `pfcddevregistry.azurecr.io` |
-| `AZURE_CONTAINER_APPS_ENVIRONMENT` | `deploy-backend.yml`, upcoming Container Apps worker workflows | Shared ACA environment name, e.g. `pfcd-dev-env` |
-| `AZURE_KEY_VAULT_NAME` | `deploy-backend.yml`, upcoming Container Apps worker workflows | Key Vault name used for ACA secret refs, e.g. `pfcd-dev-kv` |
-| `AZURE_SERVICE_BUS_NAMESPACE` | `deploy-backend.yml`, upcoming Container Apps worker workflows | Service Bus namespace name surfaced to the runtime, e.g. `pfcd-dev-bus` |
-| `AZURE_OPENAI_ACCOUNT_NAME` | `deploy-backend.yml`, upcoming Container Apps worker workflows | Azure OpenAI account name used by `/health` diagnostics |
-| `AZURE_SPEECH_ACCOUNT_NAME` | `deploy-backend.yml`, upcoming Container Apps worker workflows | Azure Speech account name used by `/health` diagnostics |
+| `AZURE_CONTAINER_REGISTRY` | `deploy-backend.yml`, `deploy-workers.yml` | ACR login server for image push/pull, e.g. `pfcddevregistry.azurecr.io` |
+| `AZURE_CONTAINER_APPS_ENVIRONMENT` | `deploy-backend.yml`, `deploy-workers.yml` | Shared ACA environment name, e.g. `pfcd-dev-env` |
+| `AZURE_KEY_VAULT_NAME` | `deploy-backend.yml`, `deploy-workers.yml` | Key Vault name used for ACA secret refs, e.g. `pfcd-dev-kv` |
+| `AZURE_SERVICE_BUS_NAMESPACE` | `deploy-backend.yml`, `deploy-workers.yml` | Service Bus namespace name surfaced to the runtime and KEDA scaler, e.g. `pfcd-dev-bus` |
+| `AZURE_OPENAI_ACCOUNT_NAME` | `deploy-backend.yml`, `deploy-workers.yml` | Azure OpenAI account name used by `/health` diagnostics and runtime env parity |
+| `AZURE_SPEECH_ACCOUNT_NAME` | `deploy-backend.yml`, `deploy-workers.yml` | Azure Speech account name used by `/health` diagnostics and runtime env parity |
 
 ---
 
