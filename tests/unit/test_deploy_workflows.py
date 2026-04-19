@@ -42,6 +42,8 @@ def test_worker_workflow_uses_override_queue_values_in_env_and_scaler():
     assert "SERVICE_BUS_QUEUE_PROCESSING" in workflow
     assert "SERVICE_BUS_QUEUE_REVIEWING" in workflow
     assert 'echo "WORKER_QUEUE_NAME=${{ matrix.role }}"' not in workflow
+    assert 'value: "${WORKER_QUEUE_NAME}"' not in workflow
+    assert 'value: "${{ matrix.role }}"' in workflow
     assert 'value: "extracting"' not in workflow
     assert 'value: "processing"' not in workflow
     assert 'value: "reviewing"' not in workflow

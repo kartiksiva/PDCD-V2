@@ -2227,3 +2227,29 @@ Remediated the four deployment-path regressions found after the ACA migration re
 
 - ACA revision/replica verification is based on Azure revision and replica state surfaced by the CLI/API; a live deploy is still needed to confirm the exact state transitions in this environment.
 - The legacy App Service rollback path is now compatible with warmup again, but it remains a rollback-only path and should still be exercised in Azure before being relied on during an incident.
+
+---
+
+## Section 65: Codex Delivery — PR #35 Review Fix for Queue Override Runtime Regression (2026-04-19)
+
+Addressed the blocking review comment on PR `#35` after verifying the workflow/runtime contract mismatch in the worker role env handling.
+
+### Completed
+
+- Corrected [.github/workflows/deploy-workers.yml](/Users/karthicks/kAgents/Projects/PFCD-V2/.github/workflows/deploy-workers.yml) so worker runtime phase selection stays on the logical matrix role:
+  - `PFCD_WORKER_ROLE` now remains `extracting` / `processing` / `reviewing`
+  - custom queue names continue to flow only through the `AZURE_SERVICE_BUS_QUEUE_*` env vars and the ACA scaler `queueName` metadata
+- Expanded [tests/unit/test_deploy_workflows.py](/Users/karthicks/kAgents/Projects/PFCD-V2/tests/unit/test_deploy_workflows.py) to lock the fix:
+  - rejects `${WORKER_QUEUE_NAME}` as the `PFCD_WORKER_ROLE` source
+  - requires the workflow to keep the logical matrix role for `PFCD_WORKER_ROLE`
+
+### Why
+
+- `backend/app/workers/runner.py` and `backend/app/servicebus.py` treat `PFCD_WORKER_ROLE` as the logical phase key used to select queue config attributes.
+- Feeding a custom queue name into `PFCD_WORKER_ROLE` breaks `getattr(queue_config, phase)` for override deployments even though the default queue names still appeared to work.
+
+### Validation
+
+- `cd /tmp/pfcd-v2-issue34 && /Users/karthicks/kAgents/Projects/PFCD-V2/backend/.venv/bin/pytest tests/unit/test_worker.py tests/unit/test_deploy_workflows.py -v`
+- `cd /tmp/pfcd-v2-issue34 && ruby -e 'require "yaml"; YAML.load_file(".github/workflows/deploy-backend.yml"); YAML.load_file(".github/workflows/deploy-workers.yml")'`
+- `cd /tmp/pfcd-v2-issue34 && git diff --check`

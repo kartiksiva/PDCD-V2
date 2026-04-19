@@ -290,7 +290,7 @@ jobs:
                   image: ${WORKER_IMAGE}
                   env:
                     - name: PFCD_WORKER_ROLE
-                      value: "${WORKER_QUEUE_NAME}"
+                      value: "${{ matrix.role }}"
                     - name: PFCD_API_KEY
                       value: "${PFCD_API_KEY_VALUE}"
                     - name: DATABASE_URL
