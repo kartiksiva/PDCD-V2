@@ -2648,3 +2648,38 @@ Implemented the operational baseline requested in issue #16 across backend, infr
 
 - Kept readiness checks deterministic and local-process safe (config + local capability checks) to avoid introducing network-dependent flakiness in health endpoints.
 - Implemented alert baseline creation as idempotent/best-effort with graceful fallback when monitor extensions or notification channels are unavailable.
+
+## Section 75: Issue #9 — SAS/Blob-First Ingestion + `upload-url` Contract (2026-04-20)
+
+Implemented the upload-contract migration requested by issue #9 while preserving existing `/api/jobs*` lifecycle behavior.
+
+### Completed
+
+- Backend API updates in `backend/app/main.py`:
+  - added `POST /api/jobs/{job_id}/upload-url` returning a time-limited upload contract:
+    - `upload_id`, file metadata, storage key, expiry
+    - upload transport contract (`method`, `url`, `headers`, `requires_api_auth`)
+  - added `PUT /api/uploads/{upload_id}/content` for local/dev relay uploads
+  - added upload-manifest persistence (`UPLOAD_META_DIR`) to track upload metadata and storage mapping by `upload_id`
+  - added blob-mode contract generation (SAS URL) when storage connection string includes account key
+  - added blob/local existence checks during `create_job` upload-id resolution
+  - preserved legacy `POST /api/upload` and made it write the same upload manifest format for backward compatibility
+- Frontend updates:
+  - `frontend/src/api.js`: `uploadFile()` now uses two-step flow:
+    - request upload contract from `POST /api/jobs/{job_id}/upload-url`
+    - upload bytes with `PUT` to returned URL
+  - `frontend/src/components/CreateJob.jsx`: passes `sourceType` into `uploadFile()` while keeping existing `createJob()` payload contract unchanged
+- Integration tests:
+  - `tests/integration/test_lifecycle.py`:
+    - added happy-path test for upload-url flow (`upload-url` -> `PUT` -> `create_job`)
+    - added rejection test when `upload_id` exists but content is not uploaded
+
+### Validation
+
+- `pytest tests/integration/test_lifecycle.py tests/integration/test_error_cases.py -q` → `31 passed`
+
+### Decisions
+
+- Kept `/api/upload` active to avoid breaking existing callers while migrating frontend to `upload-url`.
+- Implemented a local relay upload path (`/api/uploads/{upload_id}/content`) as fallback when direct blob SAS generation is unavailable (for example local/integration environments).
+- Scoped blob verification to existence checks during `create_job` so upload lifecycle remains deterministic without introducing new async callbacks/webhooks.

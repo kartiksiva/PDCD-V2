@@ -8,14 +8,16 @@ import logging
 import os
 import tempfile
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 from uuid import uuid4
 
 import anyio
-from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,9 @@ from app.storage import ExportStorage
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 ALLOWED_FORMATS = {"json", "markdown", "pdf", "docx"}
 UPLOADS_DIR = os.environ.get("UPLOADS_DIR", "./storage/uploads")
+UPLOAD_META_DIR = os.environ.get("UPLOAD_META_DIR", os.path.join(UPLOADS_DIR, "_manifest"))
+UPLOAD_SAS_EXPIRY_MINUTES = max(1, int(os.environ.get("PFCD_UPLOAD_SAS_EXPIRY_MINUTES", "30")))
+UPLOAD_CONTAINER = os.environ.get("AZURE_STORAGE_CONTAINER_UPLOADS", "uploads")
 
 JOB_REPO = JobRepository.from_env()
 EXPORT_STORAGE = ExportStorage.from_env()
@@ -86,22 +91,180 @@ def _resolve_upload_path(upload_id: str, file_name: str | None) -> str:
     return os.path.join(UPLOADS_DIR, upload_id, file_part)
 
 
+def _upload_manifest_path(upload_id: str) -> str:
+    safe_id = os.path.basename(upload_id.replace("\\", "/")).strip()
+    if not safe_id or safe_id != upload_id:
+        raise ValueError(f"Invalid upload id: {upload_id!r}")
+    return os.path.join(UPLOAD_META_DIR, f"{safe_id}.json")
+
+
+def _parse_iso8601(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _save_upload_manifest(upload_id: str, payload: Dict[str, Any]) -> None:
+    os.makedirs(UPLOAD_META_DIR, exist_ok=True)
+    with open(_upload_manifest_path(upload_id), "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=True, separators=(",", ":"))
+
+
+def _load_upload_manifest(upload_id: str) -> Dict[str, Any] | None:
+    manifest_path = _upload_manifest_path(upload_id)
+    if not os.path.isfile(manifest_path):
+        return None
+    with open(manifest_path, "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _update_upload_manifest(upload_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+    manifest = _load_upload_manifest(upload_id)
+    if not manifest:
+        raise HTTPException(status_code=404, detail=f"Upload id {upload_id!r} was not found.")
+    manifest.update(updates)
+    _save_upload_manifest(upload_id, manifest)
+    return manifest
+
+
+def _parse_storage_connection_string() -> Dict[str, str]:
+    raw = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "")
+    parts: Dict[str, str] = {}
+    for chunk in raw.split(";"):
+        if "=" not in chunk:
+            continue
+        key, value = chunk.split("=", 1)
+        parts[key] = value
+    return parts
+
+
+def _build_blob_upload_contract(job_id: str, upload_id: str, safe_name: str, mime_type: str) -> Dict[str, Any] | None:
+    try:
+        from azure.storage.blob import BlobSasPermissions, BlobServiceClient, generate_blob_sas
+    except Exception:
+        return None
+
+    conn = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
+    conn_parts = _parse_storage_connection_string()
+    account_name = conn_parts.get("AccountName") or os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
+    account_key = conn_parts.get("AccountKey")
+    if not conn or not account_name or not account_key:
+        return None
+
+    blob_name = f"{job_id}/{upload_id}/{safe_name}"
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=UPLOAD_SAS_EXPIRY_MINUTES)
+    blob_service = BlobServiceClient.from_connection_string(conn)
+    container_client = blob_service.get_container_client(UPLOAD_CONTAINER)
+    try:
+        container_client.create_container()
+    except Exception:
+        pass
+
+    sas_token = generate_blob_sas(
+        account_name=account_name,
+        container_name=UPLOAD_CONTAINER,
+        blob_name=blob_name,
+        account_key=account_key,
+        permission=BlobSasPermissions(create=True, write=True),
+        expiry=expires_at,
+    )
+    blob_client = blob_service.get_blob_client(UPLOAD_CONTAINER, blob_name)
+    return {
+        "mode": "blob",
+        "storage_key": blob_name,
+        "upload": {
+            "method": "PUT",
+            "url": f"{blob_client.url}?{sas_token}",
+            "headers": {
+                "x-ms-blob-type": "BlockBlob",
+                "Content-Type": mime_type,
+            },
+            "requires_api_auth": False,
+        },
+        "expires_at": expires_at.isoformat(),
+    }
+
+
+def _blob_upload_exists(blob_name: str) -> bool:
+    try:
+        from azure.storage.blob import BlobServiceClient
+    except Exception:
+        return False
+    conn = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
+    if not conn:
+        return False
+    try:
+        blob_service = BlobServiceClient.from_connection_string(conn)
+        blob_client = blob_service.get_blob_client(UPLOAD_CONTAINER, blob_name)
+        blob_client.get_blob_properties()
+        return True
+    except Exception:
+        return False
+
+
+def _build_local_upload_contract(upload_id: str, safe_name: str, mime_type: str) -> Dict[str, Any]:
+    storage_key = _resolve_upload_path(upload_id, safe_name)
+    return {
+        "mode": "local_api",
+        "storage_key": storage_key,
+        "upload": {
+            "method": "PUT",
+            "url": f"/api/uploads/{upload_id}/content",
+            "headers": {
+                "Content-Type": mime_type,
+            },
+            "requires_api_auth": True,
+        },
+        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=UPLOAD_SAS_EXPIRY_MINUTES)).isoformat(),
+    }
+
+
 def _resolve_input_files(payload: JobCreateRequest) -> JobCreateRequest:
     resolved_inputs = []
     for item in payload.input_files:
         resolved = item.model_copy(deep=True)
         if resolved.upload_id:
-            storage_key = _resolve_upload_path(resolved.upload_id, resolved.file_name)
-            if not os.path.isfile(storage_key):
+            manifest = _load_upload_manifest(resolved.upload_id)
+            if manifest:
+                if manifest.get("mode") == "blob":
+                    storage_key = manifest.get("storage_key")
+                    if not storage_key or not _blob_upload_exists(storage_key):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"input_files upload_id {resolved.upload_id!r} has no uploaded blob content.",
+                        )
+                else:
+                    storage_key = manifest.get("storage_key")
+                    if not storage_key or not os.path.isfile(storage_key):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"input_files upload_id {resolved.upload_id!r} has no uploaded local content.",
+                        )
+                resolved.storage_key = storage_key
+                if not resolved.file_name:
+                    resolved.file_name = manifest.get("file_name")
+                if not resolved.size_bytes:
+                    resolved.size_bytes = int(manifest.get("size_bytes") or 0)
+                if not resolved.mime_type:
+                    resolved.mime_type = manifest.get("mime_type")
+                resolved_inputs.append(resolved)
+                continue
+
+            # Backward-compatible fallback for legacy /api/upload path.
+            legacy_storage_key = _resolve_upload_path(resolved.upload_id, resolved.file_name)
+            if not os.path.isfile(legacy_storage_key):
                 raise HTTPException(
                     status_code=400,
                     detail=f"input_files upload_id {resolved.upload_id!r} does not reference an existing upload.",
                 )
-            resolved.storage_key = storage_key
+            resolved.storage_key = legacy_storage_key
             if not resolved.file_name:
-                resolved.file_name = os.path.basename(storage_key)
+                resolved.file_name = os.path.basename(legacy_storage_key)
             if not resolved.size_bytes:
-                resolved.size_bytes = os.path.getsize(storage_key)
+                resolved.size_bytes = os.path.getsize(legacy_storage_key)
         resolved_inputs.append(resolved)
     return payload.model_copy(update={"input_files": resolved_inputs})
 
@@ -285,6 +448,94 @@ MIME_TO_SOURCE_TYPE: Dict[str, str] = {
 }
 
 
+class UploadUrlRequest(BaseModel):
+    file_name: str = Field(min_length=1, max_length=512)
+    size_bytes: int = Field(gt=0, le=MAX_UPLOAD_BYTES)
+    mime_type: Optional[str] = None
+    source_type: Optional[str] = None
+    document_type: Optional[str] = "video"
+
+
+@api_router.post("/jobs/{job_id}/upload-url", status_code=201)
+async def create_upload_url(job_id: str, payload: UploadUrlRequest) -> Dict[str, Any]:
+    upload_id = str(uuid4())
+    safe_name = _safe_upload_name(payload.file_name)
+    mime_type = payload.mime_type or "application/octet-stream"
+    source_type = payload.source_type or MIME_TO_SOURCE_TYPE.get(mime_type, "document")
+
+    contract = _build_blob_upload_contract(job_id, upload_id, safe_name, mime_type)
+    if not contract:
+        contract = _build_local_upload_contract(upload_id, safe_name, mime_type)
+
+    manifest = {
+        "upload_id": upload_id,
+        "job_id": job_id,
+        "file_name": safe_name,
+        "size_bytes": payload.size_bytes,
+        "mime_type": mime_type,
+        "source_type": source_type,
+        "document_type": payload.document_type or "video",
+        "storage_key": contract["storage_key"],
+        "mode": contract["mode"],
+        "uploaded_at": None,
+        "expires_at": contract["expires_at"],
+        "created_at": _utc_now(),
+    }
+    _save_upload_manifest(upload_id, manifest)
+    return {
+        "upload_id": upload_id,
+        "job_id": job_id,
+        "file_name": safe_name,
+        "size_bytes": payload.size_bytes,
+        "mime_type": mime_type,
+        "source_type": source_type,
+        "storage_key": contract["storage_key"],
+        "expires_at": contract["expires_at"],
+        "upload": contract["upload"],
+    }
+
+
+@api_router.put("/uploads/{upload_id}/content", status_code=201)
+async def upload_content_via_api(upload_id: str, request: Request) -> Dict[str, Any]:
+    manifest = _load_upload_manifest(upload_id)
+    if not manifest:
+        raise HTTPException(status_code=404, detail=f"Upload id {upload_id!r} was not found.")
+    if manifest.get("mode") != "local_api":
+        raise HTTPException(status_code=409, detail="Upload content must be written to blob URL for this upload id.")
+    expires_at = _parse_iso8601(manifest.get("expires_at"))
+    if expires_at and expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=410, detail="Upload URL has expired.")
+
+    body = await request.body()
+    size_bytes = len(body)
+    if size_bytes > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds 500MB limit.")
+    expected_size = int(manifest.get("size_bytes") or 0)
+    if expected_size and expected_size != size_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Upload size mismatch for {upload_id}: expected {expected_size}, got {size_bytes}",
+        )
+
+    storage_key = manifest["storage_key"]
+    await anyio.to_thread.run_sync(lambda: os.makedirs(os.path.dirname(storage_key), exist_ok=True))
+
+    def _write() -> None:
+        with open(storage_key, "wb") as fh:
+            fh.write(body)
+
+    await anyio.to_thread.run_sync(_write)
+    updated = _update_upload_manifest(upload_id, {"uploaded_at": _utc_now()})
+    return {
+        "upload_id": upload_id,
+        "file_name": updated["file_name"],
+        "size_bytes": size_bytes,
+        "mime_type": updated["mime_type"],
+        "source_type": updated.get("source_type", "document"),
+        "location": storage_key,
+    }
+
+
 @api_router.post("/upload", status_code=201)
 async def upload_file(file: UploadFile = File(...)) -> Dict[str, Any]:
     upload_id = str(uuid4())
@@ -303,6 +554,23 @@ async def upload_file(file: UploadFile = File(...)) -> Dict[str, Any]:
     await anyio.to_thread.run_sync(_write)
 
     source_type = MIME_TO_SOURCE_TYPE.get(file.content_type or "", "document")
+    _save_upload_manifest(
+        upload_id,
+        {
+            "upload_id": upload_id,
+            "job_id": None,
+            "file_name": safe_name,
+            "size_bytes": size_bytes,
+            "mime_type": file.content_type,
+            "source_type": source_type,
+            "document_type": "video",
+            "storage_key": dest_path,
+            "mode": "local_api",
+            "uploaded_at": _utc_now(),
+            "expires_at": None,
+            "created_at": _utc_now(),
+        },
+    )
     return {
         "upload_id": upload_id,
         "file_name": safe_name,

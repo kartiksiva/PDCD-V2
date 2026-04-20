@@ -5,19 +5,26 @@
 At the start of every session, before writing any code:
 
 1. Read `AGENTS.md` (this file)
-2. Read `HANDOVER.md` — work assignment board; pick up items from "Assigned to Codex"
-3. Read `IMPLEMENTATION_SUMMARY.md` — rolling log of what has been built and what remains
-4. Read `prd.md` — authoritative requirements; never modify requirements, only the progress table
-5. Read `REFERENCE.md` on demand — file layout, env vars, API/data model, Azure infra, CI/CD
+2. Read `IMPLEMENTATION_SUMMARY.md` — rolling log of what has been built and what remains
+3. Read `prd.md` — authoritative requirements; never modify requirements, only the progress table
+4. Read `REFERENCE.md` on demand — file layout, env vars, API/data model, Azure infra, CI/CD
+
+## Issue Workflow (MANDATORY)
+
+For every GitHub issue, always follow this exact order:
+
+1. `git checkout main`
+2. `git pull origin main`
+3. Create a new branch for the issue (example: `codex/issue-9-upload-url`)
+4. Implement only the issue scope on that branch
+5. Run relevant tests and record exact commands/results
+6. Update the GitHub issue with progress/completion notes
+7. Open a pull request from the issue branch to `main`
 
 After completing work:
-- `HANDOVER.md` → move item from "Assigned to Codex" / "In Progress" to "Ready for Claude Review"
 - `IMPLEMENTATION_SUMMARY.md` → append what was built, decisions made, open questions
 
-When picking up an assignment:
-- `HANDOVER.md` → move item from "Assigned to Codex" to "In Progress"
-
-Shared logs are append-only to avoid overwrite conflicts between agents.
+`HANDOVER.md` is deprecated. Do not use it for issue tracking or status transitions.
 
 ## Implementation Status
 - Active implementation details and progress history are maintained in `IMPLEMENTATION_SUMMARY.md`.
@@ -94,3 +101,71 @@ PR expectations:
 - Keep secrets (Azure keys, storage SAS, DB creds) in environment variables or Key Vault, never in repo files.
 - Track environment differences (`local`, `staging`, `production`) with explicit profiles.
 - Redact transcript/video identifiers in logs by default.
+
+
+<claude-mem-context>
+# Memory Context
+
+# [PFCD-V2] recent context, 2026-04-20 3:02pm GMT+5:30
+
+Legend: 🎯session 🔴bugfix 🟣feature 🔄refactor ✅change 🔵discovery ⚖️decision
+Format: ID TIME TYPE TITLE
+Fetch details: get_observations([IDs]) | Search: mem-search skill
+
+Stats: 50 obs (18,078t read) | 335,221t work | 95% savings
+
+### Apr 19, 2026
+283 11:04p 🔴 Critical GHCO Bundle — 5 Security/Concurrency Bugs Fixed on codex/fix-critical-ghco-issues
+284 " 🔵 gh CLI Token Still Invalid — PR Creation Blocked Again
+285 " ⚖️ Optimistic Locking — Single Job-Level Lock, Separate Draft Version
+288 11:05p ✅ Critical GHCO Bug Bundle — 20 Files Staged for Commit
+289 " ✅ Critical GHCO Issues #36-#40 Committed to Branch
+### Apr 20, 2026
+294 9:24a 🔵 PFCD-V2 docker-compose.local.yml — Full Service + Env Var Map Confirmed
+295 " 🔵 PFCD-V2 Required Env Vars for Local Docker — Minimum Set to Unblock Stuck Queue Item
+297 9:25a 🔵 PFCD-V2 Docker Stack Missing Worker Services — Root Cause of Stuck Queue Item
+298 " 🔵 PFCD-V2 /dev/simulate Endpoint — Local Dev Escape Hatch for Queue-Stuck Jobs
+300 9:27a 🔵 PFCD-V2 Live /health Probe — 6 Missing Env Vars Confirmed on Running Docker Stack
+301 " 🔵 PFCD-V2 Stuck Job e97bbf65 — Full State Confirmed via Live API
+302 " 🔵 backend/docker-compose.smoke.yml — Worker Service Pattern for Local Docker with Real Workers
+304 9:50a 🔵 PFCD-V2 Local Docker API — SQLite Missing jobs.version Column
+305 9:51a 🔵 PFCD-V2 Local SQLite DB — Alembic Migration History Absent, Table Pre-exists Without version Column
+308 " 🔵 PFCD-V2 Local SQLite Schema — Confirmed Missing version Column, Full Migration Chain Mapped
+309 " 🔴 PFCD-V2 Local SQLite Schema Repaired — jobs.version Column Added Without Data Loss
+312 9:53a 🔵 PFCD-V2 Local Docker Stack — Post-Migration State and Remaining Gaps
+315 9:55a 🟣 docker-compose.local.yml — Three Worker Services Added for Full Local Pipeline
+317 9:59a 🟣 PFCD-V2 Local Docker Stack — All 5 Containers Running Including 3 Workers
+318 " 🔵 PFCD-V2 Workers — All Three Connected to Azure Service Bus and Listening
+319 " 🟣 Job e97bbf65 Manually Re-enqueued to Extracting Queue
+322 10:00a 🔵 PFCD-V2 Pipeline — Extracting Succeeds, Processing Permanently Fails on OpenAI 429 Quota Exceeded
+324 " 🔵 PFCD-V2 Local Stack — PFCD_PROVIDER=openai Set in .env.docker.local, OpenAI Account Has No Quota
+326 10:13a 🔵 PFCD-V2 Local Docker Stack — All 5 Containers Running, Workers Connected to Service Bus
+327 " 🔵 PFCD-V2 Worker-Processing Env — Provider Mismatch Confirmed: openai + Azure Endpoint
+329 " 🔵 Two Different OPENAI_API_KEY Values — Shell Env vs .env.docker.local
+331 10:14a ✅ PFCD-V2 Stack Restarted with Shell OPENAI_API_KEY Unset — Containers Pick Key from .env.docker.local Only
+333 " 🔵 Worker-Processing Now Receives .env.docker.local Key — But PFCD_PROVIDER Still "openai"
+335 10:15a 🔵 Job e97bbf65 Full Failure Trace — SK Uses OpenAIChatCompletion Despite provider_effective=azure_openai
+337 " 🔵 sk-proj- API Key Works for gpt-4o-mini — gpt-5.4-mini Fails with max_tokens Incompatibility
+341 10:16a 🔴 .env.docker.local Model Names Downgraded — gpt-5.4-mini → gpt-4o-mini, gpt-5.4 → gpt-4o
+344 " ✅ PFCD-V2 Stack Restarted — Workers Now Use gpt-4o-mini/gpt-4o, Correct API Key Confirmed
+346 10:20a 🔵 extraction.py and processing.py — SK Connector Uses OpenAIChatPromptExecutionSettings, No max_tokens Passed
+347 " 🔵 Installed SK OpenAIChatPromptExecutionSettings Supports Both max_tokens and max_completion_tokens
+350 " 🟣 extraction.py and processing.py — max_completion_tokens Added via PFCD_MAX_COMPLETION_TOKENS Env Var
+354 10:22a 🔵 PFCD-V2 API Container Storage Path — /app/storage/uploads/manual/ Confirmed Writable
+356 1:34p 🟣 Issue #16 — Readiness Probe + App Insights + Alerting Baseline Implemented
+357 2:01p ✅ Issue #16 Readiness + Monitoring Committed on codex/issue-16-readiness-appinsights-alerts
+358 2:29p ✅ Issue #16 Draft PR #56 Created — Readiness Probe + Monitoring Baseline
+359 " 🔵 GET /health/readiness — Full Contract and Response Schema
+361 2:47p 🔵 Issue #9 — Retry/Back-off Work Assignment Picked Up
+362 " 🔵 GitHub Issue #9 — SAS/Blob-First Ingestion, Not Retry Logic
+363 " ✅ HANDOVER.md — Issue #9 Moved to In Progress
+366 2:48p 🔵 Current Upload Architecture — Full Code Map Before SAS Migration
+368 2:51p 🟣 SAS/Blob-First Upload Infrastructure Added to main.py
+369 2:53p 🟣 SAS/Blob-First Upload Endpoints + Frontend Migration Complete
+370 " 🔴 _resolve_input_files Missing append Before continue
+372 " ✅ Issue #9 Marked Complete — HANDOVER.md + IMPLEMENTATION_SUMMARY.md Updated
+375 3:00p ✅ Issue #9 Committed on codex/fix-issue-9 Branch
+376 3:01p ✅ AGENTS.md — Issue Workflow Updated, HANDOVER.md Deprecated
+
+Access 335k tokens of past work via get_observations([IDs]) or mem-search skill.
+</claude-mem-context>
