@@ -59,7 +59,21 @@ def _make_job(
 
 
 def _balanced_profile() -> Dict[str, Any]:
-    return {"profile": "balanced", "model": "gpt-4o-mini", "cost_cap_usd": 4.0}
+    model = (
+        os.environ.get("AZURE_OPENAI_DEPLOYMENT_BALANCED")
+        or os.environ.get("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME")
+        or "test-deployment"
+    )
+    return {"profile": "balanced", "model": model, "cost_cap_usd": 4.0}
+
+
+def _quality_profile() -> Dict[str, Any]:
+    model = (
+        os.environ.get("AZURE_OPENAI_DEPLOYMENT_QUALITY")
+        or os.environ.get("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME")
+        or "test-deployment"
+    )
+    return {"profile": "quality", "model": model, "cost_cap_usd": 8.0}
 
 
 def _async_sk_response(content: str, prompt_tokens: int = 100, completion_tokens: int = 200):
@@ -196,6 +210,21 @@ def test_extraction_times_out_long_llm_call(monkeypatch):
             run_extraction(job, _balanced_profile())
 
 
+def test_extraction_prompt_contract_is_media_first():
+    from app.agents import extraction
+
+    system_prompt = extraction._SYSTEM_PROMPT
+    user_prompt = extraction._USER_PROMPT_TEMPLATE
+
+    assert "Video and audio are the primary sources" in system_prompt
+    assert "supporting signal" in system_prompt
+    assert "source_type" in user_prompt
+    assert "video|audio|transcript|frame" in user_prompt
+    assert "Unknown Speaker" in user_prompt
+    assert "Remove transcript artifacts".lower() in user_prompt.lower()
+    assert "collapse adjacent steps" in user_prompt.lower()
+
+
 def test_processing_usage_tokens_supports_dict_usage():
     from app.agents.processing import _extract_usage_tokens
 
@@ -299,6 +328,72 @@ def test_processing_agent_sets_defaults_on_minimal_response(monkeypatch):
     assert job["draft"]["version"] == 1
     assert "generated_at" in job["draft"]
     assert "confidence_summary" in job["draft"]
+    assert "confidence_delta" in job["draft"]["confidence_summary"]
+
+
+def test_processing_prompt_contract_includes_alignment_and_priority_rules():
+    from app.agents import processing
+
+    user_prompt = processing._USER_PROMPT_TEMPLATE
+    assert "Alignment verdict: {alignment_verdict}" in user_prompt
+    assert "Evidence priority: video/audio/frame-derived items" in user_prompt
+    assert 'If alignment_verdict is "suspected_mismatch"' in user_prompt
+    assert '"confidence_delta": 0.0' in user_prompt
+
+
+def test_processing_profile_guidance_balanced_and_quality():
+    from app.agents.processing import _profile_guidance
+
+    assert "Be concise" in _profile_guidance("balanced")
+    assert "Be thorough" in _profile_guidance("quality")
+
+
+def test_processing_passes_alignment_and_profile_guidance_to_prompt():
+    from app.agents.processing import run_processing
+
+    captured: dict[str, str] = {}
+
+    async def _capture_call(_deployment: str, _system_prompt: str, user_content: str):
+        captured["user_content"] = user_content
+        return '{"pdd":{"purpose":"x"},"sipoc":[]}', 10, 10
+
+    job = _make_job(consistency_verdict="suspected_mismatch")
+    job["extracted_evidence"] = {
+        "evidence_items": [],
+        "speakers_detected": [],
+        "process_domain": "test",
+        "transcript_quality": "low",
+    }
+
+    with patch("app.agents.processing._call_processing", side_effect=_capture_call):
+        run_processing(job, _balanced_profile())
+
+    prompt = captured["user_content"]
+    assert "Alignment verdict: suspected_mismatch" in prompt
+    assert "Be concise. Prefer fewer, higher-confidence steps." in prompt
+
+
+def test_processing_uses_quality_profile_guidance():
+    from app.agents.processing import run_processing
+
+    captured: dict[str, str] = {}
+
+    async def _capture_call(_deployment: str, _system_prompt: str, user_content: str):
+        captured["user_content"] = user_content
+        return '{"pdd":{"purpose":"x"},"sipoc":[]}', 10, 10
+
+    job = _make_job()
+    job["extracted_evidence"] = {
+        "evidence_items": [],
+        "speakers_detected": [],
+        "process_domain": "test",
+        "transcript_quality": "low",
+    }
+    with patch("app.agents.processing._call_processing", side_effect=_capture_call):
+        run_processing(job, _quality_profile())
+
+    prompt = captured["user_content"]
+    assert "Be thorough. Include observable sub-steps, exceptions, and system interactions." in prompt
 
 
 # ---------------------------------------------------------------------------

@@ -66,7 +66,12 @@ Evidence items:
 Input manifest:
 {manifest_json}
 
+Alignment verdict: {alignment_verdict}
+
 Profile: {profile}
+
+Profile guidance:
+{profile_guidance}
 
 Generate a complete PDD and SIPOC from the evidence above. Return a JSON object with this exact shape:
 {{
@@ -76,13 +81,21 @@ Generate a complete PDD and SIPOC from the evidence above. Return a JSON object 
   "confidence_summary": {{
     "overall": 0.0,
     "source_quality": "high|medium|low",
-    "evidence_strength": "high|medium|low"
+    "evidence_strength": "high|medium|low",
+    "confidence_delta": 0.0
   }},
   "generated_at": "ISO 8601 UTC timestamp",
   "version": 1
 }}
 
 Rules:
+- Evidence priority: video/audio/frame-derived items (source_type video|audio|frame)
+  take precedence over transcript-derived items (source_type transcript) for step sequence.
+- If alignment_verdict is "suspected_mismatch", downgrade confidence on transcript-only
+  inferences and avoid using transcript-only claims as primary sequencing evidence.
+- Use conservative language: do not invent roles, systems, or business rules not supported by evidence.
+- If evidence is sparse or transcript-only, still produce best-effort structure and list explicit
+  assumptions in assumptions[] instead of fabricating detail.
 - Every evidence item must map to at least one PDD step
 - Every PDD step must appear in at least one SIPOC row
 - step_anchor MUST be a non-empty JSON array with at least one PDD step ID from the steps list above (e.g. ["step-01"]). Never leave step_anchor as [] or null.
@@ -90,7 +103,21 @@ Rules:
 - If the closest available anchor is approximate, still use it and explain in anchor_missing_reason. Do not leave source_anchor blank as a way of signalling uncertainty.
 - anchor_missing_reason must be null when both anchors are present; a short explanation string when source_anchor is approximate or step_anchor coverage is partial.
 - confidence values are floats between 0.0 and 1.0
+- confidence_delta is the change from baseline confidence (negative: reduced confidence,
+  positive: corroborating evidence increased confidence).
 """
+
+
+def _profile_guidance(profile: str) -> str:
+    if profile == "quality":
+        return (
+            "- Be thorough. Include observable sub-steps, exceptions, and system interactions.\n"
+            "- Capture nuance when evidence supports it, while preserving schema precision."
+        )
+    return (
+        "- Be concise. Prefer fewer, higher-confidence steps.\n"
+        "- Avoid speculative detail when evidence is ambiguous."
+    )
 
 
 def _safe_int(value: Any) -> int:
@@ -161,6 +188,9 @@ def run_processing(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
     evidence = job.get("extracted_evidence") or {}
     manifest = job.get("input_manifest") or {}
     profile = profile_conf.get("profile", "balanced")
+    alignment_verdict = (
+        job.get("transcript_media_consistency", {}).get("verdict") or "inconclusive"
+    )
     deployment = profile_conf.get("model")
     if not deployment:
         raise RuntimeError("profile_conf.model is required for processing.")
@@ -174,7 +204,9 @@ def run_processing(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
     user_prompt = _USER_PROMPT_TEMPLATE.format(
         evidence_json=json.dumps(evidence, ensure_ascii=True, separators=(",", ":")),
         manifest_json=json.dumps(manifest, ensure_ascii=True, separators=(",", ":")),
+        alignment_verdict=alignment_verdict,
         profile=profile,
+        profile_guidance=_profile_guidance(profile),
         pdd_schema=_PDD_SCHEMA,
         sipoc_schema=_SIPOC_SCHEMA,
     )
@@ -199,7 +231,9 @@ def run_processing(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
         "overall": 0.65,
         "source_quality": "medium",
         "evidence_strength": job.get("agent_signals", {}).get("evidence_strength"),  # overwritten by reviewer
+        "confidence_delta": 0.0,
     })
+    draft["confidence_summary"].setdefault("confidence_delta", 0.0)
 
     job["draft"] = draft
     from app.job_logic import estimate_cost_usd
