@@ -131,9 +131,13 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 | `AZURE_SERVICE_BUS_QUEUE_PROCESSING` | Queue name | `processing` |
 | `AZURE_SERVICE_BUS_QUEUE_REVIEWING` | Queue name | `reviewing` |
 | `PFCD_WORKER_ROLE` | Worker phase (`extracting`/`processing`/`reviewing`) | — |
+| `PFCD_WORKER_RECEIVE_WAIT_SECONDS` | Max Service Bus receive wait time per poll | `5` |
+| `PFCD_WORKER_IDLE_BACKOFF_BASE_SECONDS` | Worker idle backoff base delay | `0.5` |
+| `PFCD_WORKER_IDLE_BACKOFF_MAX_SECONDS` | Worker idle backoff max delay | `5.0` |
 | `PFCD_CLEANUP_INTERVAL_SECONDS` | Cleanup worker poll interval | `300` |
 | `PFCD_JOB_TTL_DAYS` | Job retention window before expiry/cleanup | `7` |
 | `PFCD_LLM_TIMEOUT_SECONDS` | Max seconds allowed for a single extraction/processing LLM call | `120` |
+| `PFCD_MAX_COMPLETION_TOKENS` | Max completion tokens for extraction/processing/vision LLM calls | `2048` |
 | `PFCD_API_KEY` | Static API key for `X-API-Key` header | `""` (auth disabled if unset) |
 | `PFCD_CORS_ORIGINS` | Comma-separated allowed CORS origins | `http://localhost:5173` |
 | `PFCD_PROVIDER` | Chat/transcription provider (`azure_openai` or `openai`) | `azure_openai` |

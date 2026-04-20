@@ -72,3 +72,73 @@ def test_analyze_frames_batches_frames(monkeypatch):
 
     assert result == "ok\n\nok\n\nok"
     assert mock_call.call_count == 3
+
+
+def test_call_vision_openai_uses_max_completion_tokens(monkeypatch):
+    from app.agents.vision import _call_vision_openai
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("PFCD_MAX_COMPLETION_TOKENS", "333")
+
+    captured: dict = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    def _fake_post(_url, headers, json, timeout):
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return _Resp()
+
+    monkeypatch.setattr("app.agents.vision.httpx.post", _fake_post)
+
+    result = _call_vision_openai([{"role": "user", "content": "x"}])
+
+    assert result == "ok"
+    assert captured["json"]["max_completion_tokens"] == 333
+    assert "max_tokens" not in captured["json"]
+
+
+def test_call_vision_azure_uses_max_completion_tokens(monkeypatch):
+    from app.agents import vision
+
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
+    monkeypatch.setenv("PFCD_MAX_COMPLETION_TOKENS", "444")
+    monkeypatch.setattr("app.agents.vision._AZURE_VISION_DEPLOYMENT", "vision-deployment")
+
+    captured: dict = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    class _Credential:
+        def get_token(self, _scope):
+            class _Token:
+                token = "fake-token"
+
+            return _Token()
+
+    def _fake_post(_url, headers, json, timeout):
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return _Resp()
+
+    monkeypatch.setattr("app.agents.vision.httpx.post", _fake_post)
+    monkeypatch.setattr("azure.identity.DefaultAzureCredential", lambda: _Credential())
+
+    result = vision._call_vision_azure([{"role": "user", "content": "x"}])
+
+    assert result == "ok"
+    assert captured["json"]["max_completion_tokens"] == 444
+    assert "max_tokens" not in captured["json"]

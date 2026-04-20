@@ -2495,3 +2495,40 @@ Ran focused tests after changes:
 - No API schema changes were introduced.
 - No migration changes were needed.
 - This was a surgical fix + coverage + docs update for Issue #44 scope only.
+## Section 71: Codex Delivery — GitHub Issue #50 Quick Wins (2026-04-20)
+
+Implemented all four Wave-1 quick-win hardening items from issue #50: processing JSON fallback, vision token parameter update, missing env var documentation, and local docker shell-override warning.
+
+### Completed
+
+- Updated [backend/app/agents/processing.py](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/app/agents/processing.py):
+  - added `_parse_processing_json(raw)` with a 3-stage parse strategy:
+    - direct JSON parse
+    - fenced JSON extraction parse
+    - balanced-brace JSON object extraction parse
+  - added `_extract_balanced_json_object()` helper for repair-stage extraction
+  - integrated fallback path into `run_processing()` and set `job["agent_signals"]["processing_fallback"] = True` when non-primary parse path is used
+- Updated [backend/app/agents/vision.py](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/app/agents/vision.py):
+  - added `_max_completion_tokens()` env-backed helper (`PFCD_MAX_COMPLETION_TOKENS`, default `2048`)
+  - replaced deprecated `max_tokens` with `max_completion_tokens` in both OpenAI and Azure vision request payloads
+- Updated [REFERENCE.md](/Users/karthicks/kAgents/Projects/PFCD-V2/REFERENCE.md):
+  - documented missing worker env vars:
+    - `PFCD_WORKER_RECEIVE_WAIT_SECONDS` (`5`)
+    - `PFCD_WORKER_IDLE_BACKOFF_BASE_SECONDS` (`0.5`)
+    - `PFCD_WORKER_IDLE_BACKOFF_MAX_SECONDS` (`5.0`)
+  - documented `PFCD_MAX_COMPLETION_TOKENS` (`2048`) as shared extraction/processing/vision control
+- Updated [docker-compose.local.env.example](/Users/karthicks/kAgents/Projects/PFCD-V2/docker-compose.local.env.example):
+  - added prominent warning block about shell-exported env vars overriding env-file values
+  - included explicit `unset OPENAI_API_KEY` and `env -u OPENAI_API_KEY docker compose ...` guidance
+- Added/updated tests:
+  - [tests/unit/test_agents.py](/Users/karthicks/kAgents/Projects/PFCD-V2/tests/unit/test_agents.py): new malformed JSON processing fallback test
+  - [tests/unit/test_vision.py](/Users/karthicks/kAgents/Projects/PFCD-V2/tests/unit/test_vision.py): new request-payload tests asserting `max_completion_tokens` usage for OpenAI and Azure vision paths
+
+### Validation
+
+- `cd backend && .venv/bin/pytest ../tests/unit ../tests/integration -q --tb=short`
+  - `313 passed, 2 skipped`
+
+### Decisions
+
+- Kept parsing fallback deterministic and local to `processing.py` (no cross-agent imports) to match existing extraction pattern while minimizing coupling between agent modules.

@@ -45,6 +45,7 @@ Shared coordination board. Read and updated by both Claude and Codex at session 
 |----|------|-------------|
 | ISSUE-48-PROMPT-ALIGNMENT | Resolve GitHub issue #48 prompt alignment gaps for extraction/processing + tests | PR #49 |
 | ISSUE-44-STALE-UPLOAD-DOCS | Resolve issue #44 (`StaleDataError` catch, `_safe_upload_name` unit tests, `REFERENCE.md` draft_version docs) | — |
+| ISSUE-50-QUICK-WINS | Resolve GitHub issue #50 quick wins (processing JSON fallback, vision max_completion_tokens, REFERENCE/env docs updates) | PR #52 |
 | INVENTORY-PENDING-PROMPTS | Produce consolidated repo+runtime pending issues inventory and current automation prompt catalog | — |
 | CRITICAL-GHCO-BUNDLE | Resolve GitHub critical issues #36-#40 on consolidated branch `codex/fix-critical-ghco-issues` | PR #43 |
 | ISSUE-41-HIGH-SEVERITY-BUGS | Resolve GitHub issue #41 high-severity bugs on isolated branch `codex/fix-high-severity-bugs` | PR #45 |
