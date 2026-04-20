@@ -111,6 +111,15 @@ def _extract_usage_tokens(metadata: Dict[str, Any]) -> tuple[int, int]:
     )
 
 
+def _max_completion_tokens() -> int:
+    raw = os.environ.get("PFCD_MAX_COMPLETION_TOKENS", "2048").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 2048
+    return max(1, value)
+
+
 async def _call_processing(deployment: str, system_prompt: str, user_content: str):
     """Invoke chat completion via Semantic Kernel; returns (raw_json, prompt_tokens, completion_tokens)."""
     from semantic_kernel.connectors.ai.open_ai import OpenAIChatPromptExecutionSettings
@@ -122,7 +131,8 @@ async def _call_processing(deployment: str, system_prompt: str, user_content: st
     chat.add_system_message(system_prompt)
     chat.add_user_message(user_content)
     settings = OpenAIChatPromptExecutionSettings(
-        response_format={"type": "json_object"}
+        response_format={"type": "json_object"},
+        max_completion_tokens=_max_completion_tokens(),
     )
     svc = get_chat_service(deployment)
     result = await svc.get_chat_message_content(chat, settings, kernel=kernel)
