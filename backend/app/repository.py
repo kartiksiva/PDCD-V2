@@ -123,6 +123,7 @@ class JobRepository:
             "teams_metadata": self._deserialize(job.teams_metadata),
             "agent_runs": [self._agent_run_to_dict(run) for run in agent_runs],
             "transcript_media_consistency": self._deserialize(job.transcript_media_consistency),
+            "extracted_evidence": self._deserialize(job.extracted_evidence),
             "review_notes": self._deserialize(review_notes.payload) if review_notes else {"flags": [], "assumptions": []},
             "agent_signals": self._deserialize(job.agent_signals),
             "agent_review": self._deserialize(job.agent_review),
@@ -225,6 +226,7 @@ class JobRepository:
                 job.has_transcript = bool(payload.get("has_transcript"))
                 job.teams_metadata = self._serialize(payload.get("teams_metadata", {}))
                 job.transcript_media_consistency = self._serialize(payload.get("transcript_media_consistency", {}))
+                job.extracted_evidence = self._serialize(payload.get("extracted_evidence", {}))
                 job.agent_signals = self._serialize(payload.get("agent_signals", {}))
                 job.agent_review = self._serialize(payload.get("agent_review", {}))
                 job.speaker_resolutions = self._serialize(payload.get("speaker_resolutions", {}))
