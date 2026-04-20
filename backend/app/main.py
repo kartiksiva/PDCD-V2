@@ -39,7 +39,7 @@ from app.job_logic import (
 )
 from app.repository import ConcurrentModificationError, JobRepository
 from app.servicebus import ServiceBusOrchestrator, build_message
-from app.storage import ExportStorage
+from app.storage import ExportStorage, read_frame_bytes
 
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 ALLOWED_FORMATS = {"json", "markdown", "pdf", "docx"}
@@ -292,6 +292,18 @@ async def _repo_upsert_job(job_id: str, payload: Dict[str, Any]) -> None:
         await anyio.to_thread.run_sync(JOB_REPO.upsert_job, job_id, payload)
     except ConcurrentModificationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _resolve_frame_bytes_map(evidence_bundle: Dict[str, Any]) -> Dict[str, bytes]:
+    frame_bytes_map: Dict[str, bytes] = {}
+    for capture in evidence_bundle.get("frame_captures") or []:
+        key = capture.get("storage_key", "")
+        if not key:
+            continue
+        frame_bytes = read_frame_bytes(key)
+        if frame_bytes:
+            frame_bytes_map[key] = frame_bytes
+    return frame_bytes_map
 
 
 def _safe_upload_name(filename: str | None) -> str:
@@ -798,6 +810,7 @@ async def finalize_job(job_id: str) -> Dict[str, Any]:
         finalized_draft = copy.deepcopy(job["draft"])
         finalized_draft["finalized_at"] = _utc_now()
         evidence_bundle = build_evidence_bundle(finalized_draft, job)
+        frame_bytes_map = _resolve_frame_bytes_map(evidence_bundle)
         exports_payload = {
             "job_id": job_id,
             "status": JobStatus.COMPLETED.value,
@@ -811,10 +824,15 @@ async def finalize_job(job_id: str) -> Dict[str, Any]:
             lambda: build_export_markdown(finalized_draft, evidence_bundle).encode("utf-8")
         )
         pdf_bytes = await anyio.to_thread.run_sync(
-            lambda: build_export_pdf(finalized_draft, evidence_bundle)
+            lambda: build_export_pdf(finalized_draft, evidence_bundle, frame_bytes_map=frame_bytes_map)
         )
         docx_bytes = await anyio.to_thread.run_sync(
-            lambda: build_export_docx(finalized_draft, evidence_bundle, job_id)
+            lambda: build_export_docx(
+                finalized_draft,
+                evidence_bundle,
+                job_id,
+                frame_bytes_map=frame_bytes_map,
+            )
         )
 
         json_meta = await anyio.to_thread.run_sync(
@@ -916,16 +934,17 @@ async def get_export(job_id: str, fmt: str):
             }
         )
     bundle = build_evidence_bundle(draft, job)
+    frame_bytes_map = _resolve_frame_bytes_map(bundle)
     if fmt == "markdown":
         return PlainTextResponse(build_export_markdown(draft, bundle))
     if fmt == "pdf":
         return Response(
-            content=build_export_pdf(draft, bundle),
+            content=build_export_pdf(draft, bundle, frame_bytes_map=frame_bytes_map),
             media_type="application/pdf",
             headers={"Content-Disposition": f'attachment; filename="pdd-{job_id}.pdf"'},
         )
     return Response(
-        content=build_export_docx(draft, bundle, job_id),
+        content=build_export_docx(draft, bundle, job_id, frame_bytes_map=frame_bytes_map),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": f'attachment; filename="pdd-{job_id}.docx"'},
     )

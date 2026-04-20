@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import sys
 import os
 
@@ -14,6 +15,10 @@ from app.export_builder import (
     build_export_docx,
     build_export_markdown,
     build_export_pdf,
+)
+
+TINY_PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7+6wAAAABJRU5ErkJggg=="
 )
 
 
@@ -302,6 +307,32 @@ class TestBuildExportPdf:
         result = build_export_pdf(DRAFT_WITH_ANCHORS, bundle)
         assert isinstance(result, bytes)
 
+    def test_pdf_embeds_frame_from_bytes_map(self):
+        bundle = {
+            "linked_anchors": [],
+            "evidence_strength": "high",
+            "frame_captures_note": "",
+            "frame_captures": [{"storage_key": "job-123/frames/frame_0001.jpg", "timestamp_sec": 12.0}],
+        }
+        result = build_export_pdf(
+            DRAFT_WITH_ANCHORS,
+            bundle,
+            frame_bytes_map={"job-123/frames/frame_0001.jpg": TINY_PNG_BYTES},
+        )
+        assert isinstance(result, bytes)
+        assert result[:4] == b"%PDF"
+
+    def test_pdf_skips_missing_frame_gracefully(self):
+        bundle = {
+            "linked_anchors": [],
+            "evidence_strength": "high",
+            "frame_captures_note": "",
+            "frame_captures": [{"storage_key": "job-123/frames/missing.jpg", "timestamp_sec": 12.0}],
+        }
+        result = build_export_pdf(DRAFT_WITH_ANCHORS, bundle, frame_bytes_map={})
+        assert isinstance(result, bytes)
+        assert result[:4] == b"%PDF"
+
 
 # ---------------------------------------------------------------------------
 # build_export_docx
@@ -369,3 +400,30 @@ class TestBuildExportDocx:
         doc = Document(io.BytesIO(result))
         full_text = " ".join(p.text for p in doc.paragraphs)
         assert "No SIPOC rows available" in full_text
+
+    def test_docx_embeds_frame_from_bytes_map(self):
+        bundle = {
+            "linked_anchors": [],
+            "evidence_strength": "high",
+            "frame_captures_note": "",
+            "frame_captures": [{"storage_key": "job-123/frames/frame_0001.jpg", "timestamp_sec": 12.0}],
+        }
+        result = build_export_docx(
+            DRAFT_WITH_ANCHORS,
+            bundle,
+            "job-123",
+            frame_bytes_map={"job-123/frames/frame_0001.jpg": TINY_PNG_BYTES},
+        )
+        assert isinstance(result, bytes)
+        assert result[:2] == b"PK"
+
+    def test_docx_skips_missing_frame_gracefully(self):
+        bundle = {
+            "linked_anchors": [],
+            "evidence_strength": "high",
+            "frame_captures_note": "",
+            "frame_captures": [{"storage_key": "job-123/frames/missing.jpg", "timestamp_sec": 12.0}],
+        }
+        result = build_export_docx(DRAFT_WITH_ANCHORS, bundle, "job-123", frame_bytes_map={})
+        assert isinstance(result, bytes)
+        assert result[:2] == b"PK"

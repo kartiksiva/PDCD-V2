@@ -233,7 +233,11 @@ def build_export_markdown(draft: Dict[str, Any], evidence_bundle: Dict[str, Any]
     return "\n".join(parts)
 
 
-def build_export_pdf(draft: Dict[str, Any], evidence_bundle: Dict[str, Any]) -> bytes:
+def build_export_pdf(
+    draft: Dict[str, Any],
+    evidence_bundle: Dict[str, Any],
+    frame_bytes_map: Optional[Dict[str, bytes]] = None,
+) -> bytes:
     """Build evidence-linked PDF export."""
     from fpdf import FPDF
     from fpdf.enums import XPos, YPos
@@ -318,26 +322,40 @@ def build_export_pdf(draft: Dict[str, Any], evidence_bundle: Dict[str, Any]) -> 
         for capture in frame_captures:
             key = capture.get("storage_key", "")
             timestamp_sec = capture.get("timestamp_sec", 0.0)
-            if key.startswith("/") or (key.startswith(".") and os.path.exists(key)):
+            image_bytes = (frame_bytes_map or {}).get(key)
+            if not image_bytes and (os.path.isabs(key) or (key.startswith(".") and os.path.exists(key))):
                 try:
-                    pdf.image(key, w=120)
+                    with open(key, "rb") as handle:
+                        image_bytes = handle.read()
+                except OSError:
+                    pass
+            if image_bytes:
+                try:
+                    pdf.image(io.BytesIO(image_bytes), w=120)
                     pdf.set_font("Helvetica", size=8)
                     pdf.cell(0, 5, f"Frame @ {timestamp_sec:.1f}s — {key}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                     pdf.set_font("Helvetica", size=11)
                 except Exception:
-                    pdf.set_font("Helvetica", size=8)
-                    pdf.cell(0, 5, f"Frame @ {timestamp_sec:.1f}s (image unreadable)", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                    pdf.set_font("Helvetica", size=11)
+                    _row(f"Frame @ {timestamp_sec:.1f}s (image unreadable): {key}")
             else:
                 pdf.set_font("Helvetica", size=8)
-                pdf.cell(0, 5, f"Frame @ {timestamp_sec:.1f}s: {key}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.cell(
+                    0,
+                    5,
+                    f"Frame @ {timestamp_sec:.1f}s: {key} (not available)",
+                    new_x=XPos.LMARGIN,
+                    new_y=YPos.NEXT,
+                )
                 pdf.set_font("Helvetica", size=11)
 
     return bytes(pdf.output())
 
 
 def build_export_docx(
-    draft: Dict[str, Any], evidence_bundle: Dict[str, Any], job_id: str
+    draft: Dict[str, Any],
+    evidence_bundle: Dict[str, Any],
+    job_id: str,
+    frame_bytes_map: Optional[Dict[str, bytes]] = None,
 ) -> bytes:
     """Build evidence-linked DOCX export using python-docx."""
     from docx import Document  # type: ignore[import-untyped]
@@ -412,14 +430,21 @@ def build_export_docx(
         for capture in frame_captures:
             key = capture.get("storage_key", "")
             timestamp_sec = capture.get("timestamp_sec", 0.0)
-            if os.path.isabs(key) or (key.startswith(".") and os.path.exists(key)):
+            image_bytes = (frame_bytes_map or {}).get(key)
+            if not image_bytes and (os.path.isabs(key) or (key.startswith(".") and os.path.exists(key))):
                 try:
-                    doc.add_picture(key)
+                    with open(key, "rb") as handle:
+                        image_bytes = handle.read()
+                except OSError:
+                    pass
+            if image_bytes:
+                try:
+                    doc.add_picture(io.BytesIO(image_bytes))
                     doc.add_paragraph(f"Frame @ {timestamp_sec:.1f}s — {key}")
                 except Exception:
-                    doc.add_paragraph(f"Frame @ {timestamp_sec:.1f}s (image unreadable)")
+                    doc.add_paragraph(f"Frame @ {timestamp_sec:.1f}s (image unreadable): {key}")
             else:
-                doc.add_paragraph(f"Frame capture: {key} @ {timestamp_sec:.1f}s")
+                doc.add_paragraph(f"Frame @ {timestamp_sec:.1f}s: {key} (not available)")
 
     buf = io.BytesIO()
     doc.save(buf)
