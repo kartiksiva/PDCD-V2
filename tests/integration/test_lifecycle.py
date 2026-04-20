@@ -114,6 +114,38 @@ def test_get_job_returns_queued_state(app_client):
     assert resp.json()["status"] == "queued"
 
 
+def test_create_job_persists_teams_metadata(app_client):
+    payload = {
+        "input_files": [
+            {"source_type": "transcript", "file_name": "t.vtt", "size_bytes": 512}
+        ],
+        "teams_metadata": {
+            "meeting_id": "meet-123",
+            "meeting_subject": "Invoice flow sync",
+            "start_time_utc": "2026-04-20T10:00:00Z",
+            "organizer_name": "Alice",
+            "participants": ["Alice", "Bob"],
+            "transcript_speaker_map": {"spk_001": "Alice", "spk_002": "Bob"},
+            "recording_markers": [
+                {"start": "00:00:10", "end": "00:00:20", "speaker": "Alice", "text": "Open SAP"}
+            ],
+        },
+    }
+    create_resp = app_client.client.post("/api/jobs", json=payload)
+    assert create_resp.status_code == 201
+    body = create_resp.json()
+    assert body["teams_metadata"]["meeting_id"] == "meet-123"
+    assert body["teams_metadata"]["transcript_speaker_map"]["spk_001"] == "Alice"
+    assert body["teams_metadata"]["recording_markers"][0]["speaker"] == "Alice"
+
+    job_id = body["job_id"]
+    get_resp = app_client.client.get(f"/api/jobs/{job_id}")
+    assert get_resp.status_code == 200
+    loaded = get_resp.json()
+    assert loaded["teams_metadata"]["meeting_subject"] == "Invoice flow sync"
+    assert loaded["teams_metadata"]["participants"] == ["Alice", "Bob"]
+
+
 def test_create_job_accepts_existing_upload_id(app_client):
     upload_resp = app_client.client.post(
         "/api/upload",

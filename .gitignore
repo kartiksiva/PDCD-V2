@@ -46,3 +46,6 @@ storage/
 
 # Frontend dependencies
 frontend/node_modules/
+
+# Local agent instruction overrides
+/AGENTS.md
