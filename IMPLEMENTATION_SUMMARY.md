@@ -2748,3 +2748,61 @@ Implemented profile-aware non-chat routing and expanded effective-provider track
 ### Open questions
 
 - None for issue scope. Optional future improvement: persist richer per-run service metadata in a dedicated `agent_runs.metadata` column if migration budget is available.
+
+## Section 19: Issue #12 — Preflight Cost Confirmation Gate (2026-04-20)
+
+Implemented a preflight cost confirmation flow for selected profiles (default: `quality`) so high-cost runs are held before orchestration enqueue.
+
+### What was added
+
+- `backend/app/job_logic.py`
+  - Added `JobStatus.AWAITING_CONFIRMATION = "awaiting_confirmation"`.
+  - Added `cost_confirmation_profiles()` parsing `PFCD_COST_CONFIRM_PROFILES` (default `quality`).
+  - Added `requires_cost_confirmation(profile)` helper.
+
+- `backend/app/main.py`
+  - Updated `POST /api/jobs`:
+    - If profile requires confirmation: creates job with `status=awaiting_confirmation`, persists it, and returns without Service Bus enqueue.
+    - If confirmation is not required: existing immediate enqueue flow remains unchanged.
+    - Response now includes `cost_estimate` with `{profile, cost_cap_usd, requires_confirmation}`.
+  - Added new endpoint `POST /api/jobs/{job_id}/confirm-cost`:
+    - `awaiting_confirmation` -> `queued`, persists transition, enqueues `extracting` phase.
+    - Returns `409` if job is not awaiting confirmation.
+    - Returns `404` for missing/deleted jobs.
+
+- `frontend/src/api.js`
+  - Added `confirmCost(jobId)` client helper.
+
+- `frontend/src/components/CreateJob.jsx`
+  - Added in-place confirmation panel when create-job returns `awaiting_confirmation`.
+  - Added `Confirm & Start` button to call `confirmCost(jobId)`.
+  - Keeps existing behavior for non-confirmation jobs (navigates immediately).
+
+### Tests added/updated
+
+- `tests/unit/test_job_logic.py`
+  - Added coverage for default/override behavior of `PFCD_COST_CONFIRM_PROFILES` and `requires_cost_confirmation(...)`.
+
+- `tests/integration/test_lifecycle.py`
+  - Added quality profile create test: `awaiting_confirmation` + no enqueue.
+  - Added confirm-cost happy path test: transitions to `queued` + enqueues.
+  - Tightened balanced create regression assertion: still enqueues immediately.
+
+- `tests/integration/test_error_cases.py`
+  - Added confirm-cost wrong-state test (`409`).
+
+### Verification
+
+- `pytest -q tests/unit/test_job_logic.py tests/integration/test_lifecycle.py tests/integration/test_error_cases.py`
+  - Result: `52 passed`
+- `pytest -q tests/unit tests/integration`
+  - Result: `349 passed, 2 skipped`
+
+### Decisions
+
+- Implemented confirmation control via env var profile list (`PFCD_COST_CONFIRM_PROFILES`) for runtime configurability without code changes.
+- Kept worker terminal-skip logic unchanged; `awaiting_confirmation` remains non-terminal and is never auto-processed because enqueue only happens after explicit confirmation.
+
+### Open questions
+
+- None for this issue scope.

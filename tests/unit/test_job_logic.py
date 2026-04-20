@@ -11,10 +11,12 @@ from app.job_logic import (
     JobCreateRequest,
     Profile,
     apply_cost_tracking_and_cap_warning,
+    cost_confirmation_profiles,
     default_job_payload,
     get_transcription_target,
     get_vision_model,
     profile_config,
+    requires_cost_confirmation,
 )
 
 
@@ -188,6 +190,19 @@ def test_get_transcription_target_provider_matrix(monkeypatch):
     azure_target = get_transcription_target(Profile.QUALITY)
     assert azure_target["service"] == "azure_openai_whisper"
     assert azure_target["model"] == "whisper-prod"
+
+
+def test_cost_confirmation_profiles_default(monkeypatch):
+    monkeypatch.delenv("PFCD_COST_CONFIRM_PROFILES", raising=False)
+    assert cost_confirmation_profiles() == {"quality"}
+    assert requires_cost_confirmation(Profile.QUALITY) is True
+    assert requires_cost_confirmation(Profile.BALANCED) is False
+
+
+def test_cost_confirmation_profiles_env_override(monkeypatch):
+    monkeypatch.setenv("PFCD_COST_CONFIRM_PROFILES", "quality,balanced")
+    assert requires_cost_confirmation(Profile.QUALITY) is True
+    assert requires_cost_confirmation(Profile.BALANCED) is True
 
 
 def test_cost_cap_warn_only_adds_warning_flag(monkeypatch):

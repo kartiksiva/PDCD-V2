@@ -34,6 +34,11 @@ export async function createJob(payload) {
   return res.json()
 }
 
+export async function confirmCost(jobId) {
+  const res = await _fetch(`/jobs/${jobId}/confirm-cost`, { method: 'POST' })
+  return res.json()
+}
+
 export async function getJob(jobId) {
   const res = await _fetch(`/jobs/${jobId}`)
   return res.json()

@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 class JobStatus(str, Enum):
     QUEUED = "queued"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
     PROCESSING = "processing"
     NEEDS_REVIEW = "needs_review"
     FINALIZING = "finalizing"
@@ -94,6 +95,16 @@ def _safe_dict(value: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 def _provider_name() -> str:
     return os.environ.get("PFCD_PROVIDER", "azure_openai").strip().lower() or "azure_openai"
+
+
+def cost_confirmation_profiles() -> set[str]:
+    raw = os.environ.get("PFCD_COST_CONFIRM_PROFILES", "quality")
+    return {token.strip().lower() for token in raw.split(",") if token.strip()}
+
+
+def requires_cost_confirmation(profile: Profile | str | None) -> bool:
+    resolved = _coerce_profile(profile)
+    return resolved.value in cost_confirmation_profiles()
 
 
 def _coerce_profile(profile: Profile | str | None) -> Profile:
