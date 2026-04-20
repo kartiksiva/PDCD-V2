@@ -1,6 +1,7 @@
 import importlib
 import pathlib
 import sys
+from contextlib import contextmanager
 from uuid import uuid4
 
 import pytest
@@ -126,3 +127,19 @@ def test_init_db_warns_when_alembic_revision_mismatch(tmp_path, monkeypatch, cap
         repository.init_db()
 
     assert "Alembic head" in caplog.text
+
+
+def test_upsert_converts_staledataerror_to_concurrent_modification(monkeypatch):
+    _, repo = _reload_modules()
+
+    @contextmanager
+    def _stale_session_scope():
+        raise repo.StaleDataError("simulated stale row update")
+        yield
+
+    monkeypatch.setattr(repo, "session_scope", _stale_session_scope)
+
+    repository = repo.JobRepository.from_env()
+
+    with pytest.raises(repo.ConcurrentModificationError, match="Concurrent job update detected"):
+        repository.upsert_job(str(uuid4()), {"version": 1})
