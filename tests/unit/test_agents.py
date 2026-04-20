@@ -147,7 +147,7 @@ def test_extraction_cost_calculation(monkeypatch):
 def test_extraction_recovers_from_invalid_json_with_fallback():
     from app.agents.extraction import run_extraction
 
-    job = _make_job()
+    job = _make_job(has_video=False, has_audio=False, has_transcript=True)
     job["_transcript_text_inline"] = (
         "[00:00:01-00:00:05] Agent opens ERP\n"
         "[00:00:06-00:00:10] Agent validates invoice"
@@ -163,6 +163,90 @@ def test_extraction_recovers_from_invalid_json_with_fallback():
     assert job["agent_signals"]["transcript_parsed"] is True
     assert job["agent_signals"]["extraction_fallback"]["used"] is True
     assert len(job["extracted_evidence"]["evidence_items"]) >= 1
+    assert all(item.get("source_type") == "transcript" for item in job["extracted_evidence"]["evidence_items"])
+
+
+def test_extraction_sets_source_type_to_video_when_video_is_primary():
+    from app.agents.extraction import run_extraction
+
+    job = _make_job(has_video=True, has_audio=True, has_transcript=True)
+    job["_transcript_text_inline"] = _load_fixture("scenario_a", "transcript.vtt")
+    job["input_manifest"]["video"]["storage_key"] = "/tmp/demo.mp4"
+
+    llm_payload = {
+        "evidence_items": [
+            {
+                "id": "ev-01",
+                "summary": "Open SAP",
+                "actor": "Finance Analyst",
+                "system": "SAP",
+                "input_artifact": "invoice",
+                "output_artifact": "validated invoice",
+                "anchor": "00:00:00-00:00:03",
+                "confidence": 0.8,
+                "source_type": "transcript",
+            }
+        ],
+        "speakers_detected": ["Finance Analyst"],
+        "process_domain": "Accounts Payable",
+        "transcript_quality": "high",
+    }
+
+    with patch(
+        "app.agents.adapters.video.transcribe_audio_blob",
+        return_value="WEBVTT\n\n00:00:00.000 --> 00:00:03.000\nFinance Analyst: Open SAP.\n",
+    ):
+        with patch(
+            "app.agents.extraction._call_extraction",
+            side_effect=_async_sk_response(json.dumps(llm_payload), 10, 10),
+        ):
+            run_extraction(job, _balanced_profile())
+
+    assert job["extracted_evidence"]["evidence_items"][0]["source_type"] == "video"
+
+
+def test_extraction_uses_video_fact_hints_when_llm_returns_no_items():
+    from app.agents.extraction import run_extraction
+
+    job = _make_job(has_video=True, has_audio=True, has_transcript=False)
+    job["input_manifest"]["video"]["storage_key"] = "/tmp/demo.mp4"
+    job["teams_metadata"] = {
+        "recording_markers": [
+            {
+                "start": "00:00:10",
+                "end": "00:00:20",
+                "speaker": "Finance Analyst",
+                "text": "Open SAP invoice queue",
+            }
+        ]
+    }
+
+    with patch(
+        "app.agents.adapters.video.transcribe_audio_blob",
+        return_value="WEBVTT\n\n00:00:00.000 --> 00:00:03.000\nFinance Analyst: Open SAP.\n",
+    ):
+        with patch(
+            "app.agents.extraction._call_extraction",
+            side_effect=_async_sk_response(
+                json.dumps(
+                    {
+                        "evidence_items": [],
+                        "speakers_detected": [],
+                        "process_domain": "test",
+                        "transcript_quality": "high",
+                    }
+                ),
+                10,
+                10,
+            ),
+        ):
+            run_extraction(job, _balanced_profile())
+
+    assert len(job["extracted_evidence"]["evidence_items"]) == 1
+    item = job["extracted_evidence"]["evidence_items"][0]
+    assert item["source_type"] == "video"
+    assert item["confidence"] == 0.5
+    assert item["anchor"] == "00:00:10-00:00:20"
 
 
 def test_extraction_parses_json_inside_code_fence():
@@ -664,10 +748,11 @@ def test_normalize_input_video_only(monkeypatch):
             "WEBVTT\n\n00:00:00.000 --> 00:00:03.000\nFinance Analyst: Open SAP.\n"
         ),
     ):
-        content_text, manifests = _normalize_input(job)
+        content_text, manifests, input_context = _normalize_input(job)
 
     assert content_text.startswith("WEBVTT")
     assert any(m["source_type"] == "video" for m in manifests)
+    assert input_context["primary_source_type"] == "video"
 
 
 def test_normalize_input_video_and_transcript(monkeypatch):
@@ -684,12 +769,13 @@ def test_normalize_input_video_and_transcript(monkeypatch):
             "WEBVTT\n\n00:00:00.000 --> 00:00:03.000\nFinance Analyst: Open SAP.\n"
         ),
     ):
-        content_text, manifests = _normalize_input(job)
+        content_text, manifests, input_context = _normalize_input(job)
 
-    assert content_text.startswith("VIDEO TRANSCRIPT:\nWEBVTT")
-    assert "\n\nUPLOADED TRANSCRIPT:\n" in content_text
+    assert content_text.startswith("WEBVTT")
+    assert "UPLOADED TRANSCRIPT" not in content_text
     assert any(m["source_type"] == "transcript" for m in manifests)
     assert any(m["source_type"] == "video" for m in manifests)
+    assert input_context["primary_source_type"] == "video"
 
 
 # ---------------------------------------------------------------------------

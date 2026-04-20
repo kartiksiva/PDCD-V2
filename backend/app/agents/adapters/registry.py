@@ -9,8 +9,8 @@ from app.agents.adapters.transcript import TranscriptAdapter
 from app.agents.adapters.video import VideoAdapter
 
 # Ordered list of source types for deterministic adapter resolution.
-# Transcript takes extraction precedence over video (richer text content for LLM).
-_SOURCE_TYPE_ORDER = ["transcript", "video"]
+# Video takes extraction precedence over transcript for video-first behavior.
+_SOURCE_TYPE_ORDER = ["video", "transcript"]
 
 _REGISTRY: Dict[str, IProcessEvidenceAdapter] = {
     "transcript": TranscriptAdapter(),
@@ -25,7 +25,7 @@ class AdapterRegistry:
     Usage:
         registry = AdapterRegistry()
         adapters = registry.get_adapters(["video", "transcript"])
-        # Returns [TranscriptAdapter, VideoAdapter] — transcript first by precedence
+        # Returns [VideoAdapter, TranscriptAdapter] — video first by precedence
     """
 
     def get_adapter(self, source_type: str) -> Optional[IProcessEvidenceAdapter]:
@@ -36,8 +36,8 @@ class AdapterRegistry:
         """
         Return all applicable adapters for the given source types.
 
-        Adapters are returned in extraction-precedence order (transcript first,
-        then video) regardless of the order in source_types.
+        Adapters are returned in extraction-precedence order (video first,
+        then transcript) regardless of the order in source_types.
         Unknown source types are silently skipped.
         """
         ordered = [st for st in _SOURCE_TYPE_ORDER if st in source_types]
