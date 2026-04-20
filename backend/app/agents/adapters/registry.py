@@ -5,16 +5,20 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from app.agents.adapters.base import IProcessEvidenceAdapter
+from app.agents.adapters.audio import AudioAdapter
+from app.agents.adapters.document import DocumentAdapter
 from app.agents.adapters.transcript import TranscriptAdapter
 from app.agents.adapters.video import VideoAdapter
 
 # Ordered list of source types for deterministic adapter resolution.
 # Video takes extraction precedence over transcript for video-first behavior.
-_SOURCE_TYPE_ORDER = ["video", "transcript"]
+_SOURCE_TYPE_ORDER = ["video", "transcript", "audio", "document"]
 
 _REGISTRY: Dict[str, IProcessEvidenceAdapter] = {
     "transcript": TranscriptAdapter(),
     "video": VideoAdapter(),
+    "audio": AudioAdapter(),
+    "document": DocumentAdapter(),
 }
 
 

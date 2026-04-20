@@ -259,7 +259,14 @@ def _apply_source_type_defaults(extracted: Dict[str, Any], primary_source_type: 
     items = extracted.get("evidence_items")
     if not isinstance(items, list):
         return
-    resolved = "video" if primary_source_type == "video" else "transcript"
+    if primary_source_type == "video":
+        resolved = "video"
+    elif primary_source_type == "audio":
+        resolved = "audio"
+    else:
+        # Keep transcript as the conservative fallback for unsupported/mixed
+        # sources such as generic documents.
+        resolved = "transcript"
     for item in items:
         if isinstance(item, dict):
             item["source_type"] = resolved
@@ -282,10 +289,8 @@ def _normalize_input(job: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]], Di
     adapters = _adapter_registry.get_adapters(source_types)
 
     content_text = ""
-    transcript_content = ""
-    video_content = ""
-    video_fact_hints: List[Dict[str, Any]] = []
-    transcript_fact_hints: List[Dict[str, Any]] = []
+    source_content: Dict[str, str] = {}
+    source_fact_hints: Dict[str, List[Dict[str, Any]]] = {}
     manifests: List[Dict[str, Any]] = []
 
     for adapter in adapters:
@@ -298,40 +303,43 @@ def _normalize_input(job: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]], Di
             "anchor_count": len(ev.anchors),
             "provenance_notes": notes,
         })
-        if ev.source_type == "transcript" and ev.content_text:
-            transcript_content = ev.content_text
-            transcript_fact_hints = _fact_items_to_evidence_items(
-                adapter.extract_facts(job), source_type="transcript"
-            )
-        elif ev.source_type == "video" and ev.content_text and not ev.content_text.startswith("["):
-            video_content = ev.content_text
-            video_fact_hints = _fact_items_to_evidence_items(
-                adapter.extract_facts(job), source_type="video"
-            )
+        if ev.content_text:
+            source_content[ev.source_type] = ev.content_text
+        source_fact_hints[ev.source_type] = _fact_items_to_evidence_items(
+            adapter.extract_facts(job), source_type=ev.source_type
+        )
 
     primary_source_type = "transcript"
-    fact_hints = transcript_fact_hints
+    fact_hints: List[Dict[str, Any]] = []
+    for source_type in ("video", "transcript", "audio", "document"):
+        if source_content.get(source_type):
+            content_text = source_content[source_type]
+            primary_source_type = source_type
+            fact_hints = source_fact_hints.get(source_type, [])
+            break
 
     # Video-first precedence: when both are available, transcript stays as
     # alignment context and video drives extraction content.
-    if video_content:
-        content_text = video_content
-        primary_source_type = "video"
-        fact_hints = video_fact_hints
-        if transcript_content:
-            job["_transcript_text_inline"] = transcript_content
-    elif transcript_content:
-        content_text = transcript_content
+    if primary_source_type == "video" and source_content.get("transcript"):
+        job["_transcript_text_inline"] = source_content["transcript"]
 
     # Final fallback: raw inline text (used when source_types is empty or unknown).
     # NOTE: _transcript_text_inline is intentionally ephemeral (set by the worker
     # during extracting and removed before persistence).
     if not content_text:
-        content_text = job.get("_transcript_text_inline") or ""
+        content_text = (
+            job.get("_transcript_text_inline")
+            or job.get("_audio_transcript_inline")
+            or ""
+        )
 
-    if not content_text and video_fact_hints:
-        primary_source_type = "video"
-        fact_hints = video_fact_hints
+    if not content_text:
+        for source_type in ("video", "transcript", "audio", "document"):
+            hints = source_fact_hints.get(source_type) or []
+            if hints:
+                primary_source_type = source_type
+                fact_hints = hints
+                break
 
     return content_text, manifests, {
         "primary_source_type": primary_source_type,
