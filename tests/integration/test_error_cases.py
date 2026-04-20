@@ -182,3 +182,9 @@ def test_upload_sanitizes_path_traversal_filename(app_client, tmp_path):
     assert body["location"] == str(stored_path)
     assert stored_path.read_bytes() == b"owned"
     assert not (tmp_path / "evil.txt").exists()
+
+
+def test_confirm_cost_on_non_awaiting_job_returns_409(app_client):
+    job_id = _create_queued(app_client.client)
+    resp = app_client.client.post(f"/api/jobs/{job_id}/confirm-cost")
+    assert resp.status_code == 409

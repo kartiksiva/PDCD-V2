@@ -27,9 +27,45 @@ def test_create_job_returns_queued(app_client):
     assert resp.status_code == 201
     body = resp.json()
     assert body["status"] == "queued"
+    app_client.module.ORCHESTRATOR.enqueue.assert_called_once()
     # Must be a valid UUID.
     from uuid import UUID
     UUID(body["job_id"])
+
+
+def test_create_job_quality_awaits_cost_confirmation(app_client, monkeypatch):
+    monkeypatch.setenv("PFCD_COST_CONFIRM_PROFILES", "quality")
+    payload = {
+        "profile": "quality",
+        "input_files": [
+            {"source_type": "transcript", "file_name": "t.vtt", "size_bytes": 512}
+        ],
+    }
+    resp = app_client.client.post("/api/jobs", json=payload)
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["status"] == "awaiting_confirmation"
+    assert body["cost_estimate"]["requires_confirmation"] is True
+    app_client.module.ORCHESTRATOR.enqueue.assert_not_called()
+
+
+def test_confirm_cost_transitions_to_queued_and_enqueues(app_client, monkeypatch):
+    monkeypatch.setenv("PFCD_COST_CONFIRM_PROFILES", "quality")
+    payload = {
+        "profile": "quality",
+        "input_files": [
+            {"source_type": "transcript", "file_name": "t.vtt", "size_bytes": 512}
+        ],
+    }
+    create_resp = app_client.client.post("/api/jobs", json=payload)
+    assert create_resp.status_code == 201
+    job_id = create_resp.json()["job_id"]
+    app_client.module.ORCHESTRATOR.enqueue.reset_mock()
+
+    confirm_resp = app_client.client.post(f"/api/jobs/{job_id}/confirm-cost")
+    assert confirm_resp.status_code == 200
+    assert confirm_resp.json()["status"] == "queued"
+    app_client.module.ORCHESTRATOR.enqueue.assert_called_once()
 
 
 def test_create_job_requires_at_least_one_file(app_client):

@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react'
-import { createJob, uploadFile } from '../api'
+import { confirmCost, createJob, uploadFile } from '../api'
 
 const SOURCE_TYPES = ['video', 'audio', 'transcript', 'document']
 
@@ -25,6 +25,8 @@ export default function CreateJob({ onCreated }) {
   const [profile, setProfile] = useState('balanced')
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState(null)
+  const [pendingConfirmation, setPendingConfirmation] = useState(null)
+  const [confirming, setConfirming] = useState(false)
   const inputRef = useRef()
 
   function onFilesPicked(e) {
@@ -55,6 +57,7 @@ export default function CreateJob({ onCreated }) {
     if (rows.length === 0) return
     setSubmitError(null)
     setSubmitting(true)
+    setPendingConfirmation(null)
 
     try {
       // Upload all files that haven't been uploaded yet
@@ -83,7 +86,15 @@ export default function CreateJob({ onCreated }) {
           upload_id: u.upload_id,
         })),
       })
-      onCreated(data.job_id)
+      if (data.status === 'awaiting_confirmation') {
+        setPendingConfirmation({
+          jobId: data.job_id,
+          profile: data.cost_estimate?.profile ?? profile,
+          cap: data.cost_estimate?.cost_cap_usd ?? null,
+        })
+      } else {
+        onCreated(data.job_id)
+      }
     } catch (err) {
       if (!rows.some(r => r.error)) {
         const detail = err.data?.detail
@@ -91,6 +102,21 @@ export default function CreateJob({ onCreated }) {
       }
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  async function handleConfirmStart() {
+    if (!pendingConfirmation?.jobId) return
+    setSubmitError(null)
+    setConfirming(true)
+    try {
+      const data = await confirmCost(pendingConfirmation.jobId)
+      onCreated(data.job_id)
+    } catch (err) {
+      const detail = err.data?.detail
+      setSubmitError(typeof detail === 'string' ? detail : detail?.message ?? err.message)
+    } finally {
+      setConfirming(false)
     }
   }
 
@@ -191,9 +217,27 @@ export default function CreateJob({ onCreated }) {
           </div>
         )}
 
+        {pendingConfirmation && (
+          <div className="bg-amber-50 border border-amber-300 text-amber-800 text-sm rounded px-3 py-3 space-y-2">
+            <p className="font-medium">Cost confirmation required</p>
+            <p className="text-xs">
+              Profile: <span className="font-semibold capitalize">{pendingConfirmation.profile}</span>
+              {pendingConfirmation.cap !== null ? ` · Cap: $${pendingConfirmation.cap}` : ''}
+            </p>
+            <button
+              type="button"
+              onClick={handleConfirmStart}
+              disabled={confirming}
+              className="bg-amber-600 text-white px-3 py-1.5 rounded font-medium hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {confirming ? 'Starting…' : 'Confirm & Start'}
+            </button>
+          </div>
+        )}
+
         <button
           type="submit"
-          disabled={submitting || anyUploading || rows.length === 0}
+          disabled={submitting || confirming || anyUploading || rows.length === 0}
           className="w-full bg-indigo-600 text-white py-2 rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {anyUploading ? 'Uploading files…' : submitting ? 'Submitting…' : 'Submit Job'}

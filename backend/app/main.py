@@ -33,6 +33,7 @@ from app.job_logic import (
     JobCreateRequest,
     JobStatus,
     ReviewSeverity,
+    requires_cost_confirmation,
     _utc_now,
     default_job_payload,
 )
@@ -604,6 +605,9 @@ async def create_job(payload: JobCreateRequest) -> Dict[str, Any]:
     job_id = str(uuid4())
     job = default_job_payload(payload)
     job["job_id"] = job_id
+    needs_confirmation = requires_cost_confirmation(job.get("profile_requested"))
+    if needs_confirmation:
+        job["status"] = JobStatus.AWAITING_CONFIRMATION.value
     await _repo_upsert_job(job_id, job)
     await anyio.to_thread.run_sync(
         JOB_REPO.append_job_event,
@@ -612,16 +616,59 @@ async def create_job(payload: JobCreateRequest) -> Dict[str, Any]:
         {"job_id": job_id, "profile": job["profile_requested"], "at": _utc_now()},
     )
 
+    if not needs_confirmation:
+        trace_id = str(uuid4())
+        message = build_message(
+            job_id=job_id,
+            phase="extracting",
+            attempt=0,
+            requested_by="api",
+            trace_id=trace_id,
+        )
+        await anyio.to_thread.run_sync(ORCHESTRATOR.enqueue, "extracting", message)
+
+    logger.info(
+        "Job created: job_id=%s profile=%s status=%s",
+        job_id,
+        job["profile_requested"],
+        job["status"],
+    )
+    response = {"job_id": job_id, **job}
+    response["cost_estimate"] = {
+        "profile": job["provider_effective"].get("profile"),
+        "cost_cap_usd": job["provider_effective"].get("cost_cap_usd"),
+        "requires_confirmation": needs_confirmation,
+    }
+    return response
+
+
+@api_router.post("/jobs/{job_id}/confirm-cost")
+async def confirm_cost(job_id: str) -> Dict[str, Any]:
+    job = await _job_or_404(job_id)
+    if job["status"] == JobStatus.DELETED.value:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job["status"] != JobStatus.AWAITING_CONFIRMATION.value:
+        raise HTTPException(status_code=409, detail="Job is not awaiting cost confirmation.")
+
+    job["status"] = JobStatus.QUEUED.value
+    job["updated_at"] = _utc_now()
+    await _repo_upsert_job(job_id, job)
+    await anyio.to_thread.run_sync(
+        JOB_REPO.append_job_event,
+        job_id,
+        "cost_confirmed",
+        {"job_id": job_id, "at": _utc_now()},
+    )
+
     trace_id = str(uuid4())
     message = build_message(
         job_id=job_id,
         phase="extracting",
         attempt=0,
-        requested_by="api",
+        requested_by="api:confirm-cost",
         trace_id=trace_id,
     )
     await anyio.to_thread.run_sync(ORCHESTRATOR.enqueue, "extracting", message)
-    logger.info("Job created: job_id=%s profile=%s", job_id, job["profile_requested"])
     return {"job_id": job_id, **job}
 
 
