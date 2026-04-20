@@ -27,6 +27,15 @@ Be concise. Focus on process-relevant actions, not aesthetics.
 Output one paragraph per frame, prefixed with the frame timestamp."""
 
 
+def _max_completion_tokens() -> int:
+    raw = os.environ.get("PFCD_MAX_COMPLETION_TOKENS", "2048").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 2048
+    return max(1, value)
+
+
 def _encode_image(path: str) -> str:
     with open(path, "rb") as fh:
         return base64.b64encode(fh.read()).decode("ascii")
@@ -65,7 +74,11 @@ def _call_vision_openai(messages: list[dict]) -> str:
     response = httpx.post(
         "https://api.openai.com/v1/chat/completions",
         headers={"Authorization": f"Bearer {api_key}"},
-        json={"model": _OPENAI_VISION_MODEL, "messages": messages, "max_tokens": 1024},
+        json={
+            "model": _OPENAI_VISION_MODEL,
+            "messages": messages,
+            "max_completion_tokens": _max_completion_tokens(),
+        },
         timeout=60.0,
     )
     response.raise_for_status()
@@ -90,7 +103,7 @@ def _call_vision_azure(messages: list[dict]) -> str:
     response = httpx.post(
         url,
         headers={"Authorization": f"Bearer {token.token}"},
-        json={"messages": messages, "max_tokens": 1024},
+        json={"messages": messages, "max_completion_tokens": _max_completion_tokens()},
         timeout=60.0,
     )
     response.raise_for_status()

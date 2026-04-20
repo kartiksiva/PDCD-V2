@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from typing import Any, Dict
 
 from app.job_logic import _utc_now
@@ -180,6 +181,59 @@ def _llm_timeout_seconds() -> float:
     return max(1.0, value)
 
 
+def _extract_balanced_json_object(text: str) -> str | None:
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : idx + 1]
+    return None
+
+
+def _parse_processing_json(raw: str) -> tuple[Dict[str, Any], bool]:
+    candidates: list[tuple[str, bool]] = [(raw.strip(), False)]
+    fenced = re.findall(r"```(?:json)?\s*(.*?)```", raw, flags=re.IGNORECASE | re.DOTALL)
+    candidates.extend((chunk.strip(), True) for chunk in fenced if chunk.strip())
+    balanced = _extract_balanced_json_object(raw)
+    if balanced:
+        candidates.append((balanced.strip(), True))
+
+    last_error: json.JSONDecodeError | None = None
+    for candidate, fallback_used in candidates:
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed, fallback_used
+        except json.JSONDecodeError as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+    raise json.JSONDecodeError("No valid JSON object found", raw, 0)
+
+
 def run_processing(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
     """Call Azure OpenAI to generate PDD + SIPOC from extracted evidence.
 
@@ -221,7 +275,9 @@ def run_processing(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
         )
     except asyncio.TimeoutError as exc:
         raise RuntimeError(f"Processing LLM call timed out after {timeout_seconds:.0f}s") from exc
-    draft = json.loads(raw)
+    draft, processing_fallback_used = _parse_processing_json(raw)
+    if processing_fallback_used:
+        job.setdefault("agent_signals", {})["processing_fallback"] = True
 
     # Ensure required top-level keys are present
     draft.setdefault("generated_at", _utc_now())

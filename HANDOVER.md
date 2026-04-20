@@ -27,7 +27,7 @@ Shared coordination board. Read and updated by both Claude and Codex at session 
 
 | ID | Task | Started |
 |----|------|---------|
-| — | | |
+| ISSUE-50-QUICK-WINS | Resolve GitHub issue #50 quick wins (processing JSON fallback, vision max_completion_tokens, REFERENCE/env docs updates) on branch `codex/issue-50-quick-wins` | 2026-04-20 |
 
 ---
 
