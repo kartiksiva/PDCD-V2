@@ -25,6 +25,8 @@ from app.job_logic import (
     add_agent_run,
     apply_cost_tracking_and_cap_warning,
     build_draft,
+    get_transcription_target,
+    get_vision_model,
     load_transcript_text,
     profile_config,
     update_agent_run,
@@ -57,6 +59,23 @@ _TERMINAL_STATUSES = {
     JobStatus.EXPIRED.value,
     JobStatus.DELETED.value,
 }
+
+
+def _record_phase_provider_effective(job: Dict[str, Any], *, phase: str, profile_conf: Dict[str, Any]) -> None:
+    provider_effective = job.setdefault("provider_effective", {})
+    phase_resolved = provider_effective.setdefault("phase_resolved", {})
+    profile = profile_conf.get("profile", "balanced")
+    provider = profile_conf.get("provider")
+    chat_model = profile_conf.get("chat_model") or profile_conf.get("model")
+    phase_payload: Dict[str, Any] = {
+        "provider": provider,
+        "profile": profile,
+        "chat_model": chat_model,
+    }
+    if phase == "extracting":
+        phase_payload["transcription"] = get_transcription_target(profile)
+        phase_payload["vision_model"] = get_vision_model(profile)
+    phase_resolved[phase] = phase_payload
 def _load_message(raw_body: Any) -> Dict[str, Any]:
     if isinstance(raw_body, (bytes, bytearray)):
         return json.loads(raw_body.decode("utf-8"))
@@ -176,6 +195,7 @@ class Worker:
             duration_ms=duration_ms,
             cost=cost,
         )
+        _record_phase_provider_effective(job, phase=self.phase, profile_conf=profile_conf)
         apply_cost_tracking_and_cap_warning(
             job,
             phase=self.phase,

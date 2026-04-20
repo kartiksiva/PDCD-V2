@@ -109,10 +109,14 @@ class VideoAdapter(IProcessEvidenceAdapter):
 
         storage_key = video_meta.get("storage_key")
         interval = frame_policy.get("sample_interval_sec", 5)
+        profile = job.get("profile_requested") or "balanced"
         transcript_text = ""
 
         if has_audio and storage_key:
-            raw = transcribe_audio_blob(storage_key)
+            try:
+                raw = transcribe_audio_blob(storage_key, profile=profile)
+            except TypeError:
+                raw = transcribe_audio_blob(storage_key)
             if raw and not raw.startswith("[transcription"):
                 transcript_text = raw
                 job["_video_transcript_inline"] = raw
@@ -134,7 +138,10 @@ class VideoAdapter(IProcessEvidenceAdapter):
                         if persisted_key:
                             frame_storage_keys.append((persisted_key, timestamp_sec))
                     job.setdefault("agent_signals", {})["frame_storage_keys"] = frame_storage_keys
-                    frame_descriptions = analyze_frames(frames, frame_policy)
+                    try:
+                        frame_descriptions = analyze_frames(frames, frame_policy, profile=profile)
+                    except TypeError:
+                        frame_descriptions = analyze_frames(frames, frame_policy)
                     if frame_descriptions:
                         job["_frame_descriptions_inline"] = frame_descriptions
             finally:

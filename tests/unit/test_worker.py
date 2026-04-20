@@ -84,6 +84,10 @@ def test_worker_extracting_phase(tmp_path, monkeypatch):
 
     updated = repository.get_job(job_id)
     assert updated["last_completed_phase"] == "extracting"
+    phase_resolved = updated["provider_effective"].get("phase_resolved", {}).get("extracting", {})
+    assert phase_resolved.get("chat_model") == updated["provider_effective"]["chat_model"]
+    assert isinstance(phase_resolved.get("transcription"), dict)
+    assert "vision_model" in phase_resolved
     # After extracting, next phase (processing) is enqueued
     assert len(enqueued) == 1
     assert enqueued[0][0] == "processing"

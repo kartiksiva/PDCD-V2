@@ -96,6 +96,16 @@ def _provider_name() -> str:
     return os.environ.get("PFCD_PROVIDER", "azure_openai").strip().lower() or "azure_openai"
 
 
+def _coerce_profile(profile: Profile | str | None) -> Profile:
+    if isinstance(profile, Profile):
+        return profile
+    if isinstance(profile, str):
+        normalized = profile.strip().lower()
+        if normalized == Profile.QUALITY.value:
+            return Profile.QUALITY
+    return Profile.BALANCED
+
+
 def _default_chat_model() -> str:
     deployment = os.environ.get("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME")
     if deployment:
@@ -139,20 +149,76 @@ def _profile_chat_model(profile: Profile) -> str:
     )
 
 
+def get_vision_model(profile: Profile | str | None) -> str:
+    resolved_profile = _coerce_profile(profile)
+    provider = _provider_name()
+    if provider == "openai":
+        default_model = "gpt-4o-mini"
+        if resolved_profile == Profile.QUALITY:
+            return (
+                os.environ.get("OPENAI_VISION_MODEL_QUALITY")
+                or os.environ.get("OPENAI_VISION_MODEL")
+                or "gpt-4o"
+            )
+        return (
+            os.environ.get("OPENAI_VISION_MODEL_BALANCED")
+            or os.environ.get("OPENAI_VISION_MODEL")
+            or default_model
+        )
+
+    if resolved_profile == Profile.QUALITY:
+        return (
+            os.environ.get("AZURE_OPENAI_VISION_DEPLOYMENT_QUALITY")
+            or os.environ.get("AZURE_OPENAI_VISION_DEPLOYMENT")
+            or ""
+        )
+    return (
+        os.environ.get("AZURE_OPENAI_VISION_DEPLOYMENT_BALANCED")
+        or os.environ.get("AZURE_OPENAI_VISION_DEPLOYMENT")
+        or ""
+    )
+
+
+def get_transcription_target(profile: Profile | str | None) -> Dict[str, str]:
+    # Profile is accepted for parity with chat/vision routing and future
+    # per-profile transcription targets.
+    _ = _coerce_profile(profile)
+    provider = _provider_name()
+    if provider == "openai":
+        return {
+            "provider": "openai",
+            "service": "openai_whisper",
+            "model": os.environ.get("OPENAI_TRANSCRIPTION_MODEL", "whisper-1"),
+        }
+    return {
+        "provider": "azure_openai",
+        "service": "azure_openai_whisper",
+        "model": os.environ.get("AZURE_OPENAI_WHISPER_DEPLOYMENT", "whisper"),
+    }
+
+
 def profile_config(profile: Profile) -> Dict[str, Any]:
     provider = _provider_name()
-    deployment = _profile_chat_model(profile)
+    chat_model = _profile_chat_model(profile)
+    vision_model = get_vision_model(profile)
+    transcription = get_transcription_target(profile)
     if profile == Profile.QUALITY:
         return {
             "profile": profile.value,
             "provider": provider,
-            "model": deployment,
+            "model": chat_model,
+            "chat_model": chat_model,
+            "vision_model": vision_model,
+            "transcription": transcription,
             "cost_cap_usd": 8.0,
         }
     return {
         "profile": profile.value,
         "provider": provider,
-        "model": deployment,
+        "model": chat_model,
+        "chat_model": chat_model,
+        "vision_model": vision_model,
+        "transcription": transcription,
         "cost_cap_usd": 4.0,
     }
 
@@ -176,9 +242,13 @@ def default_job_payload(payload: JobCreateRequest) -> Dict[str, Any]:
         "profile_requested": payload.profile.value,
         "provider_effective": {
             "provider": profile_conf["provider"],
-            "deployment": profile_conf["model"],
+            "deployment": profile_conf["chat_model"],
+            "chat_model": profile_conf["chat_model"],
             "profile": profile_conf["profile"],
             "cost_cap_usd": profile_conf["cost_cap_usd"],
+            "transcription": profile_conf["transcription"],
+            "vision_model": profile_conf["vision_model"],
+            "phase_resolved": {},
         },
         "input_manifest": {
             "video": {

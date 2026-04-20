@@ -57,10 +57,14 @@ class AudioAdapter(IProcessEvidenceAdapter):
         source_inputs = manifest.get("inputs") or []
         audio_input = next((inp for inp in source_inputs if inp.get("source_type") == "audio"), {})
         storage_key = audio_input.get("storage_key")
+        profile = job.get("profile_requested") or "balanced"
 
         transcript_text = ""
         if storage_key:
-            raw = transcribe_audio_blob(storage_key)
+            try:
+                raw = transcribe_audio_blob(storage_key, profile=profile)
+            except TypeError:
+                raw = transcribe_audio_blob(storage_key)
             if raw and not raw.startswith("[transcription"):
                 transcript_text = raw
                 job["_audio_transcript_inline"] = raw
