@@ -93,7 +93,8 @@ def test_extraction_agent_scenario_a(monkeypatch):
 
     transcript = _load_fixture("scenario_a", "transcript.vtt")
     expected = _load_expected("scenario_a")
-    mock_result = {"evidence_items": expected["extracted_evidence"]["evidence_items"],
+    mock_result = {"subject_process": "Invoice Approval",
+                   "evidence_items": expected["extracted_evidence"]["evidence_items"],
                    "speakers_detected": ["Finance Analyst", "AP Manager"],
                    "process_domain": "Accounts Payable — Invoice Approval",
                    "transcript_quality": "high"}
@@ -131,7 +132,7 @@ def test_extraction_cost_calculation(monkeypatch):
     """Cost should equal (prompt * 0.15 + completion * 0.60) / 1_000_000."""
     from app.agents.extraction import run_extraction
 
-    mock_result = {"evidence_items": [], "speakers_detected": [], "process_domain": "test", "transcript_quality": "low"}
+    mock_result = {"subject_process": "test", "evidence_items": [], "speakers_detected": [], "process_domain": "test", "transcript_quality": "low"}
 
     job = _make_job()
     job["_transcript_text_inline"] = "some transcript text"
@@ -188,6 +189,7 @@ def test_extraction_sets_source_type_to_video_when_video_is_primary():
             }
         ],
         "speakers_detected": ["Finance Analyst"],
+        "subject_process": "Invoice Processing",
         "process_domain": "Accounts Payable",
         "transcript_quality": "high",
     }
@@ -231,6 +233,7 @@ def test_extraction_uses_video_fact_hints_when_llm_returns_no_items():
                 json.dumps(
                     {
                         "evidence_items": [],
+                        "subject_process": "test",
                         "speakers_detected": [],
                         "process_domain": "test",
                         "transcript_quality": "high",
@@ -254,7 +257,7 @@ def test_extraction_parses_json_inside_code_fence():
 
     job = _make_job()
     job["_transcript_text_inline"] = "[00:00:01-00:00:05] test"
-    wrapped = """```json\n{"evidence_items":[],"speakers_detected":[],"process_domain":"x","transcript_quality":"high"}\n```"""
+    wrapped = """```json\n{"subject_process":"Order Intake","evidence_items":[],"speakers_detected":[],"process_domain":"x","transcript_quality":"high"}\n```"""
 
     with patch(
         "app.agents.extraction._call_extraction",
@@ -263,6 +266,7 @@ def test_extraction_parses_json_inside_code_fence():
         run_extraction(job, _balanced_profile())
 
     assert job["extracted_evidence"]["process_domain"] == "x"
+    assert job["extracted_evidence"]["subject_process"] == "Order Intake"
 
 
 def test_extraction_usage_tokens_supports_object_usage():
@@ -303,8 +307,11 @@ def test_extraction_prompt_contract_is_media_first():
     assert "When video or audio is available" in system_prompt
     assert "When transcript is the only source, treat it as primary evidence" in system_prompt
     assert "source_type" in user_prompt
+    assert '"subject_process":' in user_prompt
     assert "video|audio|transcript|frame" in user_prompt
     assert "Unknown Speaker" in user_prompt
+    assert "extraction method:" in user_prompt.lower()
+    assert "[00:10:50-00:11:40] Priya Nair (Customer)" in user_prompt
     assert "remove only genuine non-process content" in user_prompt.lower()
     assert "do not invent timestamps" in user_prompt.lower()
     assert "15–30 evidence items" in user_prompt

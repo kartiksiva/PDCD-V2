@@ -2952,3 +2952,60 @@ Fixed export embedding for frame captures stored as blob-relative `storage_key` 
 ### Open questions
 
 - None for this issue scope.
+
+## Section 22: Issue #64 — Reasoning-Model Extraction Prompt Anchoring (2026-04-20)
+
+Implemented follow-up hardening for `gpt-5.4-mini` transcript extraction by adding explicit subject-process anchoring, decomposition instructions, and discovery-session few-shot guidance.
+
+### What was added
+
+- `backend/app/agents/extraction.py`
+  - Updated `_USER_PROMPT_TEMPLATE` JSON contract to include:
+    - `subject_process`
+  - Reworked transcript instructions from rule-only filtering to explicit extraction decomposition:
+    - identify the underlying business process first
+    - map each process-relevant cue to one evidence item
+    - anchor each item to transcript cue timestamps
+  - Added discovery-session few-shot example using real cue structure:
+    - `[00:10:50-00:11:40] Priya Nair (Customer) ...`
+  - Preserved and clarified anti-meta-step behavior while keeping existing dedup guidance (`collapse adjacent steps...`).
+  - Added `subject_process` defaulting/propagation in extraction output:
+    - no-content path defaults to `"unknown"`
+    - fallback extraction payload includes `"subject_process": "unknown"`
+    - parsed LLM output is normalized with `setdefault("subject_process", process_domain or "unknown")` before persisting `job["extracted_evidence"]`.
+
+- `tests/unit/test_agents.py`
+  - Updated extraction prompt-contract assertions to require:
+    - `"subject_process":` in prompt schema
+    - `Extraction method:` section
+    - discovery-session few-shot cue presence
+  - Updated extraction JSON fixture stubs used in tests to include `subject_process` where appropriate.
+  - Added pass-through assertion ensuring parsed extraction JSON preserves `subject_process` in `job["extracted_evidence"]`.
+
+### Verification
+
+- `pytest tests/unit/test_agents.py -k "extraction_prompt_contract_is_media_first or extraction_parses_json_inside_code_fence or extraction_agent_scenario_a or extraction_cost_calculation" -q`
+  - Result: `4 passed`
+- `pytest tests/unit tests/integration -q`
+  - Result: `359 passed, 2 skipped`
+
+### Live transcript re-run status
+
+- Attempted required rerun on:
+  - `/Users/karthicks/kAgents/Projects/PFCD/samples/process-discovery-session-transcript-copy-vtt-as-txt.txt`
+  - with `PFCD_PROVIDER=openai` and `OPENAI_CHAT_MODEL_BALANCED=gpt-5.4-mini`
+- Runtime blocked by provider quota:
+  - `openai.RateLimitError: insufficient_quota (429)`
+- Because of the upstream quota block, the acceptance checks requiring live output (`subject_process` value, `>=15` evidence items with real timestamps, transcript_quality high/medium) remain pending quota restoration.
+
+### Decisions
+
+- Kept scope strictly to extraction prompt + extraction output shaping for `subject_process`; no model swap and no dependency changes.
+- Preserved prior #62 extraction token behavior and did not alter processing/reviewing contracts.
+
+### Open questions
+
+- After quota restoration, rerun the live transcript extraction to confirm:
+  - `subject_process` resolves to the operational process (for example, complaint handling)
+  - `evidence_items >= 15` with non-placeholder timestamp anchors
+  - `transcript_quality in {high, medium}`.
