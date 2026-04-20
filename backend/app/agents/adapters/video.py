@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+import re
 from typing import Any, Dict, List
 
 from app.agents.adapters.base import (
@@ -25,6 +26,10 @@ from app.agents.vision import analyze_frames
 from app.storage import upload_frame
 
 _VIDEO_MIME_PREFIXES = ("video/",)
+_VTT_TIMESTAMP_RE = re.compile(
+    r"^(\d{2}:\d{2}:\d{2})(?:\.\d+)?\s+-->\s+(\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:\s.*)?$"
+)
+_SPEAKER_RE = re.compile(r"^\s*([^:]{2,80}):\s*(.+)\s*$")
 
 
 def _format_seconds(total_seconds: float) -> str:
@@ -222,12 +227,143 @@ class VideoAdapter(IProcessEvidenceAdapter):
 
     def extract_facts(self, job: Dict[str, Any]) -> List[FactItem]:
         """
-        Return structured facts from video frames.
+        Return structured segment-level facts from available video metadata.
 
-        Stub — will call Azure Vision API when integrated.
-        Currently returns empty list; frame-level facts are not available.
+        Emits one fact per major segment when speaker turns are present in
+        Teams recording markers. Falls back to VTT cue segmentation when a
+        video transcript is available.
         """
-        return []
+        marker_facts = self._facts_from_recording_markers(job)
+        if marker_facts:
+            return marker_facts
+        return self._facts_from_video_transcript(job)
+
+    def _facts_from_recording_markers(self, job: Dict[str, Any]) -> List[FactItem]:
+        teams = job.get("teams_metadata") or {}
+        markers = teams.get("recording_markers") or []
+        if not isinstance(markers, list):
+            return []
+
+        facts: List[FactItem] = []
+        for marker in markers:
+            if not isinstance(marker, dict):
+                continue
+
+            speaker = (
+                marker.get("speaker")
+                or marker.get("speaker_name")
+                or marker.get("display_name")
+            )
+            if not speaker:
+                continue
+
+            start = self._to_anchor_component(
+                marker.get("start")
+                or marker.get("start_time")
+                or marker.get("start_time_utc")
+                or marker.get("timestamp")
+            )
+            end = self._to_anchor_component(
+                marker.get("end")
+                or marker.get("end_time")
+                or marker.get("end_time_utc")
+                or marker.get("timestamp")
+            )
+            if not start:
+                continue
+            anchor = f"{start}-{end or start}"
+
+            content = (
+                marker.get("text")
+                or marker.get("utterance")
+                or marker.get("summary")
+                or marker.get("label")
+                or f"{speaker} segment"
+            )
+            facts.append(
+                FactItem(
+                    anchor=anchor,
+                    content=str(content).strip(),
+                    speaker=str(speaker).strip(),
+                    confidence=0.5,
+                )
+            )
+        return facts
+
+    def _facts_from_video_transcript(self, job: Dict[str, Any]) -> List[FactItem]:
+        raw = str(job.get("_video_transcript_inline") or "").strip()
+        if not raw:
+            return []
+
+        lines = raw.splitlines()
+        current_anchor: str | None = None
+        current_lines: list[str] = []
+        facts: List[FactItem] = []
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                if current_anchor and current_lines:
+                    fact = self._fact_from_cue(current_anchor, current_lines)
+                    if fact is not None:
+                        facts.append(fact)
+                current_anchor = None
+                current_lines = []
+                continue
+
+            if stripped == "WEBVTT" or stripped.startswith("NOTE"):
+                continue
+
+            match = _VTT_TIMESTAMP_RE.match(stripped)
+            if match:
+                if current_anchor and current_lines:
+                    fact = self._fact_from_cue(current_anchor, current_lines)
+                    if fact is not None:
+                        facts.append(fact)
+                current_anchor = f"{match.group(1)}-{match.group(2)}"
+                current_lines = []
+                continue
+
+            if current_anchor is not None and not stripped.isdigit():
+                current_lines.append(stripped)
+
+        if current_anchor and current_lines:
+            fact = self._fact_from_cue(current_anchor, current_lines)
+            if fact is not None:
+                facts.append(fact)
+
+        return facts
+
+    def _fact_from_cue(self, anchor: str, lines: List[str]) -> FactItem | None:
+        content = " ".join(lines).strip()
+        if not content:
+            return None
+        speaker = None
+        summary = content
+        match = _SPEAKER_RE.match(content)
+        if match:
+            speaker = match.group(1).strip()
+            summary = match.group(2).strip()
+        return FactItem(
+            anchor=anchor,
+            content=summary or content,
+            speaker=speaker,
+            confidence=0.5,
+        )
+
+    def _to_anchor_component(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return _format_seconds(float(value))
+        text = str(value).strip()
+        ts_match = re.search(r"(\d{2}:\d{2}:\d{2})", text)
+        if ts_match:
+            return ts_match.group(1)
+        try:
+            return _format_seconds(float(text))
+        except ValueError:
+            return None
 
     def render_review_notes(self, evidence_obj: EvidenceObject) -> List[str]:
         """Return provenance notes for display in review UI."""

@@ -420,6 +420,67 @@ def test_video_adapter_normalize_with_frame_analysis(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# VideoAdapter — extract_facts()
+# ---------------------------------------------------------------------------
+
+def test_video_adapter_extract_facts_from_recording_markers():
+    from app.agents.adapters.video import VideoAdapter
+
+    adapter = VideoAdapter()
+    job = _make_job(has_video=True, has_audio=True, has_transcript=False)
+    job["teams_metadata"] = {
+        "recording_markers": [
+            {
+                "start": "00:00:10",
+                "end": "00:00:20",
+                "speaker": "Finance Analyst",
+                "text": "Open SAP invoice queue",
+            },
+            {
+                "start": 21,
+                "end": 31,
+                "speaker_name": "AP Manager",
+                "summary": "Approve matched invoices",
+            },
+        ]
+    }
+
+    facts = adapter.extract_facts(job)
+
+    assert len(facts) == 2
+    assert facts[0].anchor == "00:00:10-00:00:20"
+    assert facts[0].speaker == "Finance Analyst"
+    assert facts[0].confidence == 0.5
+    assert facts[1].anchor == "00:00:21-00:00:31"
+    assert facts[1].speaker == "AP Manager"
+    assert facts[1].confidence == 0.5
+
+
+def test_video_adapter_extract_facts_from_video_transcript_cues():
+    from app.agents.adapters.video import VideoAdapter
+
+    adapter = VideoAdapter()
+    job = _make_job(has_video=True, has_audio=True, has_transcript=False)
+    job["_video_transcript_inline"] = (
+        "WEBVTT\n\n"
+        "00:00:00.000 --> 00:00:05.000\n"
+        "Finance Analyst: Open SAP.\n\n"
+        "00:00:05.000 --> 00:00:10.000\n"
+        "AP Manager: Validate line items.\n"
+    )
+
+    facts = adapter.extract_facts(job)
+
+    assert len(facts) == 2
+    assert facts[0].anchor == "00:00:00-00:00:05"
+    assert facts[0].speaker == "Finance Analyst"
+    assert facts[0].confidence == 0.5
+    assert facts[1].anchor == "00:00:05-00:00:10"
+    assert facts[1].speaker == "AP Manager"
+    assert facts[1].confidence == 0.5
+
+
+# ---------------------------------------------------------------------------
 # VideoAdapter — render_review_notes()
 # ---------------------------------------------------------------------------
 
@@ -491,18 +552,18 @@ def test_registry_returns_video_adapter_for_video():
     assert isinstance(adapters[0], VideoAdapter)
 
 
-def test_registry_returns_both_adapters_transcript_first():
+def test_registry_returns_both_adapters_video_first():
     from app.agents.adapters.registry import AdapterRegistry
-    from app.agents.adapters.transcript import TranscriptAdapter
     from app.agents.adapters.video import VideoAdapter
+    from app.agents.adapters.transcript import TranscriptAdapter
 
     registry = AdapterRegistry()
-    # Deliberately pass video first to confirm transcript still comes first
+    # Deliberately pass transcript first to confirm video still comes first
     adapters = registry.get_adapters(["video", "transcript"])
 
     assert len(adapters) == 2
-    assert isinstance(adapters[0], TranscriptAdapter)
-    assert isinstance(adapters[1], VideoAdapter)
+    assert isinstance(adapters[0], VideoAdapter)
+    assert isinstance(adapters[1], TranscriptAdapter)
 
 
 def test_registry_skips_unknown_source_types():
@@ -546,7 +607,7 @@ def test_extraction_uses_adapter_normalized_content(monkeypatch):
         "transcript_quality": "low",
     }
 
-    job = _make_job()
+    job = _make_job(has_video=False, has_audio=False, has_transcript=True)
     job["_transcript_text_inline"] = _load_fixture("scenario_a", "transcript.vtt")
 
     captured_prompts = []

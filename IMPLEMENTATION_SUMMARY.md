@@ -2532,3 +2532,39 @@ Implemented all four Wave-1 quick-win hardening items from issue #50: processing
 ### Decisions
 
 - Kept parsing fallback deterministic and local to `processing.py` (no cross-agent imports) to match existing extraction pattern while minimizing coupling between agent modules.
+
+## Section 72: Issue #10 — Video-First Extraction Precedence + Source Tagging (2026-04-20)
+
+Implemented issue #10 to make extraction behavior truly video-first when both video and transcript are present.
+
+### Completed
+
+- Updated `backend/app/agents/adapters/registry.py`:
+  - adapter precedence is now `video` first, then `transcript`
+  - registry behavior/docs updated accordingly
+- Updated `backend/app/agents/adapters/video.py`:
+  - replaced `extract_facts()` stub with deterministic segment extraction
+  - emits one `FactItem` per major segment from `teams_metadata.recording_markers` when speaker turns are present
+  - falls back to VTT cue segmentation from `_video_transcript_inline` when markers are unavailable
+  - all emitted video fact hints use confidence `0.5`
+- Updated `backend/app/agents/extraction.py`:
+  - `_normalize_input()` now returns input context and enforces video-first content selection
+  - when both sources exist, transcript is kept as alignment context while video content drives LLM extraction input
+  - added deterministic adapter fact-hint fallback when LLM returns no evidence items
+  - enforced source tagging on all evidence items:
+    - video-primary extraction → `source_type = "video"`
+    - transcript/fallback extraction → `source_type = "transcript"`
+    - mixed/unknown values are normalized conservatively by the same rule
+- Updated tests:
+  - `tests/unit/test_adapters.py`: added video segment-fact coverage (recording markers + VTT cues), updated registry precedence expectation to video-first, and transcript-only normalization assertion path for prompt cleanliness
+  - `tests/unit/test_agents.py`: updated `_normalize_input()` contract assertions, added source-type coercion test for video-primary runs, added adapter-fact-hint fallback test, and maintained transcript-only fallback regression coverage
+
+### Validation
+
+- `cd backend && .venv/bin/pytest ../tests/unit/test_adapters.py ../tests/unit/test_agents.py -q --tb=short` → `98 passed`
+- `cd backend && .venv/bin/pytest ../tests/unit ../tests/integration -q --tb=short` → `321 passed, 2 skipped`
+
+### Decisions
+
+- Chose deterministic source-type normalization in extraction post-processing to guarantee `source_type` completeness and avoid relying on model adherence for provenance fields.
+- Implemented adapter fact hints as a bounded fallback rather than replacing LLM extraction, preserving existing architecture while improving no-item resilience for video-first jobs.

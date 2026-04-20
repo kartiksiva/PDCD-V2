@@ -164,6 +164,7 @@ def _fallback_extraction_from_text(content_text: str, parse_error: str) -> Dict[
                 "input_artifact": "",
                 "output_artifact": "",
                 "anchor": anchor,
+                "source_type": "transcript",
                 "confidence": 0.35,
             }
         )
@@ -179,6 +180,7 @@ def _fallback_extraction_from_text(content_text: str, parse_error: str) -> Dict[
                     "input_artifact": "",
                     "output_artifact": "",
                     "anchor": "section:fallback",
+                    "source_type": "transcript",
                     "confidence": 0.25,
                 }
             )
@@ -226,13 +228,51 @@ def _llm_timeout_seconds() -> float:
     return max(1.0, value)
 
 
-def _normalize_input(job: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
+def _fact_items_to_evidence_items(
+    facts: List[Any], *, source_type: str
+) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for idx, fact in enumerate(facts, start=1):
+        summary = (getattr(fact, "content", "") or "").strip()
+        anchor = (getattr(fact, "anchor", "") or "").strip()
+        if not summary or not anchor:
+            continue
+        speaker = (getattr(fact, "speaker", None) or "Unknown").strip()
+        confidence = float(getattr(fact, "confidence", 0.5) or 0.5)
+        items.append(
+            {
+                "id": f"ev-{idx:02d}",
+                "summary": summary[:240],
+                "actor": speaker,
+                "system": "Unknown",
+                "input_artifact": "",
+                "output_artifact": "",
+                "source_type": source_type,
+                "anchor": anchor,
+                "confidence": max(0.0, min(confidence, 1.0)),
+            }
+        )
+    return items
+
+
+def _apply_source_type_defaults(extracted: Dict[str, Any], primary_source_type: str) -> None:
+    items = extracted.get("evidence_items")
+    if not isinstance(items, list):
+        return
+    resolved = "video" if primary_source_type == "video" else "transcript"
+    for item in items:
+        if isinstance(item, dict):
+            item["source_type"] = resolved
+
+
+def _normalize_input(job: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
     """
     Use registered adapters to normalize job input into extraction content.
 
-    Returns (content_text, manifests) where:
-    - content_text is the cleaned, LLM-ready string (transcript preferred over video metadata)
+    Returns (content_text, manifests, input_context) where:
+    - content_text is the cleaned, LLM-ready string (video preferred when both exist)
     - manifests is a list of DocumentTypeManifest dicts to store on the job
+    - input_context contains primary source selection and deterministic fact hints
 
     Falls back to raw _transcript_text_inline if no adapter matches.
     """
@@ -244,6 +284,8 @@ def _normalize_input(job: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
     content_text = ""
     transcript_content = ""
     video_content = ""
+    video_fact_hints: List[Dict[str, Any]] = []
+    transcript_fact_hints: List[Dict[str, Any]] = []
     manifests: List[Dict[str, Any]] = []
 
     for adapter in adapters:
@@ -258,19 +300,28 @@ def _normalize_input(job: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
         })
         if ev.source_type == "transcript" and ev.content_text:
             transcript_content = ev.content_text
+            transcript_fact_hints = _fact_items_to_evidence_items(
+                adapter.extract_facts(job), source_type="transcript"
+            )
         elif ev.source_type == "video" and ev.content_text and not ev.content_text.startswith("["):
             video_content = ev.content_text
+            video_fact_hints = _fact_items_to_evidence_items(
+                adapter.extract_facts(job), source_type="video"
+            )
 
-    # Build content for LLM: prefer uploaded transcript; supplement with video transcription.
-    if transcript_content and video_content:
-        content_text = (
-            f"VIDEO TRANSCRIPT:\n{video_content}\n\n"
-            f"UPLOADED TRANSCRIPT:\n{transcript_content}"
-        )
+    primary_source_type = "transcript"
+    fact_hints = transcript_fact_hints
+
+    # Video-first precedence: when both are available, transcript stays as
+    # alignment context and video drives extraction content.
+    if video_content:
+        content_text = video_content
+        primary_source_type = "video"
+        fact_hints = video_fact_hints
+        if transcript_content:
+            job["_transcript_text_inline"] = transcript_content
     elif transcript_content:
         content_text = transcript_content
-    elif video_content:
-        content_text = video_content
 
     # Final fallback: raw inline text (used when source_types is empty or unknown).
     # NOTE: _transcript_text_inline is intentionally ephemeral (set by the worker
@@ -278,7 +329,14 @@ def _normalize_input(job: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
     if not content_text:
         content_text = job.get("_transcript_text_inline") or ""
 
-    return content_text, manifests
+    if not content_text and video_fact_hints:
+        primary_source_type = "video"
+        fact_hints = video_fact_hints
+
+    return content_text, manifests, {
+        "primary_source_type": primary_source_type,
+        "fact_hints": fact_hints,
+    }
 
 
 def run_extraction(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
@@ -286,7 +344,7 @@ def run_extraction(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
 
     Mutates *job* in-place; returns cost in USD.
     """
-    content_text, manifests = _normalize_input(job)
+    content_text, manifests, input_context = _normalize_input(job)
     job["document_type_manifests"] = manifests
 
     if not content_text:
@@ -332,6 +390,15 @@ def run_extraction(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
             "reason": "llm_invalid_json",
             "error": str(exc)[:512],
         }
+
+    primary_source_type = input_context.get("primary_source_type") or "transcript"
+    if not extracted.get("evidence_items"):
+        fact_hints = input_context.get("fact_hints") or []
+        if fact_hints:
+            extracted["evidence_items"] = fact_hints
+            extracted.setdefault("fallback_reason", "adapter_fact_hints")
+
+    _apply_source_type_defaults(extracted, primary_source_type)
 
     job["extracted_evidence"] = extracted
     job["agent_signals"]["transcript_parsed"] = True
