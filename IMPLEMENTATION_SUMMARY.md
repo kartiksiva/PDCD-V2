@@ -2611,3 +2611,40 @@ Implemented dedicated adapter paths for `audio` and `document` source inputs wit
 
 - Kept `document` evidence conservative: deterministic manifests + contextual metadata (text preview where feasible), with no schema/API contract expansion.
 - Reused existing transcription utility for audio adapter to avoid duplicating audio ingestion logic and keep behavior aligned with video-transcription paths.
+## Section 74: Issue #16 — Readiness Probe + App Insights + Alerting Baseline (2026-04-20)
+
+Implemented the operational baseline requested in issue #16 across backend, infra bootstrap, and docs.
+
+### Completed
+
+- Added `GET /health/readiness` in `backend/app/main.py`:
+  - public endpoint (same auth posture as `/health`)
+  - returns `200` with `status: ready` only when dependency checks pass
+  - returns `503` with `status: not_ready` and per-check diagnostics otherwise
+  - includes explicit checks for database, storage writeability, service bus config, OpenAI config, and speech config
+  - includes `missing_environment` list for required readiness env vars
+- Infra bootstrap updates in `infra/dev-bootstrap.sh`:
+  - added workspace-based Application Insights provisioning (`APP_INSIGHTS_NAME`)
+  - stores App Insights connection string in Key Vault (`application-insights-connection-string`)
+  - applies `APPLICATIONINSIGHTS_CONNECTION_STRING` + profiler/snapshot disable settings to API and worker apps
+  - added Azure Monitor baseline alert setup:
+    - API `Http5xx` metric alert
+    - DLQ metric alerts for extracting/processing/reviewing queues
+    - scheduled query alert for failing `/health/readiness` requests
+  - added optional action group notification flow via `ALERT_EMAIL` / `ALERT_ACTION_GROUP_NAME`
+- Documentation updates:
+  - `REFERENCE.md`: readiness endpoint contract + new ops/bootstrap env vars
+  - `infra/README.md`: App Insights + alert baseline in “What it creates”, verification commands, and override notes
+- Tests:
+  - new `tests/unit/test_health_readiness.py`
+  - updated `tests/integration/test_auth_enforcement.py` to cover public `/health/readiness`
+
+### Validation
+
+- `cd backend && .venv/bin/pytest ../tests/unit/test_health_readiness.py ../tests/integration/test_auth_enforcement.py -q --tb=short` → `17 passed`
+- `cd backend && .venv/bin/pytest ../tests/unit ../tests/integration -q --tb=short` → `325 passed, 2 skipped`
+
+### Decisions
+
+- Kept readiness checks deterministic and local-process safe (config + local capability checks) to avoid introducing network-dependent flakiness in health endpoints.
+- Implemented alert baseline creation as idempotent/best-effort with graceful fallback when monitor extensions or notification channels are unavailable.

@@ -30,6 +30,13 @@ def test_health_is_always_public(app_client_with_auth):
     assert resp.status_code not in (401, 403)
 
 
+def test_health_readiness_is_always_public(app_client_with_auth):
+    ctx, _ = app_client_with_auth
+    # /health/readiness must also succeed with no key.
+    resp = ctx.client.get("/health/readiness")
+    assert resp.status_code not in (401, 403)
+
+
 def test_missing_key_returns_401(app_client_with_auth):
     ctx, _ = app_client_with_auth
     resp = ctx.client.get(f"/api/jobs/{uuid4()}")

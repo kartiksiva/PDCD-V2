@@ -158,6 +158,9 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 | `PFCD_CONSISTENCY_MATCH_THRESHOLD` | Transcript/media consistency threshold for `match` | `0.80` |
 | `PFCD_CONSISTENCY_INCONCLUSIVE_THRESHOLD` | Anchor-fallback consistency threshold for `inconclusive` | `0.50` |
 | `PFCD_CONSISTENCY_MISMATCH_THRESHOLD` | Transcript/media consistency threshold for `suspected_mismatch` | `0.30` |
+| `APP_INSIGHTS_NAME` | Azure Application Insights component name (bootstrap/ops baseline) | `${PROJECT}-${ENVIRONMENT}-appi` |
+| `ALERT_ACTION_GROUP_NAME` | Azure Monitor action group name (bootstrap/ops baseline) | `${PROJECT}-${ENVIRONMENT}-ops-ag` |
+| `ALERT_EMAIL` | Alert notification recipient used by bootstrap action group setup | `""` (alerts created without notifications) |
 
 ### Frontend Dev Environment Variables
 
@@ -214,6 +217,7 @@ Base path: `/api`
 | GET | `/api/jobs/{job_id}/exports/{format}` | Export draft (`json`, `markdown`, `pdf`, `docx`) |
 | DELETE | `/api/jobs/{job_id}` | Soft-delete / mark job expired |
 | GET | `/health` | Health check — returns `{"status": "ok"}` (200) or `{"status": "degraded", ...}` (503) with env diagnostics when Azure connections are unavailable |
+| GET | `/health/readiness` | Deep readiness check — returns `{"status":"ready"}` (200) only when dependency checks pass, else `{"status":"not_ready", ...}` (503) with per-check diagnostics |
 
 `POST /api/jobs` accepts additive `input_files[].upload_id` references from `POST /api/upload`. When present, the backend validates that the upload exists before persisting the job and resolves the upload to the internal `storage_key` path used by workers.
 
