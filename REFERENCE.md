@@ -213,6 +213,8 @@ Base path: `/api`
 
 `POST /api/jobs` accepts additive `input_files[].upload_id` references from `POST /api/upload`. When present, the backend validates that the upload exists before persisting the job and resolves the upload to the internal `storage_key` path used by workers.
 
+`PUT /api/jobs/{job_id}/draft` requires `draft_version` from the latest `GET /api/jobs/{job_id}/draft` response. If the submitted `draft_version` is stale, the API returns `409 Draft version conflict ...`; callers should re-fetch draft state and retry with the current version.
+
 ---
 
 ## Data Model (Database Tables)
@@ -228,6 +230,10 @@ Base path: `/api`
 | `job_events` | `event_id` (PK), `job_id`, `event_type`, `created_at` | Audit log |
 
 All JSON columns use deterministic serialization: `json.dumps(..., ensure_ascii=True, separators=(',', ':'))`.
+
+Versioning notes:
+- `jobs.version` is SQLAlchemy optimistic-lock versioning for row-level concurrent writes.
+- `drafts.version` is API-level draft edit versioning (client sends `draft_version` on update).
 
 ---
 

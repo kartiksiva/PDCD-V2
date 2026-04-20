@@ -2449,3 +2449,49 @@ Implemented the issue #48 prompt contract updates for extraction/processing and 
 ### Open follow-up
 
 - To run the live test in this environment, set provider credentials/deployment env vars (`PFCD_PROVIDER`, endpoint/key, and balanced deployment name) and rerun the gated integration test.
+
+---
+
+## Section 51: Issue #44 — StaleDataError Catch + Upload Name Unit Tests + Draft-Version Docs (2026-04-20)
+
+Completed the next unblocked item in the #51 sequence with a narrow backend/docs pass.
+
+### Backend reliability / concurrency
+
+- Confirmed and covered repository-level stale-write handling in `JobRepository.upsert_job()`:
+  - `sqlalchemy.orm.exc.StaleDataError` is translated to `ConcurrentModificationError("Concurrent job update detected for {job_id}")`.
+  - This keeps API behavior deterministic (`409` via `_repo_upsert_job`) instead of surfacing ORM exceptions.
+
+### Unit test coverage
+
+- `tests/unit/test_repository.py`
+  - Added `test_upsert_converts_staledataerror_to_concurrent_modification`.
+  - The test monkeypatches `session_scope` to raise `StaleDataError` and asserts the repository raises `ConcurrentModificationError`.
+- `tests/unit/test_upload_utils.py` (new)
+  - Added direct unit tests for `_safe_upload_name` in `app.main`:
+    - empty/blank/only-dots input falls back to `upload`
+    - POSIX + Windows traversal patterns (`../`, `..\\..\\`) are reduced to basename
+    - leading-dot names (for example `.env`) are de-dotted and kept as safe basenames
+
+### Reference documentation
+
+- `REFERENCE.md`
+  - Added explicit API contract note for `PUT /api/jobs/{job_id}/draft`:
+    - caller must send `draft_version` from latest `GET /draft`
+    - stale version returns `409 Draft version conflict ...`
+  - Added versioning notes clarifying:
+    - `jobs.version` = DB optimistic-lock version
+    - `drafts.version` = client-facing draft edit version
+
+### Validation
+
+Ran focused tests after changes:
+
+- `cd backend && .venv/bin/pytest ../tests/unit/test_repository.py ../tests/unit/test_upload_utils.py -q` → `9 passed`
+- `cd backend && .venv/bin/pytest ../tests/unit ../tests/integration -q --tb=short` → `317 passed, 2 skipped`
+
+### Notes
+
+- No API schema changes were introduced.
+- No migration changes were needed.
+- This was a surgical fix + coverage + docs update for Issue #44 scope only.
