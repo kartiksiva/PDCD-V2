@@ -300,13 +300,41 @@ def test_extraction_prompt_contract_is_media_first():
     system_prompt = extraction._SYSTEM_PROMPT
     user_prompt = extraction._USER_PROMPT_TEMPLATE
 
-    assert "Video and audio are the primary sources" in system_prompt
-    assert "supporting signal" in system_prompt
+    assert "When video or audio is available" in system_prompt
+    assert "When transcript is the only source, treat it as primary evidence" in system_prompt
     assert "source_type" in user_prompt
     assert "video|audio|transcript|frame" in user_prompt
     assert "Unknown Speaker" in user_prompt
-    assert "Remove transcript artifacts".lower() in user_prompt.lower()
+    assert "remove only genuine non-process content" in user_prompt.lower()
+    assert "do not invent timestamps" in user_prompt.lower()
+    assert "15–30 evidence items" in user_prompt
     assert "collapse adjacent steps" in user_prompt.lower()
+
+
+def test_extraction_tokens_default_to_4096(monkeypatch):
+    from app.agents.extraction import _max_extraction_tokens
+
+    monkeypatch.delenv("PFCD_MAX_EXTRACTION_TOKENS", raising=False)
+    monkeypatch.delenv("PFCD_MAX_COMPLETION_TOKENS", raising=False)
+    assert _max_extraction_tokens() == 4096
+
+
+def test_extraction_tokens_prefers_extraction_env(monkeypatch):
+    from app.agents.extraction import _max_extraction_tokens
+
+    monkeypatch.setenv("PFCD_MAX_COMPLETION_TOKENS", "2048")
+    monkeypatch.setenv("PFCD_MAX_EXTRACTION_TOKENS", "8192")
+    assert _max_extraction_tokens() == 8192
+
+
+def test_extraction_tokens_floor_and_invalid(monkeypatch):
+    from app.agents.extraction import _max_extraction_tokens
+
+    monkeypatch.setenv("PFCD_MAX_EXTRACTION_TOKENS", "120")
+    assert _max_extraction_tokens() == 512
+
+    monkeypatch.setenv("PFCD_MAX_EXTRACTION_TOKENS", "abc")
+    assert _max_extraction_tokens() == 4096
 
 
 def test_processing_usage_tokens_supports_dict_usage():

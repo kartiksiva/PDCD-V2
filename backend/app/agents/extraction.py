@@ -16,8 +16,10 @@ logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
     "You are a process documentation specialist. Extract structured process evidence from "
-    "business process recordings. Video and audio are the primary sources; transcript is "
-    "a supporting signal. Return only valid JSON."
+    "business process recordings and discovery sessions. When video or audio is available, "
+    "they are the primary evidence source and transcript is a supporting signal. When "
+    "transcript is the only source, treat it as primary evidence and extract all described "
+    "process steps in full detail. Return only valid JSON."
 )
 
 _USER_PROMPT_TEMPLATE = """\
@@ -46,14 +48,18 @@ Extract all distinct process steps from this transcript. Return a JSON object wi
 
 Rules:
 - id must be sequential: ev-01, ev-02, …
-- each evidence item must represent a distinct process action, not a transcript fragment
-- remove transcript artifacts: VTT cue numbers, timestamps-only lines, facilitator questions,
-  filler phrases, and non-process chitchat
+- each evidence item must represent one distinct step in the process being described or performed
+- if the transcript is a PROCESS DISCOVERY SESSION (facilitators asking questions, participants describing how
+  they work), extract the steps of the DESCRIBED process from participants' answers — NOT the meta-steps of
+  the meeting itself (do NOT produce steps like "discuss the process" or "capture process details")
+- remove only genuine non-process content: greetings, audio-check talk, scheduling coordination, and filler
+  phrases; keep all Q&A that reveals process steps, decision points, handoffs, systems, actors, or SLAs
 - collapse adjacent steps with the same actor and substantially the same action into one item
-- anchor must reference a timestamp range or section label from the transcript
+- anchor must reference a timestamp range or section label FROM THE TRANSCRIPT — do NOT invent timestamps
 - source_type must be one of video|audio|transcript|frame based on the evidence source
-- confidence is a float between 0.0 and 1.0
+- confidence is a float between 0.0 and 1.0; use 0.7–0.9 for clearly described steps, 0.4–0.6 for inferred
 - speakers_detected must list all unique speakers; use "Unknown Speaker" if unidentifiable
+- aim for complete extraction: a 60-minute discovery session should yield 15–30 evidence items
 """
 
 
@@ -85,13 +91,16 @@ def _extract_usage_tokens(metadata: Dict[str, Any]) -> Tuple[int, int]:
     )
 
 
-def _max_completion_tokens() -> int:
-    raw = os.environ.get("PFCD_MAX_COMPLETION_TOKENS", "2048").strip()
+def _max_extraction_tokens() -> int:
+    raw = os.environ.get(
+        "PFCD_MAX_EXTRACTION_TOKENS",
+        os.environ.get("PFCD_MAX_COMPLETION_TOKENS", "4096"),
+    ).strip()
     try:
         value = int(raw)
     except ValueError:
-        return 2048
-    return max(1, value)
+        return 4096
+    return max(512, value)
 
 
 def _extract_balanced_json_object(text: str) -> str | None:
@@ -207,7 +216,7 @@ async def _call_extraction(deployment: str, system_prompt: str, user_content: st
     chat.add_user_message(user_content)
     settings = OpenAIChatPromptExecutionSettings(
         response_format={"type": "json_object"},
-        max_completion_tokens=_max_completion_tokens(),
+        max_completion_tokens=_max_extraction_tokens(),
     )
     svc = get_chat_service(deployment)
     result = await svc.get_chat_message_content(chat, settings, kernel=kernel)

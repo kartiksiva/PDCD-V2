@@ -2843,6 +2843,62 @@ Implemented a preflight cost confirmation flow for selected profiles (default: `
 
 - None for this issue scope.
 
+## Section 21: Issue #62 — Extraction Prompt Hardening for GPT-5.4* (2026-04-20)
+
+Updated transcript-only extraction instructions and token budgeting to address under-extraction on discovery-session transcripts with stricter model behavior (`gpt-5.4-mini` / `gpt-5.4`).
+
+### What changed
+
+- `backend/app/agents/extraction.py`
+  - Updated `_SYSTEM_PROMPT` to make source hierarchy conditional:
+    - video/audio primary when present
+    - transcript primary when it is the only source
+  - Replaced user rules block to:
+    - preserve discovery-session Q&A that contains real process content
+    - explicitly reject meeting meta-steps
+    - forbid invented timestamps
+    - target richer extraction density (`15–30 evidence items` for 60-minute sessions)
+  - Added `_max_extraction_tokens()`:
+    - uses `PFCD_MAX_EXTRACTION_TOKENS`
+    - falls back to `PFCD_MAX_COMPLETION_TOKENS`
+    - defaults to `4096`
+    - applies floor `max(512, value)`
+  - Wired extraction call settings to use `_max_extraction_tokens()` (without changing processing agent token behavior).
+
+### Tests updated
+
+- `tests/unit/test_agents.py`
+  - Updated extraction prompt-contract assertions for the new conditional hierarchy and discovery-session rules.
+  - Added extraction token-cap tests:
+    - default `4096`
+    - extraction env override precedence over completion env
+    - floor and invalid-value fallback behavior
+
+### Validation
+
+- `pytest tests/unit/test_agents.py -k "extraction_prompt_contract_is_media_first or extraction_tokens" -q`
+  - Result: `4 passed`
+- `pytest tests/unit tests/integration -q`
+  - Result: `359 passed, 2 skipped`
+
+### Live transcript re-run status
+
+- Attempted required re-run on:
+  - `/Users/karthicks/kAgents/Projects/PFCD/samples/process-discovery-session-transcript-copy-vtt-as-txt.txt`
+  - with `PFCD_PROVIDER=openai` and `OPENAI_CHAT_MODEL_BALANCED=gpt-5.4-mini`
+- Runtime blocked by provider quota:
+  - `openai.RateLimitError: insufficient_quota (429)`
+- Because of the upstream quota block, the explicit `>=15 evidence items with real timestamps` live acceptance check is pending external quota restoration.
+
+### Decisions
+
+- Kept change strictly scoped to extraction prompt + extraction-only token cap as requested.
+- Avoided touching processing prompt/token settings to prevent cross-agent behavioral drift.
+
+### Open questions
+
+- Once OpenAI quota is restored, rerun the live extraction command to close the final acceptance gate (`>=15` items with real transcript timestamps).
+
 ## Section 20: Issue #15 — Frame Evidence Embeds for PDF/DOCX (2026-04-20)
 
 Fixed export embedding for frame captures stored as blob-relative `storage_key` values.
