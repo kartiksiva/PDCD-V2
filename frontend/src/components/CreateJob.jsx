@@ -63,7 +63,7 @@ export default function CreateJob({ onCreated }) {
           if (row.result) return row.result
           setRows(prev => prev.map((r, i) => i === idx ? { ...r, uploading: true, error: null } : r))
           try {
-            const result = await uploadFile(row.file)
+            const result = await uploadFile(row.file, row.sourceType)
             setRows(prev => prev.map((r, i) => i === idx ? { ...r, uploading: false, result, sourceType: result.source_type } : r))
             return { ...result, source_type: row.sourceType }
           } catch (err) {

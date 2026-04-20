@@ -68,19 +68,52 @@ export function exportUrl(jobId, fmt) {
   return `${BASE}/jobs/${jobId}/exports/${fmt}`
 }
 
-export async function uploadFile(file) {
-  const form = new FormData()
-  form.append('file', file)
-  const res = await fetch(`${BASE}/upload`, {
+function _resolveUploadUrl(url) {
+  if (/^https?:\/\//i.test(url)) return url
+  if (url.startsWith('/')) return `${DEV_BASE}${url}`
+  return url
+}
+
+function _makeClientUploadJobId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
+  return `upload-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+export async function uploadFile(file, sourceType = 'document') {
+  const uploadJobId = _makeClientUploadJobId()
+  const requestRes = await _fetch(`/jobs/${uploadJobId}/upload-url`, {
     method: 'POST',
-    body: form,
-    headers: authHeaders(),
+    body: JSON.stringify({
+      file_name: file.name,
+      size_bytes: file.size,
+      mime_type: file.type || 'application/octet-stream',
+      source_type: sourceType,
+      document_type: sourceType === 'document' ? 'document' : 'video',
+    }),
   })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail ?? `Upload failed: ${res.statusText}`)
+  const uploadMeta = await requestRes.json()
+  const uploadUrl = _resolveUploadUrl(uploadMeta.upload.url)
+  const uploadHeaders = {
+    ...(uploadMeta.upload.headers ?? {}),
+    ...(uploadMeta.upload.requires_api_auth ? authHeaders() : {}),
   }
-  return res.json()
+  const uploadRes = await fetch(uploadUrl, {
+    method: uploadMeta.upload.method ?? 'PUT',
+    body: file,
+    headers: uploadHeaders,
+  })
+  if (!uploadRes.ok) {
+    const err = await uploadRes.json().catch(() => ({}))
+    throw new Error(err.detail ?? `Upload failed: ${uploadRes.statusText}`)
+  }
+  return {
+    upload_id: uploadMeta.upload_id,
+    file_name: uploadMeta.file_name,
+    size_bytes: uploadMeta.size_bytes,
+    mime_type: uploadMeta.mime_type,
+    source_type: uploadMeta.source_type,
+    storage_key: uploadMeta.storage_key,
+  }
 }
 
 function inferDownloadName(jobId, fmt, res) {

@@ -103,6 +103,74 @@ def test_create_job_accepts_existing_upload_id(app_client):
     assert body["input_manifest"]["inputs"][0]["upload_id"] == upload["upload_id"]
 
 
+def test_upload_url_flow_accepts_uploaded_content(app_client):
+    upload_url_resp = app_client.client.post(
+        "/api/jobs/client-upload-1/upload-url",
+        json={
+            "file_name": "t.vtt",
+            "size_bytes": 50,
+            "mime_type": "text/vtt",
+            "source_type": "transcript",
+        },
+    )
+    assert upload_url_resp.status_code == 201
+    contract = upload_url_resp.json()
+    assert contract["upload"]["method"] == "PUT"
+    assert contract["upload_id"]
+
+    put_resp = app_client.client.put(
+        contract["upload"]["url"],
+        content=b"WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nhello world\n",
+        headers=contract["upload"]["headers"],
+    )
+    assert put_resp.status_code == 201
+
+    payload = {
+        "input_files": [
+            {
+                "source_type": "transcript",
+                "file_name": contract["file_name"],
+                "size_bytes": contract["size_bytes"],
+                "mime_type": contract["mime_type"],
+                "upload_id": contract["upload_id"],
+            }
+        ]
+    }
+    create_resp = app_client.client.post("/api/jobs", json=payload)
+    assert create_resp.status_code == 201
+    body = create_resp.json()
+    assert body["input_manifest"]["inputs"][0]["upload_id"] == contract["upload_id"]
+
+
+def test_create_job_rejects_upload_url_without_uploaded_content(app_client):
+    upload_url_resp = app_client.client.post(
+        "/api/jobs/client-upload-2/upload-url",
+        json={
+            "file_name": "t.vtt",
+            "size_bytes": 32,
+            "mime_type": "text/vtt",
+            "source_type": "transcript",
+        },
+    )
+    assert upload_url_resp.status_code == 201
+    contract = upload_url_resp.json()
+
+    payload = {
+        "input_files": [
+            {
+                "source_type": "transcript",
+                "file_name": contract["file_name"],
+                "size_bytes": contract["size_bytes"],
+                "mime_type": contract["mime_type"],
+                "upload_id": contract["upload_id"],
+            }
+        ]
+    }
+    create_resp = app_client.client.post("/api/jobs", json=payload)
+    assert create_resp.status_code == 400
+    assert "upload_id" in create_resp.text
+
+
 def test_get_missing_job_returns_404(app_client):
     resp = app_client.client.get(f"/api/jobs/{uuid4()}")
     assert resp.status_code == 404
