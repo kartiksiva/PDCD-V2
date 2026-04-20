@@ -15,8 +15,9 @@ _adapter_registry = AdapterRegistry()
 logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
-    "You are a process documentation specialist. Extract structured evidence from this "
-    "business process transcript. Return only valid JSON."
+    "You are a process documentation specialist. Extract structured process evidence from "
+    "business process recordings. Video and audio are the primary sources; transcript is "
+    "a supporting signal. Return only valid JSON."
 )
 
 _USER_PROMPT_TEMPLATE = """\
@@ -33,20 +34,26 @@ Extract all distinct process steps from this transcript. Return a JSON object wi
       "system": "string",
       "input_artifact": "string",
       "output_artifact": "string",
+      "source_type": "video|audio|transcript|frame",
       "anchor": "HH:MM:SS-HH:MM:SS or section label",
       "confidence": 0.0
     }}
   ],
-  "speakers_detected": ["name or Unknown"],
+  "speakers_detected": ["name or Unknown Speaker"],
   "process_domain": "string",
   "transcript_quality": "high|medium|low"
 }}
 
 Rules:
 - id must be sequential: ev-01, ev-02, …
+- each evidence item must represent a distinct process action, not a transcript fragment
+- remove transcript artifacts: VTT cue numbers, timestamps-only lines, facilitator questions,
+  filler phrases, and non-process chitchat
+- collapse adjacent steps with the same actor and substantially the same action into one item
 - anchor must reference a timestamp range or section label from the transcript
+- source_type must be one of video|audio|transcript|frame based on the evidence source
 - confidence is a float between 0.0 and 1.0
-- speakers_detected must list all unique speakers; use "Unknown" if unidentifiable
+- speakers_detected must list all unique speakers; use "Unknown Speaker" if unidentifiable
 """
 
 

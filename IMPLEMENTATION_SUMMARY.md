@@ -2401,3 +2401,51 @@ Delivered a consolidated inventory document covering both repo-documented pendin
 ### Open questions / follow-up
 
 - If required for governance, split the single combined inventory into two files (`pending-issues.md` and `automation-prompts.md`) and add ownership metadata per issue row.
+
+---
+
+## Section 70: Codex Delivery — GitHub Issue #48 Prompt Alignment + Deployed-Model Live Test (2026-04-20)
+
+Implemented the issue #48 prompt contract updates for extraction/processing and added an opt-in live integration test path that executes against configured deployed models.
+
+### Completed
+
+- Updated [backend/app/agents/extraction.py](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/app/agents/extraction.py):
+  - system prompt is now explicitly media-first (`video/audio primary`, transcript supportive)
+  - evidence schema now requires `source_type: video|audio|transcript|frame`
+  - speaker default now uses `Unknown Speaker`
+  - added explicit rules for transcript-noise filtering and adjacent-step collapse
+- Updated [backend/app/agents/processing.py](/Users/karthicks/kAgents/Projects/PFCD-V2/backend/app/agents/processing.py):
+  - prompt now receives `alignment_verdict`
+  - added evidence-priority and mismatch-downgrade rules
+  - added profile-conditional guidance (`balanced` concise vs `quality` thorough)
+  - added `confidence_summary.confidence_delta` to schema and defaulting logic
+- Extended [tests/unit/test_agents.py](/Users/karthicks/kAgents/Projects/PFCD-V2/tests/unit/test_agents.py):
+  - assertions for extraction prompt contract and processing prompt contract
+  - assertions for alignment verdict wiring into runtime prompt
+  - assertions for profile-guidance injection and confidence_delta defaults
+  - removed hardcoded model literals from test profile fixtures; fixtures now read deployment names from env when present
+- Added [tests/integration/test_deployed_models_live.py](/Users/karthicks/kAgents/Projects/PFCD-V2/tests/integration/test_deployed_models_live.py):
+  - opt-in live extraction+processing test against deployed models
+  - gated behind `PFCD_RUN_DEPLOYED_MODEL_TESTS=1`
+  - skips with explicit reason when provider env is not configured
+
+### Validation
+
+- `pytest -q tests/unit/test_agents.py`
+  - `54 passed`
+- `pytest -q tests/unit`
+  - `260 passed`
+- `pytest -q tests/unit/test_agents.py tests/integration/test_deployed_models_live.py`
+  - `54 passed, 1 skipped`
+- `PFCD_RUN_DEPLOYED_MODEL_TESTS=1 PYTHONPATH=backend pytest -rs tests/integration/test_deployed_models_live.py`
+  - skipped due to missing provider/deployment env in current shell
+
+### Decisions
+
+- Kept unit tests deterministic and fast; deployed-model execution is explicit and opt-in via env flag to avoid CI/network fragility.
+- Pulled model names in tests from environment-backed deployment variables to avoid embedding stale model literals in fixtures.
+
+### Open follow-up
+
+- To run the live test in this environment, set provider credentials/deployment env vars (`PFCD_PROVIDER`, endpoint/key, and balanced deployment name) and rerun the gated integration test.
