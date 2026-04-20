@@ -331,6 +331,30 @@ def test_processing_agent_sets_defaults_on_minimal_response(monkeypatch):
     assert "confidence_delta" in job["draft"]["confidence_summary"]
 
 
+def test_processing_recovers_from_invalid_json_with_fallback():
+    from app.agents.processing import run_processing
+
+    job = _make_job()
+    job["extracted_evidence"] = {
+        "evidence_items": [],
+        "speakers_detected": [],
+        "process_domain": "test",
+        "transcript_quality": "low",
+    }
+    wrapped = (
+        'NOT_JSON ```json\n{"pdd":{"purpose":"fallback"},"sipoc":[]}\n``` trailing text'
+    )
+
+    with patch(
+        "app.agents.processing._call_processing",
+        side_effect=_async_sk_response(wrapped, 80, 40),
+    ):
+        run_processing(job, _balanced_profile())
+
+    assert job["draft"]["pdd"]["purpose"] == "fallback"
+    assert job["agent_signals"]["processing_fallback"] is True
+
+
 def test_processing_prompt_contract_includes_alignment_and_priority_rules():
     from app.agents import processing
 
