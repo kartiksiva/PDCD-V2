@@ -2568,3 +2568,46 @@ Implemented issue #10 to make extraction behavior truly video-first when both vi
 
 - Chose deterministic source-type normalization in extraction post-processing to guarantee `source_type` completeness and avoid relying on model adherence for provenance fields.
 - Implemented adapter fact hints as a bounded fallback rather than replacing LLM extraction, preserving existing architecture while improving no-item resilience for video-first jobs.
+
+## Section 73: Issue #14 — Audio + Document Adapter Coverage (2026-04-20)
+
+Implemented dedicated adapter paths for `audio` and `document` source inputs without changing public job APIs.
+
+### Completed
+
+- Added `backend/app/agents/adapters/audio.py`:
+  - dedicated `AudioAdapter` with `detect/normalize/extract_facts/render_review_notes`
+  - transcribes audio inputs via existing `transcribe_audio_blob` when `storage_key` is available
+  - emits canonical `EvidenceObject` + deterministic fallback metadata content when transcription is unavailable
+- Added `backend/app/agents/adapters/document.py`:
+  - minimal `DocumentAdapter` with deterministic manifests/review notes
+  - supports text-preview loading for text-like docs (`.txt/.md/.csv/.log/.json`) and metadata-only fallback for binary docs (pdf/doc/ppt)
+- Updated `backend/app/agents/adapters/registry.py`:
+  - registered `audio` and `document` adapters
+  - expanded ordered precedence list to include new source types
+- Updated `backend/app/agents/extraction.py`:
+  - generalized adapter normalization to handle `video/transcript/audio/document`
+  - primary source selection now supports dedicated audio/document content paths
+  - source-type normalization now preserves `audio` as `source_type: "audio"` and keeps transcript fallback for unsupported/mixed document evidence
+- Updated `backend/app/workers/runner.py`:
+  - drops `_audio_transcript_inline` as an ephemeral extracting-phase field before persistence
+- Updated adapter exports in `backend/app/agents/adapters/__init__.py`
+
+### Test Coverage
+
+- Extended `tests/unit/test_adapters.py` with:
+  - AudioAdapter detect/normalize coverage
+  - DocumentAdapter detect/normalize coverage
+  - registry coverage for audio/document registration and ordering
+  - extraction `_normalize_input` coverage for audio-only and document-only jobs
+- Updated existing registry unknown-type expectation for new supported types
+
+### Validation
+
+- `cd backend && .venv/bin/pytest ../tests/unit/test_adapters.py -q --tb=short` → `48 passed`
+- `cd backend && .venv/bin/pytest ../tests/unit ../tests/integration -q --tb=short` → `328 passed, 2 skipped`
+
+### Decisions
+
+- Kept `document` evidence conservative: deterministic manifests + contextual metadata (text preview where feasible), with no schema/API contract expansion.
+- Reused existing transcription utility for audio adapter to avoid duplicating audio ingestion logic and keep behavior aligned with video-transcription paths.

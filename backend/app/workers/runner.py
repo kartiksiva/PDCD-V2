@@ -189,6 +189,7 @@ class Worker:
         if self.phase == "extracting":
             # Keep the persisted payload deterministic: drop ephemeral working data.
             job.pop("_transcript_text_inline", None)
+            job.pop("_audio_transcript_inline", None)
             job.pop("_video_transcript_inline", None)
             job.pop("_frame_descriptions_inline", None)
         self.repo.upsert_job(job_id, job)

@@ -527,6 +527,81 @@ def test_video_adapter_render_review_notes_with_transcription_complete_note():
 
 
 # ---------------------------------------------------------------------------
+# AudioAdapter
+# ---------------------------------------------------------------------------
+
+def test_audio_adapter_detect_audio_source():
+    from app.agents.adapters.audio import AudioAdapter
+
+    adapter = AudioAdapter()
+    result = adapter.detect({"source_type": "audio", "mime_type": "audio/mpeg"})
+
+    assert result.valid is True
+    assert result.source_type == "audio"
+    assert result.document_type == "audio"
+
+
+def test_audio_adapter_normalize_with_transcription():
+    from app.agents.adapters.audio import AudioAdapter
+
+    adapter = AudioAdapter()
+    job = _make_job(has_video=False, has_audio=True, has_transcript=False)
+    job["input_manifest"]["inputs"] = [
+        {"source_type": "audio", "storage_key": "/tmp/demo.mp3", "size_bytes": 1024}
+    ]
+    job["input_manifest"]["source_types"] = ["audio"]
+
+    with patch(
+        "app.agents.adapters.audio.transcribe_audio_blob",
+        return_value="WEBVTT\n\n00:00:00.000 --> 00:00:03.000\nOpen SAP.\n",
+    ):
+        ev = adapter.normalize(job)
+
+    assert ev.source_type == "audio"
+    assert ev.document_type == "audio"
+    assert ev.content_text.startswith("WEBVTT")
+    assert ev.anchors == ["00:00:00-00:00:03"]
+
+
+# ---------------------------------------------------------------------------
+# DocumentAdapter
+# ---------------------------------------------------------------------------
+
+def test_document_adapter_detect_document_source():
+    from app.agents.adapters.document import DocumentAdapter
+
+    adapter = DocumentAdapter()
+    result = adapter.detect({"source_type": "document", "file_name": "notes.pdf"})
+
+    assert result.valid is True
+    assert result.source_type == "document"
+    assert result.document_type == "document"
+
+
+def test_document_adapter_normalize_metadata_fallback():
+    from app.agents.adapters.document import DocumentAdapter
+
+    adapter = DocumentAdapter()
+    job = _make_job(has_video=False, has_audio=False, has_transcript=False)
+    job["input_manifest"]["inputs"] = [
+        {
+            "source_type": "document",
+            "file_name": "notes.pdf",
+            "mime_type": "application/pdf",
+            "size_bytes": 2048,
+        }
+    ]
+    job["input_manifest"]["source_types"] = ["document"]
+
+    ev = adapter.normalize(job)
+
+    assert ev.source_type == "document"
+    assert ev.document_type == "document"
+    assert "Source type: document" in ev.content_text
+    assert ev.confidence == 0.40
+
+
+# ---------------------------------------------------------------------------
 # AdapterRegistry
 # ---------------------------------------------------------------------------
 
@@ -570,7 +645,7 @@ def test_registry_skips_unknown_source_types():
     from app.agents.adapters.registry import AdapterRegistry
 
     registry = AdapterRegistry()
-    adapters = registry.get_adapters(["audio", "doc", "unknown"])
+    adapters = registry.get_adapters(["doc", "unknown"])
 
     assert adapters == []
 
@@ -579,7 +654,7 @@ def test_registry_get_adapter_returns_none_for_unknown():
     from app.agents.adapters.registry import AdapterRegistry
 
     registry = AdapterRegistry()
-    assert registry.get_adapter("audio") is None
+    assert registry.get_adapter("unknown") is None
 
 
 def test_registry_supported_types_contains_video_and_transcript():
@@ -590,6 +665,21 @@ def test_registry_supported_types_contains_video_and_transcript():
 
     assert "video" in supported
     assert "transcript" in supported
+    assert "audio" in supported
+    assert "document" in supported
+
+
+def test_registry_returns_audio_and_document_adapters():
+    from app.agents.adapters.registry import AdapterRegistry
+    from app.agents.adapters.audio import AudioAdapter
+    from app.agents.adapters.document import DocumentAdapter
+
+    registry = AdapterRegistry()
+    adapters = registry.get_adapters(["document", "audio"])
+
+    assert len(adapters) == 2
+    assert isinstance(adapters[0], AudioAdapter)
+    assert isinstance(adapters[1], DocumentAdapter)
 
 
 # ---------------------------------------------------------------------------
@@ -662,3 +752,39 @@ def test_extraction_document_manifests_populated_on_graceful_degradation():
 
     assert "document_type_manifests" in job
     assert isinstance(job["document_type_manifests"], list)
+
+
+def test_normalize_input_audio_only():
+    from app.agents.extraction import _normalize_input
+
+    job = _make_job(has_video=False, has_audio=True, has_transcript=False)
+    job["input_manifest"]["inputs"] = [
+        {"source_type": "audio", "storage_key": "/tmp/demo.mp3", "size_bytes": 2048}
+    ]
+    job["input_manifest"]["source_types"] = ["audio"]
+
+    with patch(
+        "app.agents.adapters.audio.transcribe_audio_blob",
+        return_value="WEBVTT\n\n00:00:00.000 --> 00:00:03.000\nOpen SAP.\n",
+    ):
+        content_text, manifests, input_context = _normalize_input(job)
+
+    assert content_text.startswith("WEBVTT")
+    assert any(m["source_type"] == "audio" for m in manifests)
+    assert input_context["primary_source_type"] == "audio"
+
+
+def test_normalize_input_document_only():
+    from app.agents.extraction import _normalize_input
+
+    job = _make_job(has_video=False, has_audio=False, has_transcript=False)
+    job["input_manifest"]["inputs"] = [
+        {"source_type": "document", "file_name": "notes.pdf", "mime_type": "application/pdf"}
+    ]
+    job["input_manifest"]["source_types"] = ["document"]
+
+    content_text, manifests, input_context = _normalize_input(job)
+
+    assert "Source type: document" in content_text
+    assert any(m["source_type"] == "document" for m in manifests)
+    assert input_context["primary_source_type"] == "document"
