@@ -260,6 +260,42 @@ Resolved issues from Codex + Gemini review. No new features — all changes are 
 
 ---
 
+## Section 8: Issue #13 Teams Metadata Capture (2026-04-20)
+
+Implemented end-to-end Teams metadata capture in the create-job flow and validated persistence through the API.
+
+### Frontend (`frontend/src/components/CreateJob.jsx`)
+
+- Added an optional **Teams Metadata** block in Create Job with PRD-aligned fields:
+  - `meeting_id`
+  - `meeting_subject`
+  - `start_time_utc`
+  - `organizer_name`
+  - `organizer_id`
+  - `participants`
+  - `transcript_speaker_map` (JSON object)
+  - `recording_markers` (JSON array)
+- Added lightweight parsing/validation helpers:
+  - participants accept comma/newline-separated input
+  - JSON validation for speaker map and recording markers with user-facing validation errors
+- Updated job submit payload wiring:
+  - includes `teams_metadata` only when any Teams field is provided
+  - preserves existing behavior when metadata is omitted
+
+### Backend/Integration Validation
+
+- Added integration test in `tests/integration/test_lifecycle.py`:
+  - `test_create_job_persists_teams_metadata`
+  - verifies create-job response and follow-up `GET /api/jobs/{job_id}` both contain persisted Teams metadata.
+
+### Operational Notes
+
+- Existing backend extraction/review paths already consume captured metadata:
+  - extraction speaker hints from `teams_metadata.transcript_speaker_map`
+  - video adapter marker-based fact hints from `teams_metadata.recording_markers`
+
+---
+
 ## Section 8: Provider Flex + Video Transcription + Real Similarity (2026-04-13)
 
 Implemented the full Codex handoff chain: prompt anchoring fix, provider routing flexibility, Whisper-backed video transcription, and transcript/media text similarity.

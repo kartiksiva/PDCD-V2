@@ -19,10 +19,75 @@ function guessSourceType(file) {
   )
 }
 
+function parseList(value) {
+  return value
+    .split(/[,\n]/)
+    .map(item => item.trim())
+    .filter(Boolean)
+}
+
+function parseJsonObject(raw, fieldLabel) {
+  if (!raw.trim()) return null
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new Error(`${fieldLabel} must be valid JSON.`)
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${fieldLabel} must be a JSON object.`)
+  }
+  return parsed
+}
+
+function parseJsonArray(raw, fieldLabel) {
+  if (!raw.trim()) return null
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new Error(`${fieldLabel} must be valid JSON.`)
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`${fieldLabel} must be a JSON array.`)
+  }
+  return parsed
+}
+
+function buildTeamsMetadata(form) {
+  const metadata = {}
+  if (form.meetingId.trim()) metadata.meeting_id = form.meetingId.trim()
+  if (form.meetingSubject.trim()) metadata.meeting_subject = form.meetingSubject.trim()
+  if (form.startTimeUtc.trim()) metadata.start_time_utc = form.startTimeUtc.trim()
+  if (form.organizerName.trim()) metadata.organizer_name = form.organizerName.trim()
+  if (form.organizerId.trim()) metadata.organizer_id = form.organizerId.trim()
+
+  const participants = parseList(form.participants)
+  if (participants.length > 0) metadata.participants = participants
+
+  const speakerMap = parseJsonObject(form.transcriptSpeakerMap, 'Transcript speaker map')
+  if (speakerMap) metadata.transcript_speaker_map = speakerMap
+
+  const recordingMarkers = parseJsonArray(form.recordingMarkers, 'Recording markers')
+  if (recordingMarkers) metadata.recording_markers = recordingMarkers
+
+  return metadata
+}
+
 
 export default function CreateJob({ onCreated }) {
   const [rows, setRows] = useState([])          // { file, sourceType, uploading, error, result }
   const [profile, setProfile] = useState('balanced')
+  const [teams, setTeams] = useState({
+    meetingId: '',
+    meetingSubject: '',
+    startTimeUtc: '',
+    organizerName: '',
+    organizerId: '',
+    participants: '',
+    transcriptSpeakerMap: '',
+    recordingMarkers: '',
+  })
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState(null)
   const [pendingConfirmation, setPendingConfirmation] = useState(null)
@@ -52,6 +117,10 @@ export default function CreateJob({ onCreated }) {
     setRows(prev => prev.map((r, i) => i === idx ? { ...r, sourceType: val } : r))
   }
 
+  function setTeamsField(field, value) {
+    setTeams(prev => ({ ...prev, [field]: value }))
+  }
+
   async function handleSubmit(e) {
     e.preventDefault()
     if (rows.length === 0) return
@@ -76,7 +145,15 @@ export default function CreateJob({ onCreated }) {
         })
       )
 
-      const data = await createJob({
+      let teamsMetadata
+      try {
+        teamsMetadata = buildTeamsMetadata(teams)
+      } catch (err) {
+        setSubmitError(err.message)
+        return
+      }
+
+      const payload = {
         profile,
         input_files: uploaded.map((u, idx) => ({
           source_type: rows[idx].sourceType,
@@ -85,7 +162,12 @@ export default function CreateJob({ onCreated }) {
           mime_type: u.mime_type,
           upload_id: u.upload_id,
         })),
-      })
+      }
+      if (Object.keys(teamsMetadata).length > 0) {
+        payload.teams_metadata = teamsMetadata
+      }
+
+      const data = await createJob(payload)
       if (data.status === 'awaiting_confirmation') {
         setPendingConfirmation({
           jobId: data.job_id,
@@ -209,6 +291,91 @@ export default function CreateJob({ onCreated }) {
               </label>
             ))}
           </div>
+        </div>
+
+        <div className="border border-gray-200 rounded-lg p-3 space-y-3">
+          <h3 className="text-sm font-semibold text-gray-800">Teams Metadata (Optional)</h3>
+          <p className="text-xs text-gray-500">
+            Captured values are stored as <code>teams_metadata</code> and used for speaker hints and marker-based extraction.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="text-xs text-gray-600">
+              Meeting ID
+              <input
+                type="text"
+                value={teams.meetingId}
+                onChange={e => setTeamsField('meetingId', e.target.value)}
+                className="mt-1 w-full border rounded px-2 py-1 text-sm"
+              />
+            </label>
+            <label className="text-xs text-gray-600">
+              Meeting Subject
+              <input
+                type="text"
+                value={teams.meetingSubject}
+                onChange={e => setTeamsField('meetingSubject', e.target.value)}
+                className="mt-1 w-full border rounded px-2 py-1 text-sm"
+              />
+            </label>
+            <label className="text-xs text-gray-600">
+              Start Time UTC
+              <input
+                type="text"
+                placeholder="2026-04-20T10:00:00Z"
+                value={teams.startTimeUtc}
+                onChange={e => setTeamsField('startTimeUtc', e.target.value)}
+                className="mt-1 w-full border rounded px-2 py-1 text-sm"
+              />
+            </label>
+            <label className="text-xs text-gray-600">
+              Organizer Name
+              <input
+                type="text"
+                value={teams.organizerName}
+                onChange={e => setTeamsField('organizerName', e.target.value)}
+                className="mt-1 w-full border rounded px-2 py-1 text-sm"
+              />
+            </label>
+            <label className="text-xs text-gray-600 sm:col-span-2">
+              Organizer ID
+              <input
+                type="text"
+                value={teams.organizerId}
+                onChange={e => setTeamsField('organizerId', e.target.value)}
+                className="mt-1 w-full border rounded px-2 py-1 text-sm"
+              />
+            </label>
+          </div>
+          <label className="block text-xs text-gray-600">
+            Participants (comma or newline separated)
+            <textarea
+              rows={2}
+              value={teams.participants}
+              onChange={e => setTeamsField('participants', e.target.value)}
+              className="mt-1 w-full border rounded px-2 py-1 text-sm"
+              placeholder="Alice, Bob, Carol"
+            />
+          </label>
+          <label className="block text-xs text-gray-600">
+            Transcript Speaker Map (JSON object)
+            <textarea
+              rows={3}
+              value={teams.transcriptSpeakerMap}
+              onChange={e => setTeamsField('transcriptSpeakerMap', e.target.value)}
+              className="mt-1 w-full border rounded px-2 py-1 text-sm font-mono"
+              placeholder={'{"spk_001":"Alice (Manager)","spk_002":"Bob"}'}
+            />
+          </label>
+          <label className="block text-xs text-gray-600">
+            Recording Markers (JSON array)
+            <textarea
+              rows={3}
+              value={teams.recordingMarkers}
+              onChange={e => setTeamsField('recordingMarkers', e.target.value)}
+              className="mt-1 w-full border rounded px-2 py-1 text-sm font-mono"
+              placeholder={'[{"start":"00:00:10","end":"00:00:25","speaker":"Alice","text":"Reviewed invoice"}]'}
+            />
+          </label>
         </div>
 
         {submitError && (
