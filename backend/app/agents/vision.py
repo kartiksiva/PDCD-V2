@@ -9,14 +9,12 @@ from typing import Any
 
 import httpx
 
-from app.job_logic import _provider_name
+from app.job_logic import Profile, _provider_name, get_vision_model
 
 logger = logging.getLogger(__name__)
 
 _MAX_FRAMES_PER_CALL = int(os.environ.get("PFCD_VISION_FRAMES_PER_CALL", "4"))
 _MAX_FRAMES_TOTAL = int(os.environ.get("PFCD_VISION_MAX_FRAMES", "40"))
-_OPENAI_VISION_MODEL = os.environ.get("OPENAI_VISION_MODEL", "gpt-4o-mini")
-_AZURE_VISION_DEPLOYMENT = os.environ.get("AZURE_OPENAI_VISION_DEPLOYMENT", "")
 
 _SYSTEM_PROMPT = """You are a process documentation assistant. For each video frame shown, describe:
 1. What the user is doing (actions, clicks, navigation)
@@ -68,14 +66,15 @@ def _build_messages(batch: list[tuple[str, float]], policy: dict[str, Any]) -> l
     ]
 
 
-def _call_vision_openai(messages: list[dict]) -> str:
+def _call_vision_openai(messages: list[dict], *, model: str | None = None) -> str:
     """POST to OpenAI chat completions with vision content."""
     api_key = os.environ["OPENAI_API_KEY"]
+    resolved_model = model or os.environ.get("OPENAI_VISION_MODEL", "gpt-4o-mini")
     response = httpx.post(
         "https://api.openai.com/v1/chat/completions",
         headers={"Authorization": f"Bearer {api_key}"},
         json={
-            "model": _OPENAI_VISION_MODEL,
+            "model": resolved_model,
             "messages": messages,
             "max_completion_tokens": _max_completion_tokens(),
         },
@@ -85,17 +84,18 @@ def _call_vision_openai(messages: list[dict]) -> str:
     return response.json()["choices"][0]["message"]["content"]
 
 
-def _call_vision_azure(messages: list[dict]) -> str:
+def _call_vision_azure(messages: list[dict], *, deployment: str | None = None) -> str:
     """POST to Azure OpenAI chat completions with vision content."""
     from azure.identity import DefaultAzureCredential
 
-    if not _AZURE_VISION_DEPLOYMENT:
+    resolved_deployment = deployment or os.environ.get("AZURE_OPENAI_VISION_DEPLOYMENT", "")
+    if not resolved_deployment:
         raise ValueError("AZURE_OPENAI_VISION_DEPLOYMENT is not set")
 
     endpoint = os.environ["AZURE_OPENAI_ENDPOINT"].rstrip("/")
     api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21")
     url = (
-        f"{endpoint}/openai/deployments/{_AZURE_VISION_DEPLOYMENT}"
+        f"{endpoint}/openai/deployments/{resolved_deployment}"
         f"/chat/completions?api-version={api_version}"
     )
     credential = DefaultAzureCredential()
@@ -110,7 +110,13 @@ def _call_vision_azure(messages: list[dict]) -> str:
     return response.json()["choices"][0]["message"]["content"]
 
 
-def analyze_frames(frames: list[tuple[str, float]], policy: dict) -> str:
+def _resolve_profile(profile: str | None) -> Profile:
+    if (profile or "").strip().lower() == Profile.QUALITY.value:
+        return Profile.QUALITY
+    return Profile.BALANCED
+
+
+def analyze_frames(frames: list[tuple[str, float]], policy: dict, *, profile: str | None = None) -> str:
     if not frames:
         return ""
 
@@ -122,10 +128,11 @@ def analyze_frames(frames: list[tuple[str, float]], policy: dict) -> str:
         for index in range(0, len(capped_frames), batch_size):
             batch = capped_frames[index:index + batch_size]
             messages = _build_messages(batch, policy)
+            vision_model = get_vision_model(_resolve_profile(profile))
             if _provider_name() == "openai":
-                responses.append(_call_vision_openai(messages))
+                responses.append(_call_vision_openai(messages, model=vision_model))
             else:
-                responses.append(_call_vision_azure(messages))
+                responses.append(_call_vision_azure(messages, deployment=vision_model))
 
         return "\n\n".join(text for text in responses if text)
     except Exception as exc:  # pragma: no cover - exercised by unit tests

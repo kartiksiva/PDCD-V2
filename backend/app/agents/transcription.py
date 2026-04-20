@@ -18,7 +18,7 @@ from app.agents.media_preprocessor import (
     merge_vtt_chunks,
     split_audio_chunks,
 )
-from app.job_logic import _provider_name
+from app.job_logic import Profile, _provider_name, get_transcription_target
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +31,10 @@ def _too_large_stub() -> str:
     return "[transcription_skipped:file_too_large — chunked transcription pending MediaPreprocessor]"
 
 
-def _transcribe_with_azure(storage_key: str) -> str:
+def _transcribe_with_azure(storage_key: str, *, deployment: str) -> str:
     from azure.identity import DefaultAzureCredential
 
     endpoint = os.environ["AZURE_OPENAI_ENDPOINT"].rstrip("/")
-    deployment = os.environ.get("AZURE_OPENAI_WHISPER_DEPLOYMENT", "whisper")
     api_version = os.environ.get("AZURE_OPENAI_API_VERSION", _DEFAULT_AZURE_OPENAI_API_VERSION)
     url = (
         f"{endpoint}/openai/deployments/{deployment}/audio/transcriptions"
@@ -54,9 +53,8 @@ def _transcribe_with_azure(storage_key: str) -> str:
         return response.text
 
 
-def _transcribe_with_openai(storage_key: str) -> str:
+def _transcribe_with_openai(storage_key: str, *, model: str) -> str:
     api_key = os.environ["OPENAI_API_KEY"]
-    model = os.environ.get("OPENAI_TRANSCRIPTION_MODEL", "whisper-1")
     headers = {"Authorization": f"Bearer {api_key}"}
 
     with open(storage_key, "rb") as fh:
@@ -73,13 +71,20 @@ def _transcribe_with_openai(storage_key: str) -> str:
         return response.text
 
 
-def _transcribe_single(path: str) -> str:
+def _resolve_profile(profile: str | None) -> Profile:
+    if (profile or "").strip().lower() == Profile.QUALITY.value:
+        return Profile.QUALITY
+    return Profile.BALANCED
+
+
+def _transcribe_single(path: str, profile: str | None = None) -> str:
+    target = get_transcription_target(_resolve_profile(profile))
     if _provider_name() == "openai":
-        return _transcribe_with_openai(path)
-    return _transcribe_with_azure(path)
+        return _transcribe_with_openai(path, model=target["model"])
+    return _transcribe_with_azure(path, deployment=target["model"])
 
 
-def transcribe_audio_blob(storage_key: str) -> str:
+def transcribe_audio_blob(storage_key: str, *, profile: str | None = None) -> str:
     """Transcribe audio/video file at storage_key using Whisper. Returns VTT text."""
     tmp_dir: str | None = None
     try:
@@ -115,7 +120,10 @@ def transcribe_audio_blob(storage_key: str) -> str:
 
         vtt_chunks: list[tuple[str, float]] = []
         for chunk_path, offset_sec in chunk_pairs:
-            vtt = _transcribe_single(chunk_path)
+            if profile is None:
+                vtt = _transcribe_single(chunk_path)
+            else:
+                vtt = _transcribe_single(chunk_path, profile)
             if vtt.startswith("[transcription"):
                 logger.warning("Chunk transcription failed at offset %.0fs: %s", offset_sec, vtt)
                 continue

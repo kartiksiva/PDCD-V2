@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import pathlib
 import sys
+from typing import Any
 from unittest.mock import patch
 
 import httpx
+import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
@@ -28,7 +30,7 @@ def test_analyze_frames_calls_openai_provider(monkeypatch):
     monkeypatch.setattr("app.agents.vision._build_messages", lambda _frames, _policy: [{"role": "user"}])
     monkeypatch.setattr(
         "app.agents.vision._call_vision_openai",
-        lambda _messages: "Frame 1: User opens SAP.",
+        lambda _messages, *, model=None: "Frame 1: User opens SAP.",
     )
 
     result = analyze_frames(frames, {})
@@ -110,8 +112,7 @@ def test_call_vision_azure_uses_max_completion_tokens(monkeypatch):
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
     monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
     monkeypatch.setenv("PFCD_MAX_COMPLETION_TOKENS", "444")
-    monkeypatch.setattr("app.agents.vision._AZURE_VISION_DEPLOYMENT", "vision-deployment")
-
+    monkeypatch.setenv("AZURE_OPENAI_VISION_DEPLOYMENT", "vision-deployment")
     captured: dict = {}
 
     class _Resp:
@@ -142,3 +143,48 @@ def test_call_vision_azure_uses_max_completion_tokens(monkeypatch):
     assert result == "ok"
     assert captured["json"]["max_completion_tokens"] == 444
     assert "max_tokens" not in captured["json"]
+
+
+@pytest.mark.parametrize(
+    ("provider", "profile", "expected_target"),
+    [
+        ("openai", "balanced", "openai-balanced-vision"),
+        ("openai", "quality", "openai-quality-vision"),
+        ("azure_openai", "balanced", "azure-balanced-vision"),
+        ("azure_openai", "quality", "azure-quality-vision"),
+    ],
+)
+def test_analyze_frames_routes_by_profile_and_provider(
+    monkeypatch, provider: str, profile: str, expected_target: str
+):
+    from app.agents.vision import analyze_frames
+
+    frames = [("/tmp/f1.jpg", 0.0)]
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr("app.agents.vision._provider_name", lambda: provider)
+    monkeypatch.setattr("app.agents.vision._build_messages", lambda _frames, _policy: [{"role": "user"}])
+
+    def _fake_get_vision_model(_profile):
+        return expected_target
+
+    monkeypatch.setattr("app.agents.vision.get_vision_model", _fake_get_vision_model)
+
+    def _openai_call(_messages, *, model=None):
+        captured["target"] = model
+        return "openai-ok"
+
+    def _azure_call(_messages, *, deployment=None):
+        captured["target"] = deployment
+        return "azure-ok"
+
+    monkeypatch.setattr("app.agents.vision._call_vision_openai", _openai_call)
+    monkeypatch.setattr("app.agents.vision._call_vision_azure", _azure_call)
+
+    result = analyze_frames(frames, {}, profile=profile)
+
+    assert expected_target == captured["target"]
+    if provider == "openai":
+        assert result == "openai-ok"
+    else:
+        assert result == "azure-ok"

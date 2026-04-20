@@ -12,6 +12,8 @@ from app.job_logic import (
     Profile,
     apply_cost_tracking_and_cap_warning,
     default_job_payload,
+    get_transcription_target,
+    get_vision_model,
     profile_config,
 )
 
@@ -107,6 +109,85 @@ def test_default_job_payload_uses_provider_effective_from_profile(monkeypatch):
 
     assert job["provider_effective"]["provider"] == "openai"
     assert job["provider_effective"]["deployment"] == "gpt-4o-mini"
+    assert job["provider_effective"]["chat_model"] == "gpt-4o-mini"
+    assert job["provider_effective"]["transcription"]["service"] == "openai_whisper"
+
+
+@pytest.mark.parametrize(
+    ("provider", "profile", "balanced_key", "quality_key", "fallback_key", "expected"),
+    [
+        (
+            "openai",
+            Profile.BALANCED,
+            "OPENAI_VISION_MODEL_BALANCED",
+            "OPENAI_VISION_MODEL_QUALITY",
+            "OPENAI_VISION_MODEL",
+            "gpt-4o-mini",
+        ),
+        (
+            "openai",
+            Profile.QUALITY,
+            "OPENAI_VISION_MODEL_BALANCED",
+            "OPENAI_VISION_MODEL_QUALITY",
+            "OPENAI_VISION_MODEL",
+            "gpt-4o",
+        ),
+        (
+            "azure_openai",
+            Profile.BALANCED,
+            "AZURE_OPENAI_VISION_DEPLOYMENT_BALANCED",
+            "AZURE_OPENAI_VISION_DEPLOYMENT_QUALITY",
+            "AZURE_OPENAI_VISION_DEPLOYMENT",
+            "azure-vision-balanced",
+        ),
+        (
+            "azure_openai",
+            Profile.QUALITY,
+            "AZURE_OPENAI_VISION_DEPLOYMENT_BALANCED",
+            "AZURE_OPENAI_VISION_DEPLOYMENT_QUALITY",
+            "AZURE_OPENAI_VISION_DEPLOYMENT",
+            "azure-vision-quality",
+        ),
+    ],
+)
+def test_get_vision_model_profile_matrix(
+    monkeypatch,
+    provider,
+    profile,
+    balanced_key,
+    quality_key,
+    fallback_key,
+    expected,
+):
+    monkeypatch.setenv("PFCD_PROVIDER", provider)
+    monkeypatch.setenv(balanced_key, "gpt-4o-mini" if provider == "openai" else "azure-vision-balanced")
+    monkeypatch.setenv(quality_key, "gpt-4o" if provider == "openai" else "azure-vision-quality")
+    monkeypatch.delenv(fallback_key, raising=False)
+
+    assert get_vision_model(profile) == expected
+
+
+def test_get_vision_model_falls_back_to_single_var(monkeypatch):
+    monkeypatch.setenv("PFCD_PROVIDER", "openai")
+    monkeypatch.delenv("OPENAI_VISION_MODEL_BALANCED", raising=False)
+    monkeypatch.delenv("OPENAI_VISION_MODEL_QUALITY", raising=False)
+    monkeypatch.setenv("OPENAI_VISION_MODEL", "gpt-4.1-mini")
+    assert get_vision_model(Profile.BALANCED) == "gpt-4.1-mini"
+    assert get_vision_model(Profile.QUALITY) == "gpt-4.1-mini"
+
+
+def test_get_transcription_target_provider_matrix(monkeypatch):
+    monkeypatch.setenv("PFCD_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_TRANSCRIPTION_MODEL", "whisper-1")
+    openai_target = get_transcription_target(Profile.BALANCED)
+    assert openai_target["service"] == "openai_whisper"
+    assert openai_target["model"] == "whisper-1"
+
+    monkeypatch.setenv("PFCD_PROVIDER", "azure_openai")
+    monkeypatch.setenv("AZURE_OPENAI_WHISPER_DEPLOYMENT", "whisper-prod")
+    azure_target = get_transcription_target(Profile.QUALITY)
+    assert azure_target["service"] == "azure_openai_whisper"
+    assert azure_target["model"] == "whisper-prod"
 
 
 def test_cost_cap_warn_only_adds_warning_flag(monkeypatch):

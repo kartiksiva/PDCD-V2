@@ -2683,3 +2683,68 @@ Implemented the upload-contract migration requested by issue #9 while preserving
 - Kept `/api/upload` active to avoid breaking existing callers while migrating frontend to `upload-url`.
 - Implemented a local relay upload path (`/api/uploads/{upload_id}/content`) as fallback when direct blob SAS generation is unavailable (for example local/integration environments).
 - Scoped blob verification to existence checks during `create_job` so upload lifecycle remains deterministic without introducing new async callbacks/webhooks.
+
+## Section 18: Issue #11 — Full Provider Routing Matrix (2026-04-20)
+
+Implemented profile-aware non-chat routing and expanded effective-provider tracking for both `PFCD_PROVIDER=azure_openai` and `PFCD_PROVIDER=openai`.
+
+### What was added
+
+- `job_logic.py`
+  - Added `get_vision_model(profile)` with profile-aware routing:
+    - OpenAI: `OPENAI_VISION_MODEL_BALANCED` / `OPENAI_VISION_MODEL_QUALITY` with fallback to `OPENAI_VISION_MODEL`
+    - Azure OpenAI: `AZURE_OPENAI_VISION_DEPLOYMENT_BALANCED` / `AZURE_OPENAI_VISION_DEPLOYMENT_QUALITY` with fallback to `AZURE_OPENAI_VISION_DEPLOYMENT`
+  - Added `get_transcription_target(profile)` to resolve the effective transcription service target per provider.
+  - Expanded `profile_config()` to include `chat_model`, `vision_model`, and `transcription` target metadata.
+  - Expanded `default_job_payload().provider_effective` to capture:
+    - `chat_model`
+    - `transcription` service target
+    - `vision_model`
+    - `phase_resolved` map for per-phase effective routing snapshots.
+
+- `agents/vision.py`
+  - Vision model/deployment resolution moved from module-level static env vars to call-time profile-aware routing via `get_vision_model(...)`.
+  - `analyze_frames(..., profile=...)` now routes by both provider and profile.
+
+- `agents/transcription.py`
+  - Transcription target resolution now uses `get_transcription_target(...)`.
+  - Added optional `profile` passthrough (`transcribe_audio_blob(..., profile=...)`) for profile-aware routing parity.
+
+- `agents/adapters/video.py` and `agents/adapters/audio.py`
+  - Pass job profile to transcription/vision calls.
+  - Added compatibility fallback for legacy call signatures used in existing test monkeypatches.
+
+- `workers/runner.py`
+  - On successful phase completion, records per-phase effective routing in `provider_effective.phase_resolved`.
+  - Extraction phase now records resolved transcription service and vision model alongside chat model/profile/provider.
+
+### Tests added/updated
+
+- `tests/unit/test_job_logic.py`
+  - Added provider/profile routing coverage for vision model matrix.
+  - Added fallback coverage to single-var vision model env.
+  - Added transcription target matrix coverage.
+  - Updated `provider_effective` assertions for expanded payload.
+
+- `tests/unit/test_vision.py`
+  - Added matrix test for balanced/quality × openai/azure vision routing (4 combinations).
+  - Updated existing tests for new call signatures.
+
+- `tests/unit/test_worker.py`
+  - Added assertions for `provider_effective.phase_resolved.extracting` metadata.
+
+### Verification
+
+- `pytest -q tests/unit/test_job_logic.py tests/unit/test_vision.py tests/unit/test_media_preprocessor.py tests/unit/test_worker.py`
+  - Result: `60 passed`
+- `pytest -q tests/unit tests/integration`
+  - Result: `344 passed, 2 skipped`
+
+### Decisions
+
+- Chose `provider_effective.phase_resolved` at the job level for per-phase service provenance, avoiding schema changes to `agent_runs`.
+- Kept backward compatibility for existing adapter test monkeypatch patterns while adding profile-aware runtime parameters.
+
+### Open questions
+
+- None for issue scope. Optional future improvement: persist richer per-run service metadata in a dedicated `agent_runs.metadata` column if migration budget is available.
