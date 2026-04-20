@@ -24,6 +24,7 @@ class Job(Base):
     has_transcript = Column(Boolean, nullable=False, default=False)
     teams_metadata = Column(Text, nullable=False, default="{}")
     transcript_media_consistency = Column(Text, nullable=False, default="{}")
+    extracted_evidence = Column(Text, nullable=False, default="{}")
     agent_signals = Column(Text, nullable=False, default="{}")
     agent_review = Column(Text, nullable=False, default="{}")
     speaker_resolutions = Column(Text, nullable=False, default="{}")
