@@ -10,6 +10,8 @@ This folder contains an executable script to create a **development** Azure envi
 - Azure Database for PostgreSQL Flexible Server + database
 - App Service Plan + Linux Web App (`PYTHON:3.11`)
 - Azure OpenAI + Speech accounts
+- Application Insights (workspace-based) + Key Vault-backed connection string wiring to API/workers
+- Azure Monitor alerting baseline (API 5xx, queue DLQ alerts, readiness failure query alert)
 - Cost budget hook (best effort; may require manual portal step depending on CLI/API)
 
 ## Run
@@ -35,6 +37,10 @@ SPEECH_ACCOUNT_LOCATION=eastus bash infra/dev-bootstrap.sh
 - `az webapp config appsettings list --name pfcd-dev-api --resource-group app-pfcd-v2 --query \"[?starts_with(name, 'AZURE') || starts_with(name, 'APP_') || starts_with(name, 'COST_')].[name, value]\" -o table`
 - `az keyvault secret list --vault-name pfcd-dev-kv`
 - `az servicebus queue show --resource-group app-pfcd-v2 --namespace-name pfcd-dev-bus --name extracting`
+- `az monitor app-insights component show --app pfcd-dev-appi --resource-group app-pfcd-v2`
+- `az monitor metrics alert list --resource-group app-pfcd-v2 -o table`
+- `az monitor scheduled-query list --resource-group app-pfcd-v2 -o table`
+- `curl -sS https://<api-host>/health/readiness`
 
 ## Deployment
 - App Service startup command is set to `uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}`.
@@ -61,5 +67,6 @@ az webapp restart --name pfcd-dev-api --resource-group app-pfcd-v2
 - `OPENAI_DEPLOYMENT_NAME`, `OPENAI_MODEL_NAME`, `OPENAI_MODEL_VERSION`
 - `OPENAI_SKU_NAME`, `SERVICE_BUS_SKU`
 - `SERVICE_BUS_QUEUE_EXTRACTING`, `SERVICE_BUS_QUEUE_PROCESSING`, `SERVICE_BUS_QUEUE_REVIEWING`
+- `APP_INSIGHTS_NAME`, `ALERT_ACTION_GROUP_NAME`, `ALERT_EMAIL` (optional; if `ALERT_EMAIL` is unset, alerts are created without notification actions)
 - `SP_CLIENT_ID` (optional; grants the CI service principal blob-write access on the storage account)
 - `MONTHLY_BUDGET`, `BUDGET_NAME`, `POSTGRES_ADMIN_USER`, `POSTGRES_ADMIN_PASSWORD`

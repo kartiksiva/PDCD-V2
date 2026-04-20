@@ -6,6 +6,7 @@ import copy
 import json
 import logging
 import os
+import tempfile
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
@@ -168,6 +169,108 @@ def health() -> Dict[str, Any]:
             "missing_environment": degraded,
         },
         status_code=status_code,
+    )
+
+
+def _required_readiness_env() -> List[str]:
+    return [
+        "DATABASE_URL",
+        "AZURE_STORAGE_CONNECTION_STRING",
+        "AZURE_SERVICE_BUS_CONNECTION_STRING",
+        "AZURE_SERVICE_BUS_QUEUE_EXTRACTING",
+        "AZURE_SERVICE_BUS_QUEUE_PROCESSING",
+        "AZURE_SERVICE_BUS_QUEUE_REVIEWING",
+    ]
+
+
+def _check_database_readiness() -> Dict[str, Any]:
+    try:
+        JOB_REPO.get_recent_jobs(limit=1)
+        return {"status": "ok"}
+    except Exception as exc:  # pragma: no cover - covered by endpoint tests
+        return {"status": "error", "error": str(exc)}
+
+
+def _check_storage_readiness() -> Dict[str, Any]:
+    try:
+        os.makedirs(UPLOADS_DIR, exist_ok=True)
+        fd, test_path = tempfile.mkstemp(prefix="ready_", dir=UPLOADS_DIR)
+        os.close(fd)
+        os.unlink(test_path)
+        return {"status": "ok", "uploads_dir": UPLOADS_DIR}
+    except Exception as exc:  # pragma: no cover - covered by endpoint tests
+        return {"status": "error", "error": str(exc), "uploads_dir": UPLOADS_DIR}
+
+
+def _check_service_bus_readiness() -> Dict[str, Any]:
+    queues = {
+        "extracting": os.environ.get("AZURE_SERVICE_BUS_QUEUE_EXTRACTING"),
+        "processing": os.environ.get("AZURE_SERVICE_BUS_QUEUE_PROCESSING"),
+        "reviewing": os.environ.get("AZURE_SERVICE_BUS_QUEUE_REVIEWING"),
+    }
+    missing_queues = [name for name, value in queues.items() if not value]
+    if not os.environ.get("AZURE_SERVICE_BUS_CONNECTION_STRING"):
+        return {"status": "error", "error": "Missing AZURE_SERVICE_BUS_CONNECTION_STRING", "queues": queues}
+    if missing_queues:
+        return {
+            "status": "error",
+            "error": f"Missing queue config: {', '.join(missing_queues)}",
+            "queues": queues,
+        }
+    return {"status": "ok", "queues": queues}
+
+
+def _check_openai_readiness() -> Dict[str, Any]:
+    provider = (os.environ.get("PFCD_PROVIDER", "azure_openai") or "azure_openai").strip().lower()
+    if provider == "openai":
+        missing = [name for name in ("OPENAI_API_KEY",) if not os.environ.get(name)]
+        if missing:
+            return {"status": "error", "provider": provider, "error": f"Missing env: {', '.join(missing)}"}
+        return {"status": "ok", "provider": provider}
+
+    missing = [
+        name
+        for name in ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_DEPLOYMENT_NAME")
+        if not os.environ.get(name)
+    ]
+    if missing:
+        return {"status": "error", "provider": provider, "error": f"Missing env: {', '.join(missing)}"}
+    return {
+        "status": "ok",
+        "provider": provider,
+        "endpoint": os.environ.get("AZURE_OPENAI_ENDPOINT"),
+        "deployment": os.environ.get("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME"),
+    }
+
+
+def _check_speech_readiness() -> Dict[str, Any]:
+    account = os.environ.get("AZURE_SPEECH_ACCOUNT_NAME")
+    if not account:
+        return {"status": "error", "error": "Missing AZURE_SPEECH_ACCOUNT_NAME"}
+    return {"status": "ok", "account": account}
+
+
+@app.get("/health/readiness")
+def readiness_health() -> Dict[str, Any]:
+    required_env = _required_readiness_env()
+    missing = [name for name in required_env if not os.environ.get(name)]
+    checks = {
+        "database": _check_database_readiness(),
+        "storage": _check_storage_readiness(),
+        "service_bus": _check_service_bus_readiness(),
+        "openai": _check_openai_readiness(),
+        "speech": _check_speech_readiness(),
+    }
+    all_checks_ok = all(check.get("status") == "ok" for check in checks.values())
+    ready = not missing and all_checks_ok
+    return JSONResponse(
+        content={
+            "status": "ready" if ready else "not_ready",
+            "timestamp": _utc_now(),
+            "checks": checks,
+            "missing_environment": missing,
+        },
+        status_code=200 if ready else 503,
     )
 
 

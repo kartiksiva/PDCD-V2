@@ -19,6 +19,9 @@ CONTAINER_REGISTRY_NAME="${CONTAINER_REGISTRY_NAME:-${PROJECT}${ENVIRONMENT}regi
 CONTAINER_REGISTRY_SKU="${CONTAINER_REGISTRY_SKU:-Basic}"
 CONTAINER_APPS_ENVIRONMENT_NAME="${CONTAINER_APPS_ENVIRONMENT_NAME:-${PROJECT}-${ENVIRONMENT}-env}"
 LOG_ANALYTICS_WORKSPACE_NAME="${LOG_ANALYTICS_WORKSPACE_NAME:-${PROJECT}-${ENVIRONMENT}-logs}"
+APP_INSIGHTS_NAME="${APP_INSIGHTS_NAME:-${PROJECT}-${ENVIRONMENT}-appi}"
+ALERT_ACTION_GROUP_NAME="${ALERT_ACTION_GROUP_NAME:-${PROJECT}-${ENVIRONMENT}-ops-ag}"
+ALERT_EMAIL="${ALERT_EMAIL:-}"
 STORAGE_ACCOUNT="${STORAGE_ACCOUNT:-${PROJECT}${ENVIRONMENT}storage}"
 SERVICE_BUS_NAMESPACE="${SERVICE_BUS_NAMESPACE:-${PROJECT}-${ENVIRONMENT}-bus}"
 SERVICE_BUS_QUEUE="${SERVICE_BUS_QUEUE:-jobs}"
@@ -295,6 +298,40 @@ ensure_log_analytics_workspace() {
   fi
 }
 
+ensure_app_insights() {
+  local workspace_id
+  workspace_id="$(az monitor log-analytics workspace show \
+    --resource-group "$RESOURCE_GROUP" \
+    --workspace-name "$LOG_ANALYTICS_WORKSPACE_NAME" \
+    --query id -o tsv)"
+
+  if ! az monitor app-insights component show \
+      --app "$APP_INSIGHTS_NAME" \
+      --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
+    az monitor app-insights component create \
+      --app "$APP_INSIGHTS_NAME" \
+      --location "$LOCATION" \
+      --resource-group "$RESOURCE_GROUP" \
+      --workspace "$workspace_id" \
+      --application-type web \
+      --tags $COMMON_TAGS \
+      --output none
+  fi
+
+  local appi_conn
+  appi_conn="$(az monitor app-insights component show \
+    --app "$APP_INSIGHTS_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --query connectionString -o tsv)"
+  if [[ -n "$appi_conn" ]]; then
+    az keyvault secret set \
+      --vault-name "$KEY_VAULT_NAME" \
+      --name "application-insights-connection-string" \
+      --value "$appi_conn" \
+      --output none
+  fi
+}
+
 ensure_container_apps_environment() {
   local workspace_customer_id workspace_shared_key
   workspace_customer_id="$(az monitor log-analytics workspace show \
@@ -566,6 +603,187 @@ ensure_cognitive_services() {
   fi
 }
 
+ensure_monitor_alerting_baseline() {
+  local action_group_id api_id extracting_queue_id processing_queue_id reviewing_queue_id appi_id
+
+  if [[ -n "$ALERT_EMAIL" ]]; then
+    if ! az monitor action-group show \
+        --name "$ALERT_ACTION_GROUP_NAME" \
+        --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
+      az monitor action-group create \
+        --name "$ALERT_ACTION_GROUP_NAME" \
+        --resource-group "$RESOURCE_GROUP" \
+        --short-name "pfcdops" \
+        --action email pfcdops "$ALERT_EMAIL" \
+        --output none
+    fi
+  else
+    info "ALERT_EMAIL not set; creating metric alerts without action-group notifications"
+  fi
+
+  action_group_id="$(az monitor action-group show \
+    --name "$ALERT_ACTION_GROUP_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --query id -o tsv 2>/dev/null || true)"
+
+  api_id="$(az webapp show --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query id -o tsv)"
+  extracting_queue_id="$(az servicebus queue show --resource-group "$RESOURCE_GROUP" --namespace-name "$SERVICE_BUS_NAMESPACE" --name "$SERVICE_BUS_QUEUE_EXTRACTING" --query id -o tsv)"
+  processing_queue_id="$(az servicebus queue show --resource-group "$RESOURCE_GROUP" --namespace-name "$SERVICE_BUS_NAMESPACE" --name "$SERVICE_BUS_QUEUE_PROCESSING" --query id -o tsv)"
+  reviewing_queue_id="$(az servicebus queue show --resource-group "$RESOURCE_GROUP" --namespace-name "$SERVICE_BUS_NAMESPACE" --name "$SERVICE_BUS_QUEUE_REVIEWING" --query id -o tsv)"
+  appi_id="$(az monitor app-insights component show --app "$APP_INSIGHTS_NAME" --resource-group "$RESOURCE_GROUP" --query id -o tsv)"
+
+  if ! az monitor metrics alert show --name "${PROJECT}-${ENVIRONMENT}-api-5xx" --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
+    if [[ -n "$action_group_id" ]]; then
+      az monitor metrics alert create \
+        --name "${PROJECT}-${ENVIRONMENT}-api-5xx" \
+        --resource-group "$RESOURCE_GROUP" \
+        --scopes "$api_id" \
+        --condition "total Http5xx > 5" \
+        --window-size 5m \
+        --evaluation-frequency 1m \
+        --severity 2 \
+        --description "PFCD API 5xx spike" \
+        --action "$action_group_id" \
+        --output none
+    else
+      az monitor metrics alert create \
+        --name "${PROJECT}-${ENVIRONMENT}-api-5xx" \
+        --resource-group "$RESOURCE_GROUP" \
+        --scopes "$api_id" \
+        --condition "total Http5xx > 5" \
+        --window-size 5m \
+        --evaluation-frequency 1m \
+        --severity 2 \
+        --description "PFCD API 5xx spike" \
+        --output none
+    fi
+  fi
+
+  if ! az monitor metrics alert show --name "${PROJECT}-${ENVIRONMENT}-dlq-extracting" --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
+    if [[ -n "$action_group_id" ]]; then
+      az monitor metrics alert create \
+        --name "${PROJECT}-${ENVIRONMENT}-dlq-extracting" \
+        --resource-group "$RESOURCE_GROUP" \
+        --scopes "$extracting_queue_id" \
+        --condition "total DeadletteredMessages > 0" \
+        --window-size 5m \
+        --evaluation-frequency 5m \
+        --severity 2 \
+        --description "PFCD extracting queue dead-lettered messages" \
+        --action "$action_group_id" \
+        --output none
+    else
+      az monitor metrics alert create \
+        --name "${PROJECT}-${ENVIRONMENT}-dlq-extracting" \
+        --resource-group "$RESOURCE_GROUP" \
+        --scopes "$extracting_queue_id" \
+        --condition "total DeadletteredMessages > 0" \
+        --window-size 5m \
+        --evaluation-frequency 5m \
+        --severity 2 \
+        --description "PFCD extracting queue dead-lettered messages" \
+        --output none
+    fi
+  fi
+
+  if ! az monitor metrics alert show --name "${PROJECT}-${ENVIRONMENT}-dlq-processing" --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
+    if [[ -n "$action_group_id" ]]; then
+      az monitor metrics alert create \
+        --name "${PROJECT}-${ENVIRONMENT}-dlq-processing" \
+        --resource-group "$RESOURCE_GROUP" \
+        --scopes "$processing_queue_id" \
+        --condition "total DeadletteredMessages > 0" \
+        --window-size 5m \
+        --evaluation-frequency 5m \
+        --severity 2 \
+        --description "PFCD processing queue dead-lettered messages" \
+        --action "$action_group_id" \
+        --output none
+    else
+      az monitor metrics alert create \
+        --name "${PROJECT}-${ENVIRONMENT}-dlq-processing" \
+        --resource-group "$RESOURCE_GROUP" \
+        --scopes "$processing_queue_id" \
+        --condition "total DeadletteredMessages > 0" \
+        --window-size 5m \
+        --evaluation-frequency 5m \
+        --severity 2 \
+        --description "PFCD processing queue dead-lettered messages" \
+        --output none
+    fi
+  fi
+
+  if ! az monitor metrics alert show --name "${PROJECT}-${ENVIRONMENT}-dlq-reviewing" --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
+    if [[ -n "$action_group_id" ]]; then
+      az monitor metrics alert create \
+        --name "${PROJECT}-${ENVIRONMENT}-dlq-reviewing" \
+        --resource-group "$RESOURCE_GROUP" \
+        --scopes "$reviewing_queue_id" \
+        --condition "total DeadletteredMessages > 0" \
+        --window-size 5m \
+        --evaluation-frequency 5m \
+        --severity 2 \
+        --description "PFCD reviewing queue dead-lettered messages" \
+        --action "$action_group_id" \
+        --output none
+    else
+      az monitor metrics alert create \
+        --name "${PROJECT}-${ENVIRONMENT}-dlq-reviewing" \
+        --resource-group "$RESOURCE_GROUP" \
+        --scopes "$reviewing_queue_id" \
+        --condition "total DeadletteredMessages > 0" \
+        --window-size 5m \
+        --evaluation-frequency 5m \
+        --severity 2 \
+        --description "PFCD reviewing queue dead-lettered messages" \
+        --output none
+    fi
+  fi
+
+  if ! az monitor scheduled-query show --name "${PROJECT}-${ENVIRONMENT}-readiness-failures" --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
+    if [[ -n "$action_group_id" ]]; then
+      az monitor scheduled-query create \
+        --name "${PROJECT}-${ENVIRONMENT}-readiness-failures" \
+        --resource-group "$RESOURCE_GROUP" \
+        --scopes "$appi_id" \
+        --condition "count 'requests | where name == \"GET /health/readiness\" and success == false' > 0" \
+        --evaluation-frequency 5m \
+        --window-size 5m \
+        --severity 2 \
+        --description "PFCD readiness endpoint failing" \
+        --action "$action_group_id" \
+        --output none \
+        || info "Scheduled query alert creation requires updated monitor extension; create manually if needed."
+    else
+      az monitor scheduled-query create \
+        --name "${PROJECT}-${ENVIRONMENT}-readiness-failures" \
+        --resource-group "$RESOURCE_GROUP" \
+        --scopes "$appi_id" \
+        --condition "count 'requests | where name == \"GET /health/readiness\" and success == false' > 0" \
+        --evaluation-frequency 5m \
+        --window-size 5m \
+        --severity 2 \
+        --description "PFCD readiness endpoint failing" \
+        --output none \
+        || info "Scheduled query alert creation requires updated monitor extension; create manually if needed."
+    fi
+  fi
+}
+
+apply_app_insights_appsettings() {
+  local app_name
+  for app_name in "$WEBAPP_NAME" "$WORKER_EXTRACTING_NAME" "$WORKER_PROCESSING_NAME" "$WORKER_REVIEWING_NAME"; do
+    az webapp config appsettings set \
+      --name "$app_name" \
+      --resource-group "$RESOURCE_GROUP" \
+      --settings \
+        APPLICATIONINSIGHTS_CONNECTION_STRING="@Microsoft.KeyVault(SecretUri=https://${KEY_VAULT_NAME}.vault.azure.net/secrets/application-insights-connection-string)" \
+        APPINSIGHTS_PROFILERFEATURE_VERSION=disabled \
+        APPINSIGHTS_SNAPSHOTFEATURE_VERSION=disabled \
+      --output none
+  done
+}
+
 ensure_budget() {
   local start_date end_date
   start_date="$(date -u +"%Y-%m-01")"
@@ -592,10 +810,13 @@ ensure_key_vault
 ensure_postgres
 ensure_container_registry
 ensure_log_analytics_workspace
+ensure_app_insights
 ensure_container_apps_environment
 assign_container_app_runtime_roles
 ensure_app_service
+apply_app_insights_appsettings
 ensure_cognitive_services
+ensure_monitor_alerting_baseline
 ensure_budget
 
 info "Bootstrap complete for environment '$ENVIRONMENT' in $RESOURCE_GROUP"
