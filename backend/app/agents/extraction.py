@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import re
 from typing import Any, Dict, List, Tuple
 
 from app.agents.adapters.registry import AdapterRegistry
 
 _adapter_registry = AdapterRegistry()
+logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
     "You are a process documentation specialist. Extract structured evidence from this "
@@ -75,6 +78,114 @@ def _extract_usage_tokens(metadata: Dict[str, Any]) -> Tuple[int, int]:
     )
 
 
+def _max_completion_tokens() -> int:
+    raw = os.environ.get("PFCD_MAX_COMPLETION_TOKENS", "2048").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 2048
+    return max(1, value)
+
+
+def _extract_balanced_json_object(text: str) -> str | None:
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : idx + 1]
+    return None
+
+
+def _parse_extraction_json(raw: str) -> Dict[str, Any]:
+    candidates: List[str] = [raw.strip()]
+    fenced = re.findall(r"```(?:json)?\s*(.*?)```", raw, flags=re.IGNORECASE | re.DOTALL)
+    candidates.extend(chunk.strip() for chunk in fenced if chunk.strip())
+    balanced = _extract_balanced_json_object(raw)
+    if balanced:
+        candidates.append(balanced.strip())
+
+    last_error: json.JSONDecodeError | None = None
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise json.JSONDecodeError("No valid JSON object found", raw, 0)
+
+
+def _fallback_extraction_from_text(content_text: str, parse_error: str) -> Dict[str, Any]:
+    items: List[Dict[str, Any]] = []
+    timestamp_re = re.compile(r"^\[(\d{2}:\d{2}:\d{2}(?:-\d{2}:\d{2}:\d{2})?)\]\s*(.+)$")
+    lines = [line.strip() for line in content_text.splitlines() if line.strip()]
+    for line in lines:
+        match = timestamp_re.match(line)
+        if not match:
+            continue
+        anchor, summary = match.group(1), match.group(2)
+        items.append(
+            {
+                "id": f"ev-{len(items)+1:02d}",
+                "summary": summary[:240],
+                "actor": "Unknown",
+                "system": "Unknown",
+                "input_artifact": "",
+                "output_artifact": "",
+                "anchor": anchor,
+                "confidence": 0.35,
+            }
+        )
+
+    if not items:
+        for line in lines[:8]:
+            items.append(
+                {
+                    "id": f"ev-{len(items)+1:02d}",
+                    "summary": line[:240],
+                    "actor": "Unknown",
+                    "system": "Unknown",
+                    "input_artifact": "",
+                    "output_artifact": "",
+                    "anchor": "section:fallback",
+                    "confidence": 0.25,
+                }
+            )
+
+    return {
+        "evidence_items": items,
+        "speakers_detected": ["Unknown"] if items else [],
+        "process_domain": "unknown",
+        "transcript_quality": "low",
+        "fallback_reason": "llm_invalid_json",
+        "fallback_parse_error": parse_error[:512],
+    }
+
+
 async def _call_extraction(deployment: str, system_prompt: str, user_content: str):
     """Invoke chat completion via Semantic Kernel; returns (raw_json, prompt_tokens, completion_tokens)."""
     from semantic_kernel.connectors.ai.open_ai import OpenAIChatPromptExecutionSettings
@@ -86,7 +197,8 @@ async def _call_extraction(deployment: str, system_prompt: str, user_content: st
     chat.add_system_message(system_prompt)
     chat.add_user_message(user_content)
     settings = OpenAIChatPromptExecutionSettings(
-        response_format={"type": "json_object"}
+        response_format={"type": "json_object"},
+        max_completion_tokens=_max_completion_tokens(),
     )
     svc = get_chat_service(deployment)
     result = await svc.get_chat_message_content(chat, settings, kernel=kernel)
@@ -199,7 +311,21 @@ def run_extraction(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
     except asyncio.TimeoutError as exc:
         raise RuntimeError(f"Extraction LLM call timed out after {timeout_seconds:.0f}s") from exc
 
-    extracted = json.loads(raw)
+    try:
+        extracted = _parse_extraction_json(raw)
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "Extraction response JSON parse failed for job %s; using deterministic fallback: %s",
+            job.get("job_id"),
+            exc,
+        )
+        extracted = _fallback_extraction_from_text(content_text, str(exc))
+        job["agent_signals"]["extraction_fallback"] = {
+            "used": True,
+            "reason": "llm_invalid_json",
+            "error": str(exc)[:512],
+        }
+
     job["extracted_evidence"] = extracted
     job["agent_signals"]["transcript_parsed"] = True
     job["agent_signals"]["speakers_detected"] = extracted.get("speakers_detected") or []

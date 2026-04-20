@@ -2376,3 +2376,28 @@ Closed the medium-severity backlog from GitHub issue `#42` on an isolated branch
 
 - Kept the migration warning in `Repository.init_db()` advisory-only rather than auto-running Alembic, because silently mutating schema state at process start would broaden current deployment behavior.
 - Limited the rate-limiting fix to documentation and operator guidance because this repo still relies on shared/demo API-key semantics and does not yet have an application-layer quota model.
+---
+
+## Section 69: Codex Delivery — Pending Issues + Automation Prompt Inventory (2026-04-20)
+
+Delivered a consolidated inventory document covering both repo-documented pending items and currently observed runtime issues, plus a prompt-level catalog of active backend automation templates.
+
+### Completed
+
+- Added [docs/pending-issues-and-prompts.md](/Users/karthicks/kAgents/Projects/PFCD-V2/docs/pending-issues-and-prompts.md) with:
+  - **Repo + runtime pending issue table** containing normalized fields (`id`, category, symptom, root cause, impact, status, recommended action)
+  - **Current automation prompt inventory** for extraction, processing, and vision agents
+  - exact prompt template text for active constants in:
+    - extraction (`_SYSTEM_PROMPT`, `_USER_PROMPT_TEMPLATE`, speaker hint injection contract)
+    - processing (`_SYSTEM_PROMPT`, `_USER_PROMPT_TEMPLATE`, `_PDD_SCHEMA`, `_SIPOC_SCHEMA`)
+    - vision (`_SYSTEM_PROMPT`, message construction behavior)
+  - runtime evidence source notes (API job snapshots + worker logs)
+
+### Decisions
+
+- Scope includes both backlog/documentation pending items and live runtime operational risks, since runtime behavior materially impacts next implementation priorities.
+- Prompt catalog is constrained to active backend automation prompts under `backend/app/agents/` and excludes non-agent strings or historical/deprecated documentation text.
+
+### Open questions / follow-up
+
+- If required for governance, split the single combined inventory into two files (`pending-issues.md` and `automation-prompts.md`) and add ownership metadata per issue row.

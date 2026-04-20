@@ -130,6 +130,43 @@ def test_extraction_cost_calculation(monkeypatch):
     assert abs(cost - expected_cost) < 1e-9
 
 
+def test_extraction_recovers_from_invalid_json_with_fallback():
+    from app.agents.extraction import run_extraction
+
+    job = _make_job()
+    job["_transcript_text_inline"] = (
+        "[00:00:01-00:00:05] Agent opens ERP\n"
+        "[00:00:06-00:00:10] Agent validates invoice"
+    )
+
+    with patch(
+        "app.agents.extraction._call_extraction",
+        side_effect=_async_sk_response("{bad json", 100, 200),
+    ):
+        cost = run_extraction(job, _balanced_profile())
+
+    assert cost >= 0.0
+    assert job["agent_signals"]["transcript_parsed"] is True
+    assert job["agent_signals"]["extraction_fallback"]["used"] is True
+    assert len(job["extracted_evidence"]["evidence_items"]) >= 1
+
+
+def test_extraction_parses_json_inside_code_fence():
+    from app.agents.extraction import run_extraction
+
+    job = _make_job()
+    job["_transcript_text_inline"] = "[00:00:01-00:00:05] test"
+    wrapped = """```json\n{"evidence_items":[],"speakers_detected":[],"process_domain":"x","transcript_quality":"high"}\n```"""
+
+    with patch(
+        "app.agents.extraction._call_extraction",
+        side_effect=_async_sk_response(wrapped, 10, 10),
+    ):
+        run_extraction(job, _balanced_profile())
+
+    assert job["extracted_evidence"]["process_domain"] == "x"
+
+
 def test_extraction_usage_tokens_supports_object_usage():
     from app.agents.extraction import _extract_usage_tokens
 
