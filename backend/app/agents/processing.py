@@ -140,12 +140,19 @@ def _extract_usage_tokens(metadata: Dict[str, Any]) -> tuple[int, int]:
 
 
 def _max_completion_tokens() -> int:
-    raw = os.environ.get("PFCD_MAX_COMPLETION_TOKENS", "2048").strip()
+    # PFCD_MAX_PROCESSING_TOKENS takes precedence; falls back to PFCD_MAX_COMPLETION_TOKENS.
+    # Processing generates PDD+SIPOC JSON from all evidence items, so it needs a higher
+    # ceiling than extraction (default 8192 vs extraction's 4096).
+    raw = (
+        os.environ.get("PFCD_MAX_PROCESSING_TOKENS")
+        or os.environ.get("PFCD_MAX_COMPLETION_TOKENS")
+        or "8192"
+    ).strip()
     try:
         value = int(raw)
     except ValueError:
-        return 2048
-    return max(1, value)
+        return 8192
+    return max(512, value)
 
 
 async def _call_processing(deployment: str, system_prompt: str, user_content: str):
