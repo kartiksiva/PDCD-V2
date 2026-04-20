@@ -26,12 +26,15 @@ _USER_PROMPT_TEMPLATE = """\
 Transcript:
 {transcript_text}
 
-Extract all distinct process steps from this transcript. Return a JSON object with this exact shape:
+Task: Extract all distinct steps of the business process described or performed in this transcript.
+
+Return a JSON object with this exact shape:
 {{
+  "subject_process": "name of the business process being documented (e.g. Customer Complaint Handling)",
   "evidence_items": [
     {{
       "id": "ev-01",
-      "summary": "Actor performs action on system",
+      "summary": "Actor performs action on/in system",
       "actor": "string",
       "system": "string",
       "input_artifact": "string",
@@ -46,20 +49,30 @@ Extract all distinct process steps from this transcript. Return a JSON object wi
   "transcript_quality": "high|medium|low"
 }}
 
+Extraction method:
+1. Read the transcript and identify the subject business process (what operation participants are describing, such as complaint intake, order processing, or invoice approval). Set subject_process to this.
+2. Scan every cue where a participant describes a specific action, system, decision point, handoff, or SLA in that business process. Each such description is one evidence item.
+3. Use the timestamp of the cue where the step was described as the anchor.
+
+Discovery session example — given this exchange:
+  [00:10:50-00:11:40] Priya Nair (Customer): Every morning, two analysts review the shared mailbox and the phone log spreadsheet. They create complaint records in CRM for items not already there.
+→ Create:
+  {{ "id": "ev-01", "summary": "Analyst reviews shared mailbox and phone log spreadsheet, creates CRM records for new complaints", "actor": "Analyst", "system": "Shared Mailbox / CRM", "input_artifact": "Email complaints, phone log spreadsheet", "output_artifact": "CRM complaint record", "source_type": "transcript", "anchor": "00:10:50-00:11:40", "confidence": 0.85 }}
+
 Rules:
 - id must be sequential: ev-01, ev-02, …
-- each evidence item must represent one distinct step in the process being described or performed
-- if the transcript is a PROCESS DISCOVERY SESSION (facilitators asking questions, participants describing how
-  they work), extract the steps of the DESCRIBED process from participants' answers — NOT the meta-steps of
-  the meeting itself (do NOT produce steps like "discuss the process" or "capture process details")
+- subject_process is the operational process being documented, NOT the discovery meeting itself
+- each evidence item is one step of subject_process — not a meeting action and not a summary of the session
+- if the transcript is a discovery session, extract process steps from participants' answers (Q&A content)
 - remove only genuine non-process content: greetings, audio-check talk, scheduling coordination, and filler
-  phrases; keep all Q&A that reveals process steps, decision points, handoffs, systems, actors, or SLAs
+  phrases
 - collapse adjacent steps with the same actor and substantially the same action into one item
 - anchor must reference a timestamp range or section label FROM THE TRANSCRIPT — do NOT invent timestamps
 - source_type must be one of video|audio|transcript|frame based on the evidence source
-- confidence is a float between 0.0 and 1.0; use 0.7–0.9 for clearly described steps, 0.4–0.6 for inferred
+- confidence: 0.7–0.9 for explicitly stated steps; 0.4–0.6 for inferred; 0.2–0.4 for ambiguous
 - speakers_detected must list all unique speakers; use "Unknown Speaker" if unidentifiable
 - aim for complete extraction: a 60-minute discovery session should yield 15–30 evidence items
+- transcript_quality: high if cues clearly describe process steps; medium if some steps are implicit; low if content is mostly chitchat
 """
 
 
@@ -195,6 +208,7 @@ def _fallback_extraction_from_text(content_text: str, parse_error: str) -> Dict[
             )
 
     return {
+        "subject_process": "unknown",
         "evidence_items": items,
         "speakers_detected": ["Unknown"] if items else [],
         "process_domain": "unknown",
@@ -367,6 +381,7 @@ def run_extraction(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
     if not content_text:
         # Graceful degradation: no transcript available yet
         job["extracted_evidence"] = {
+            "subject_process": "unknown",
             "evidence_items": [],
             "speakers_detected": [],
             "process_domain": "unknown",
@@ -416,6 +431,7 @@ def run_extraction(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
             extracted.setdefault("fallback_reason", "adapter_fact_hints")
 
     _apply_source_type_defaults(extracted, primary_source_type)
+    extracted.setdefault("subject_process", extracted.get("process_domain") or "unknown")
 
     job["extracted_evidence"] = extracted
     job["agent_signals"]["transcript_parsed"] = True
