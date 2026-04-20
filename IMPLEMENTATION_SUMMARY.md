@@ -2842,3 +2842,57 @@ Implemented a preflight cost confirmation flow for selected profiles (default: `
 ### Open questions
 
 - None for this issue scope.
+
+## Section 20: Issue #15 — Frame Evidence Embeds for PDF/DOCX (2026-04-20)
+
+Fixed export embedding for frame captures stored as blob-relative `storage_key` values.
+
+### What was added
+
+- `backend/app/storage.py`
+  - Added `read_frame_bytes(storage_key: str) -> bytes | None`.
+  - Supports local absolute path reads and Azure Blob reads from evidence container.
+  - Uses account URL + `DefaultAzureCredential` when available, falls back to connection string.
+  - Returns `None` on missing/unavailable frames and logs a warning instead of raising.
+
+- `backend/app/export_builder.py`
+  - Extended `build_export_pdf(...)` with optional `frame_bytes_map: Optional[Dict[str, bytes]]`.
+  - Extended `build_export_docx(...)` with optional `frame_bytes_map: Optional[Dict[str, bytes]]`.
+  - Frame embedding now prefers pre-resolved bytes (`io.BytesIO(...)`) and only falls back to local-path file reads.
+  - Missing/unreadable frames now emit explicit deterministic text notes (`not available` / `image unreadable`) instead of crashing.
+
+- `backend/app/main.py`
+  - Added `_resolve_frame_bytes_map(evidence_bundle)` helper to pre-fetch frame bytes by `storage_key` using `read_frame_bytes`.
+  - Wired both export-generation paths to pass `frame_bytes_map`:
+    - `POST /api/jobs/{job_id}/finalize`
+    - `GET /api/jobs/{job_id}/exports/{fmt}` (live fallback path)
+
+### Tests added/updated
+
+- `tests/unit/test_export_builder.py`
+  - Added `test_pdf_embeds_frame_from_bytes_map`
+  - Added `test_pdf_skips_missing_frame_gracefully`
+  - Added `test_docx_embeds_frame_from_bytes_map`
+  - Added `test_docx_skips_missing_frame_gracefully`
+
+- `tests/unit/test_storage.py`
+  - Added `test_read_frame_bytes_local_path`
+  - Added `test_read_frame_bytes_missing_returns_none`
+
+### Verification
+
+- `pytest -q tests/unit/test_export_builder.py tests/unit/test_storage.py`
+  - Result: `52 passed`
+- `pytest -q tests/integration/test_exports.py`
+  - Result: `8 passed`
+- `pytest -q tests/unit tests/integration`
+  - Result: `355 passed, 2 skipped`
+
+### Decisions
+
+- Kept `export_builder` storage-agnostic by passing pre-resolved frame bytes from `main.py`, preserving module boundaries.
+- Preserved backward compatibility for local absolute paths while enabling blob-relative keys.
+
+### Open questions
+
+- None for this issue scope.

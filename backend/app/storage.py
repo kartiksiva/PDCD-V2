@@ -216,3 +216,41 @@ def upload_frame(job_id: str, frame_index: int, jpg_bytes: bytes) -> str | None:
     except Exception as exc:
         logger.warning("Frame upload failed for job %s frame %d: %s", job_id, frame_index, exc)
         return None
+
+
+def read_frame_bytes(storage_key: str) -> bytes | None:
+    """Read frame bytes from evidence storage.
+
+    Supports:
+    - local absolute paths
+    - blob paths in the configured evidence container
+    Returns None on any failure.
+    """
+    try:
+        if os.path.isabs(storage_key) and os.path.exists(storage_key):
+            with open(storage_key, "rb") as handle:
+                return handle.read()
+
+        account_url = os.environ.get("AZURE_STORAGE_ACCOUNT_URL")
+        if not account_url:
+            account_name = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
+            if account_name:
+                account_url = f"https://{account_name}.blob.core.windows.net"
+        connection_string = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
+
+        if account_url:
+            from azure.identity import DefaultAzureCredential
+
+            client = BlobServiceClient(account_url=account_url, credential=DefaultAzureCredential())
+            blob = client.get_blob_client(_EVIDENCE_CONTAINER, storage_key)
+            return blob.download_blob().readall()
+
+        if connection_string:
+            client = BlobServiceClient.from_connection_string(connection_string)
+            blob = client.get_blob_client(_EVIDENCE_CONTAINER, storage_key)
+            return blob.download_blob().readall()
+
+        return None
+    except Exception as exc:
+        logger.warning("read_frame_bytes failed for key %s: %s", storage_key, exc)
+        return None
