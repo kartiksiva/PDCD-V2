@@ -306,6 +306,7 @@ def default_job_payload(payload: JobCreateRequest) -> Dict[str, Any]:
         },
         "draft": None,
         "finalized_draft": None,
+        "extracted_facts": {},
         "speaker_resolutions": {},
         "user_saved_draft": False,
         "user_saved_at": None,

@@ -118,13 +118,46 @@ def run_reviewing(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:  
             "One or more speakers could not be identified in the transcript.",
         ))
 
+    # 6. Completeness checks from extracted_facts (warning only; do not block finalize)
+    extracted_facts = job.get("extracted_facts") or {}
+    quantitative_facts = extracted_facts.get("quantitative_facts") or []
+    has_sla_fact = any(
+        isinstance(fact, dict) and str(fact.get("fact_type", "")).strip().lower() == "sla"
+        for fact in quantitative_facts
+    )
+    has_volume_fact = any(
+        isinstance(fact, dict) and str(fact.get("fact_type", "")).strip().lower() == "volume"
+        for fact in quantitative_facts
+    )
+    exception_patterns = extracted_facts.get("exception_patterns") or []
+    pdd_exceptions = pdd.get("exceptions") or []
+
+    if has_sla_fact and str(pdd.get("sla", "")).strip() == "Needs Review":
+        flags.append(_flag(
+            "SLA_UNRESOLVED",
+            "warning",
+            "PDD SLA is 'Needs Review' even though extracted facts include SLA values.",
+        ))
+    if has_volume_fact and str(pdd.get("frequency", "")).strip() == "Needs Review":
+        flags.append(_flag(
+            "FREQUENCY_UNRESOLVED",
+            "warning",
+            "PDD frequency is 'Needs Review' even though extracted facts include volume values.",
+        ))
+    if exception_patterns and not pdd_exceptions:
+        flags.append(_flag(
+            "EXCEPTIONS_SUPPRESSED",
+            "warning",
+            "Exception patterns were extracted but pdd.exceptions is empty.",
+        ))
+
     # Merge flags (preserve any flags already set by build_draft fallback)
     existing_codes = {f["code"] for f in job["review_notes"]["flags"]}
     for f in flags:
         if f["code"] not in existing_codes:
             job["review_notes"]["flags"].append(f)
 
-    # 6. Overall confidence + decision
+    # 7. Overall confidence + decision
     all_flags = job["review_notes"]["flags"]
     has_blocker = any(f["severity"] == "blocker" for f in all_flags)
     has_mismatch_warning = any(f["code"] == "transcript_mismatch" for f in all_flags)

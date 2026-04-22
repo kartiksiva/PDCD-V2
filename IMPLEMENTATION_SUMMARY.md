@@ -3184,3 +3184,66 @@ Implemented two surgical stability fixes for the processing worker repeat-fail l
 ### Open questions
 
 - Optional future hardening: add `AutoLockRenewer` for long-running processing calls to further reduce lock-loss frequency under high-latency model runs.
+
+## Section 26: Issue #74 — Fact-Aware Extraction + Processing Completeness + Reviewing Warnings (2026-04-22)
+
+Implemented the issue-specified single-pass quality upgrade across extraction, processing, reviewing, job defaults, and tests.
+
+### What was added
+
+- `backend/app/agents/extraction.py`
+  - Extended extraction JSON prompt schema with four new top-level fields:
+    - `quantitative_facts`
+    - `exception_patterns`
+    - `workaround_rationale`
+    - `roles_detected`
+  - Added `_parse_fact_extraction()` to safely normalize these containers with graceful list defaults.
+  - Wired extraction output into `job["extracted_facts"]` in both normal and no-content fallback paths.
+
+- `backend/app/agents/processing.py`
+  - Added `Extracted facts:` section to prompt input and passed `job["extracted_facts"]` into `_USER_PROMPT_TEMPLATE`.
+  - Added explicit prompt rules for:
+    - quantitative population for SLA/frequency with "Needs Review" prohibition when facts exist
+    - full lifecycle close-step completeness
+    - exception completeness mapping
+    - approval-matrix role coverage with explicit `R/A/C/I`
+    - control type definitions (`manual/system/preventive/detective`)
+    - automation opportunity completeness on known patterns
+    - workaround rationale surfacing into risks/improvement notes
+  - Updated `_profile_guidance()` to issue-defined targets:
+    - balanced: `Target 8-14 steps... Capture only as-is evidence.`
+    - quality: `Target 10-18 steps... all SLA figures... all named exceptions.`
+  - Added `improvement_notes` default in draft normalization.
+
+- `backend/app/agents/reviewing.py`
+  - Added warning-only completeness flags:
+    - `SLA_UNRESOLVED`
+    - `FREQUENCY_UNRESOLVED`
+    - `EXCEPTIONS_SUPPRESSED`
+  - Flags compare `pdd` fields with `job["extracted_facts"]` content and do not block finalize.
+
+- `backend/app/job_logic.py`
+  - Added `"extracted_facts": {}` default in `default_job_payload()` for backward-safe downstream access.
+
+- `tests/unit/test_agents.py`
+  - Added/updated tests for:
+    - extraction prompt contract includes all four new schema fields
+    - `_parse_fact_extraction()` defaults and normalization behavior
+    - processing prompt includes rule keywords/definitions from the new instruction set
+    - updated profile guidance contract for balanced/quality outputs
+    - reviewing warnings for unresolved SLA/frequency and suppressed exceptions
+    - default job payload includes `extracted_facts`.
+
+### Validation
+
+- `pytest -q tests/unit/test_agents.py`
+  - Result: `67 passed, 1 warning`
+
+### Decisions
+
+- Kept implementation single-pass (no second LLM call) to preserve latency/cost profile.
+- Implemented warning-only reviewing flags exactly as non-blocking quality signals.
+
+### Open questions
+
+- None for this issue scope; next validation should be live transcript rerun to observe improved SLA/frequency/exception carry-through in end-to-end outputs.

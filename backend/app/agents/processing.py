@@ -81,6 +81,9 @@ _USER_PROMPT_TEMPLATE = """\
 Evidence items:
 {evidence_json}
 
+Extracted facts:
+{extracted_facts_json}
+
 Input manifest:
 {manifest_json}
 
@@ -96,6 +99,7 @@ Generate a complete PDD and SIPOC from the evidence above. Return a JSON object 
   "pdd": {pdd_schema},
   "sipoc": {sipoc_schema},
   "assumptions": ["list of assumptions made"],
+  "improvement_notes": ["list of improvement notes derived from workaround rationale"],
   "automation_opportunities": [
     {{
       "id": "auto-01",
@@ -123,6 +127,26 @@ Generate a complete PDD and SIPOC from the evidence above. Return a JSON object 
 Rules:
 - Evidence priority: video/audio/frame-derived items (source_type video|audio|frame)
   take precedence over transcript-derived items (source_type transcript) for step sequence.
+- Quantitative population rule: if extracted_facts.quantitative_facts includes fact_type "sla",
+  populate pdd.sla from that fact and do not emit "Needs Review" for SLA. If it includes
+  fact_type "volume", populate pdd.frequency from that fact and do not emit "Needs Review"
+  for frequency.
+- Full lifecycle rule: if evidence includes a close/confirm/conclude action, include that as
+  an explicit closing step. Do not end the process at "escalate" or "resolve" without a close step.
+- Exception completeness rule: for each extracted_facts.exception_patterns entry, include a matching
+  entry in pdd.exceptions. Do not collapse distinct exception scenarios into one generic exception.
+- Approval matrix coverage rule: every role listed in extracted_facts.roles_detected must appear in
+  approval_matrix with explicit responsibility value R/A/C/I.
+- Control type definitions:
+  - manual: human action or decision without system enforcement
+  - system: enforced or logged by the software itself
+  - preventive: stops an error before it occurs
+  - detective: identifies an error after it occurs
+- Automation opportunity completeness: create one automation_opportunities[] entry for each detected
+  manual re-keying/copy-paste workaround, shadow spreadsheet/offline tracking tool, and
+  knowledge-dependent decision that could be encoded as a rule engine.
+- Workaround rationale rule: for each extracted_facts.workaround_rationale entry, surface the
+  rationale reason in draft.risks[] or improvement_notes[].
 - If alignment_verdict is "suspected_mismatch", downgrade confidence on transcript-only
   inferences and avoid using transcript-only claims as primary sequencing evidence.
 - Use conservative language: do not invent roles, systems, or business rules not supported by evidence.
@@ -153,13 +177,10 @@ Rules:
 def _profile_guidance(profile: str) -> str:
     if profile == "quality":
         return (
-            "- Be thorough. Include observable sub-steps, exceptions, and system interactions.\n"
-            "- Capture nuance when evidence supports it, while preserving schema precision."
+            "Target 10-18 steps. Preserve distinct steps even if adjacent. "
+            "Capture all named roles, all SLA figures, all named exceptions."
         )
-    return (
-        "- Be concise. Prefer fewer, higher-confidence steps.\n"
-        "- Avoid speculative detail when evidence is ambiguous."
-    )
+    return "Target 8-14 steps. Merge sub-steps. Omit future-state or aspirational content. Capture only as-is evidence."
 
 
 def _safe_int(value: Any) -> int:
@@ -305,6 +326,11 @@ def run_processing(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
 
     user_prompt = _USER_PROMPT_TEMPLATE.format(
         evidence_json=json.dumps(evidence, ensure_ascii=True, separators=(",", ":")),
+        extracted_facts_json=json.dumps(
+            job.get("extracted_facts") or {},
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ),
         manifest_json=json.dumps(manifest, ensure_ascii=True, separators=(",", ":")),
         alignment_verdict=alignment_verdict,
         profile=profile,
@@ -331,6 +357,7 @@ def run_processing(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
     draft.setdefault("generated_at", _utc_now())
     draft.setdefault("version", 1)
     draft.setdefault("assumptions", [])
+    draft.setdefault("improvement_notes", [])
     draft.setdefault("automation_opportunities", [])
     draft.setdefault("faqs", [])
     draft.setdefault("approval_matrix", [])

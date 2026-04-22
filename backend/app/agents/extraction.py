@@ -45,6 +45,29 @@ Return a JSON object with this exact shape:
       "confidence": 0.0
     }}
   ],
+  "quantitative_facts": [
+    {{
+      "fact_type": "volume|sla|effort|staffing|error_rate",
+      "value": "string",
+      "context": "string",
+      "anchor": "HH:MM:SS"
+    }}
+  ],
+  "exception_patterns": [
+    {{
+      "scenario": "string",
+      "trigger": "string",
+      "anchor": "HH:MM:SS"
+    }}
+  ],
+  "workaround_rationale": [
+    {{
+      "workaround": "string",
+      "reason": "string",
+      "anchor": "HH:MM:SS"
+    }}
+  ],
+  "roles_detected": ["role names detected in the process narrative"],
   "speakers_detected": ["name or Unknown Speaker"],
   "process_domain": "string",
   "transcript_quality": "high|medium|low"
@@ -75,6 +98,11 @@ Rules:
 - source_type must be one of video|audio|transcript|frame based on the evidence source
 - confidence: 0.7–0.9 for explicitly stated steps; 0.4–0.6 for inferred; 0.2–0.4 for ambiguous
 - speakers_detected must list all unique speakers; use "Unknown Speaker" if unidentifiable
+- quantitative_facts must capture stated metrics and timings with anchors (volume, sla, effort,
+  staffing, error_rate)
+- exception_patterns must capture distinct exception scenarios and their triggers
+- workaround_rationale must capture workaround + underlying reason pairs, with anchors
+- roles_detected must list all named operational roles discovered in the process content
 - aim for complete extraction: a 60-minute discovery session should yield 15–30 evidence items
 - transcript_quality: high if cues clearly describe process steps; medium if some steps are implicit; low if content is mostly chitchat
 """
@@ -299,6 +327,29 @@ def _apply_source_type_defaults(extracted: Dict[str, Any], primary_source_type: 
             item["source_type"] = resolved
 
 
+def _parse_fact_extraction(extracted: Dict[str, Any]) -> Dict[str, Any]:
+    """Safely pluck extracted fact containers with list defaults."""
+
+    def _as_list(value: Any) -> List[Any]:
+        return value if isinstance(value, list) else []
+
+    quantitative_facts = [item for item in _as_list(extracted.get("quantitative_facts")) if isinstance(item, dict)]
+    exception_patterns = [item for item in _as_list(extracted.get("exception_patterns")) if isinstance(item, dict)]
+    workaround_rationale = [item for item in _as_list(extracted.get("workaround_rationale")) if isinstance(item, dict)]
+    roles_detected = [
+        role.strip()
+        for role in _as_list(extracted.get("roles_detected"))
+        if isinstance(role, str) and role.strip()
+    ]
+
+    return {
+        "quantitative_facts": quantitative_facts,
+        "exception_patterns": exception_patterns,
+        "workaround_rationale": workaround_rationale,
+        "roles_detected": roles_detected,
+    }
+
+
 def _normalize_input(job: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
     """
     Use registered adapters to normalize job input into extraction content.
@@ -391,6 +442,7 @@ def run_extraction(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
             "process_domain": "unknown",
             "transcript_quality": "low",
         }
+        job["extracted_facts"] = _parse_fact_extraction({})
         job["agent_signals"]["transcript_parsed"] = False
         return 0.0
 
@@ -438,6 +490,7 @@ def run_extraction(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
     extracted.setdefault("subject_process", extracted.get("process_domain") or "unknown")
 
     job["extracted_evidence"] = extracted
+    job["extracted_facts"] = _parse_fact_extraction(extracted)
     job["agent_signals"]["transcript_parsed"] = True
     job["agent_signals"]["speakers_detected"] = extracted.get("speakers_detected") or []
     from app.job_logic import estimate_cost_usd
