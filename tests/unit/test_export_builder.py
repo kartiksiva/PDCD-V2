@@ -230,9 +230,9 @@ class TestBuildExportMarkdown:
     def _bundle(self):
         return build_evidence_bundle(DRAFT_WITH_ANCHORS, JOB_WITH_SIGNALS)
 
-    def test_contains_pdd_title(self):
+    def test_contains_sop_title(self):
         md = build_export_markdown(DRAFT_WITH_ANCHORS, self._bundle())
-        assert "# Process Definition Document" in md
+        assert "# Standard Operating Procedure (SOP)" in md
 
     def test_contains_purpose_and_scope(self):
         md = build_export_markdown(DRAFT_WITH_ANCHORS, self._bundle())
@@ -246,12 +246,12 @@ class TestBuildExportMarkdown:
 
     def test_contains_sipoc_section(self):
         md = build_export_markdown(DRAFT_WITH_ANCHORS, self._bundle())
-        assert "## SIPOC" in md
+        assert "### 2.6 SIPOC (Supplier / Input / Process / Output / Customer)" in md
         assert "Log request" in md
 
     def test_contains_evidence_bundle_section(self):
         md = build_export_markdown(DRAFT_WITH_ANCHORS, self._bundle())
-        assert "## Evidence Bundle" in md
+        assert "### Evidence Bundle Manifest" in md
 
     def test_evidence_strength_shown(self):
         md = build_export_markdown(DRAFT_WITH_ANCHORS, self._bundle())
@@ -359,8 +359,8 @@ class TestBuildExportDocx:
         result = build_export_docx(DRAFT_WITH_ANCHORS, self._bundle(), "job-123")
         doc = Document(io.BytesIO(result))
         full_text = "\n".join(p.text for p in doc.paragraphs)
-        assert "Process Definition Document" in full_text or any(
-            "Process Definition Document" in para.text for para in doc.paragraphs
+        assert "Standard Operating Procedure (SOP)" in full_text or any(
+            "Standard Operating Procedure (SOP)" in para.text for para in doc.paragraphs
         )
 
     def test_contains_sipoc_table(self):

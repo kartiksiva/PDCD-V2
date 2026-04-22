@@ -482,6 +482,8 @@ def test_processing_prompt_contract_includes_alignment_and_priority_rules():
     assert "Evidence priority: video/audio/frame-derived items" in user_prompt
     assert 'If alignment_verdict is "suspected_mismatch"' in user_prompt
     assert '"confidence_delta": 0.0' in user_prompt
+    assert '"automation_opportunities": [' in user_prompt
+    assert "Populate steps[].tools_systems from evidence" in user_prompt
 
 
 def test_processing_profile_guidance_balanced_and_quality():

@@ -159,51 +159,312 @@ def build_evidence_bundle(finalized_draft: Dict[str, Any], job: Dict[str, Any]) 
     }
 
 
+def _needs_review(value: Any) -> str:
+    if value is None:
+        return "Needs Review"
+    if isinstance(value, str):
+        text = value.strip()
+        return text or "Needs Review"
+    return str(value)
+
+
+def _format_date(value: Any) -> str:
+    """Format an ISO timestamp or datetime to DD-MMM-YYYY for SOP headers."""
+    if value is None:
+        return "Needs Review"
+    from datetime import datetime
+    s = str(value).strip()
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ",
+                "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s[:26].rstrip("Z"), fmt.rstrip("z").rstrip("%z")).strftime("%d-%b-%Y")
+        except ValueError:
+            continue
+    return s or "Needs Review"
+
+
+def _derive_roles(draft: Dict[str, Any]) -> List[str]:
+    pdd = draft.get("pdd") or {}
+    roles: List[str] = []
+    for role in pdd.get("roles") or []:
+        role_name = str(role).strip()
+        if role_name and role_name not in roles:
+            roles.append(role_name)
+    for step in pdd.get("steps") or []:
+        actor = str((step or {}).get("actor") or "").strip()
+        if actor and actor not in roles:
+            roles.append(actor)
+    return roles or ["Needs Review"]
+
+
+def _step_source_anchor(step: Dict[str, Any]) -> str:
+    anchors = [
+        (sa or {}).get("anchor", "").strip()
+        for sa in (step.get("source_anchors") or [])
+        if (sa or {}).get("anchor")
+    ]
+    return ", ".join(anchors) if anchors else "Needs Review"
+
+
+def _step_tools_systems(step: Dict[str, Any]) -> str:
+    return _needs_review(step.get("tools_systems") or step.get("system"))
+
+
 def build_export_markdown(draft: Dict[str, Any], evidence_bundle: Dict[str, Any]) -> str:
-    """Build evidence-linked Markdown export."""
+    """Build SOP-style Markdown export."""
     if not draft:
         return "No finalized draft available."
 
     pdd = draft.get("pdd") or {}
+    steps = pdd.get("steps") or []
+    sipoc_rows = draft.get("sipoc") or []
+    roles = _derive_roles(draft)
+    approval_rows = draft.get("approval_matrix") or []
+    controls = pdd.get("process_controls") or draft.get("process_controls") or []
+    exceptions = pdd.get("exceptions") or []
+    automation = draft.get("automation_opportunities") or []
+    faqs = draft.get("faqs") or []
+    process_name = _needs_review(
+        pdd.get("process_name") or draft.get("subject_process") or pdd.get("purpose")
+    )
+
     parts = [
-        "# Process Definition Document",
+        "# Standard Operating Procedure (SOP)",
         "",
-        f"**Purpose:** {pdd.get('purpose', '')}",
-        f"**Scope:** {pdd.get('scope', '')}",
+        f"## {process_name}",
+        f"**Function:** {_needs_review(pdd.get('function'))}",
+        f"**Sub-Function:** {_needs_review(pdd.get('sub_function'))}",
+        "**Document Version:** v1.0",
+        "**Document Status:** Draft",
+        f"**Effective Date:** {_format_date(draft.get('generated_at'))}",
         "",
-        "## Steps",
+        "---",
         "",
+        "## 1. Document Control",
+        "### 1.1 Key Stakeholders",
+        "| # | Name | Position / Designation | Email ID |",
+        "|---|------|------------------------|----------|",
+        "| 1 | Needs Review | Needs Review | Needs Review |",
+        "",
+        "### 1.2 Version History",
+        "| Version | Date | Status | Author | Reviewed By | Comments / Changes |",
+        "|---------|------|--------|--------|-------------|-------------------|",
+        f"| v1.0 | {_format_date(draft.get('generated_at'))} | Draft | Needs Review | Needs Review | Initial export |",
+        "",
+        "---",
+        "",
+        "## Index",
+        "1. Document Control  2. Introduction  3. Process Steps  4. Process Exceptions  5. Process Controls  6. Approval Matrix  7. Appendix",
+        "",
+        "---",
+        "",
+        "## 2. Introduction",
+        "### 2.1 Process Overview",
+        _needs_review(pdd.get("process_overview") or pdd.get("scope")),
+        "",
+        "### 2.2 Process Objective",
+        _needs_review(pdd.get("process_objective") or pdd.get("purpose")),
+        "",
+        "### 2.3 Frequency",
+        _needs_review(pdd.get("frequency")),
+        "",
+        "### 2.4 SLA",
+        _needs_review(pdd.get("sla")),
+        "",
+        "### 2.5 RACI (task × role matrix)",
     ]
-    for step in pdd.get("steps") or []:
-        anchors = ", ".join(
-            sa.get("anchor", "")
-            for sa in (step.get("source_anchors") or [])
-            if sa.get("anchor")
+
+    raci_header = "| Task | " + " | ".join(roles) + " |"
+    raci_sep = "|------|" + "|".join("---" for _ in roles) + "|"
+    parts.extend([raci_header, raci_sep])
+    for step in steps:
+        actor = str((step or {}).get("actor") or "").strip()
+        task = _needs_review((step or {}).get("summary") or (step or {}).get("id"))
+        row = [task]
+        for role in roles:
+            if actor and role == actor:
+                row.append("R")
+            elif actor:
+                row.append("—")
+            else:
+                row.append("Needs Review")
+        parts.append("| " + " | ".join(row) + " |")
+
+    if not steps:
+        parts.append("| Needs Review | " + " | ".join("Needs Review" for _ in roles) + " |")
+
+    parts.extend(["", "### 2.6 SIPOC (Supplier / Input / Process / Output / Customer)"])
+    parts.extend(
+        [
+            "| Supplier | Input | Process | Output | Customer | Step Anchor | Source Anchor |",
+            "|----------|-------|---------|--------|----------|-------------|---------------|",
+        ]
+    )
+    if sipoc_rows:
+        for row in sipoc_rows:
+            step_anchor = ", ".join((row.get("step_anchor") or [])) or "Needs Review"
+            parts.append(
+                "| "
+                + " | ".join(
+                    [
+                        _needs_review(row.get("supplier")),
+                        _needs_review(row.get("input")),
+                        _needs_review(row.get("process_step")),
+                        _needs_review(row.get("output")),
+                        _needs_review(row.get("customer")),
+                        step_anchor,
+                        _needs_review(row.get("source_anchor")),
+                    ]
+                )
+                + " |"
+            )
+    else:
+        parts.append("| Needs Review | Needs Review | Needs Review | Needs Review | Needs Review | Needs Review | Needs Review |")
+
+    parts.extend(["", "---", "", "## 3. Process Steps"])
+    if steps:
+        for idx, step in enumerate(steps, start=1):
+            parts.extend(
+                [
+                    f"### Step {idx}: {_needs_review(step.get('summary') or step.get('id'))} ({_needs_review(step.get('id'))})",
+                    f"- Description: {_needs_review(step.get('summary'))}",
+                    f"- Tools / Systems: {_step_tools_systems(step)}",
+                    f"- Inputs / Outputs: {_needs_review(step.get('input'))} -> {_needs_review(step.get('output'))}",
+                    f"- Source Timestamp (evidence anchor): {_step_source_anchor(step)}",
+                    "",
+                ]
+            )
+    else:
+        parts.extend(
+            [
+                "### Step 1: Needs Review",
+                "- Description: Needs Review",
+                "- Tools / Systems: Needs Review",
+                "- Inputs / Outputs: Needs Review -> Needs Review",
+                "- Source Timestamp (evidence anchor): Needs Review",
+                "",
+            ]
         )
-        anchor_str = f" *(anchors: {anchors})*" if anchors else ""
-        parts.append(f"- **{step.get('id')}**: {step.get('summary')}{anchor_str}")
 
-    parts.extend(["", "## SIPOC", ""])
-    for idx, row in enumerate(draft.get("sipoc") or [], start=1):
-        step_refs = ", ".join(row.get("step_anchor") or [])
-        step_ref_str = f" (steps: {step_refs})" if step_refs else ""
-        parts.append(
-            f"{idx}. **{row.get('process_step')}** — anchor: "
-            f"`{row.get('source_anchor', 'N/A')}`{step_ref_str}"
-        )
+    parts.extend(["---", "", "## 4. Process Exceptions"])
+    parts.extend(
+        [
+            "| Exception Scenario | Description | Action Required | Owner |",
+            "|--------------------|-------------|-----------------|-------|",
+        ]
+    )
+    if exceptions:
+        for exc in exceptions:
+            if isinstance(exc, dict):
+                parts.append(
+                    "| "
+                    + " | ".join(
+                        [
+                            _needs_review(exc.get("scenario")),
+                            _needs_review(exc.get("description")),
+                            _needs_review(exc.get("action_required")),
+                            _needs_review(exc.get("owner")),
+                        ]
+                    )
+                    + " |"
+                )
+            else:
+                parts.append(f"| {_needs_review(exc)} | {_needs_review(exc)} | Needs Review | Needs Review |")
+    else:
+        parts.append("| Needs Review | Needs Review | Needs Review | Needs Review |")
 
-    # Evidence bundle section
-    parts.extend(["", "## Evidence Bundle", ""])
-    strength = evidence_bundle.get("evidence_strength") or "unknown"
-    parts.append(f"**Evidence Strength:** {strength}")
+    parts.extend(["", "## 5. Process Controls"])
+    parts.extend(
+        [
+            "| Control # | Process Step | Control Description | Manual/System | Preventive/Detective |",
+            "|-----------|--------------|---------------------|---------------|----------------------|",
+        ]
+    )
+    if controls:
+        for idx, ctl in enumerate(controls, start=1):
+            if isinstance(ctl, dict):
+                parts.append(
+                    "| "
+                    + " | ".join(
+                        [
+                            _needs_review(ctl.get("control_id") or f"control-{idx:02d}"),
+                            _needs_review(ctl.get("process_step_id") or ctl.get("process_step")),
+                            _needs_review(ctl.get("control_description")),
+                            _needs_review(ctl.get("manual_or_system")),
+                            _needs_review(ctl.get("preventive_or_detective")),
+                        ]
+                    )
+                    + " |"
+                )
+            else:
+                parts.append(f"| control-{idx:02d} | Needs Review | {_needs_review(ctl)} | Needs Review | Needs Review |")
+    else:
+        parts.append("| control-01 | Needs Review | Needs Review | Needs Review | Needs Review |")
 
+    parts.extend(["", "## 6. Approval Matrix"])
+    parts.extend(["| Role | Responsibility |", "|------|----------------|"])
+    if approval_rows:
+        for row in approval_rows:
+            if isinstance(row, dict):
+                parts.append(
+                    f"| {_needs_review(row.get('role'))} | {_needs_review(row.get('responsibility'))} |"
+                )
+            else:
+                parts.append(f"| {_needs_review(row)} | Needs Review |")
+    else:
+        for role in roles:
+            parts.append(f"| {role} | Needs Review |")
+
+    parts.extend(["", "## 7. Appendix", "### Automation Opportunities"])
+    parts.extend(
+        [
+            "| ID | Description | Quantification | Automation Signal |",
+            "|----|-------------|----------------|-------------------|",
+        ]
+    )
+    if automation:
+        for idx, item in enumerate(automation, start=1):
+            if isinstance(item, dict):
+                parts.append(
+                    "| "
+                    + " | ".join(
+                        [
+                            _needs_review(item.get("id") or f"auto-{idx:02d}"),
+                            _needs_review(item.get("description")),
+                            _needs_review(item.get("quantification")),
+                            _needs_review(item.get("automation_signal")),
+                        ]
+                    )
+                    + " |"
+                )
+            else:
+                parts.append(f"| auto-{idx:02d} | {_needs_review(item)} | Needs Review | Needs Review |")
+    else:
+        parts.append("| auto-01 | Needs Review | Needs Review | Needs Review |")
+
+    parts.extend(["", "### FAQs"])
+    if faqs:
+        for idx, faq in enumerate(faqs, start=1):
+            if isinstance(faq, dict):
+                parts.append(f"{idx}. **Q:** {_needs_review(faq.get('question'))}")
+                parts.append(f"   **A:** {_needs_review(faq.get('answer'))}")
+            else:
+                parts.append(f"{idx}. {_needs_review(faq)}")
+    else:
+        parts.append("1. Needs Review")
+
+    # Retain evidence manifest for anchor traceability.
+    parts.extend(["", "### Evidence Bundle Manifest", ""])
+    parts.append(f"**Evidence Strength:** {evidence_bundle.get('evidence_strength') or 'unknown'}")
     linked_anchors = evidence_bundle.get("linked_anchors") or []
     if linked_anchors:
-        parts.extend([
-            "",
-            "| Anchor | Type | Confidence | Linked Steps | OCR Snippet |",
-            "|--------|------|------------|-------------|-------------|",
-        ])
+        parts.extend(
+            [
+                "",
+                "| Anchor | Type | Confidence | Linked Steps | OCR Snippet |",
+                "|--------|------|------------|-------------|-------------|",
+            ]
+        )
         for a in linked_anchors:
             steps_str = ", ".join(a.get("linked_step_ids") or []) or "—"
             ocr = (a.get("ocr_snippet") or "—")[:80]
@@ -212,14 +473,13 @@ def build_export_markdown(draft: Dict[str, Any], evidence_bundle: Dict[str, Any]
                 f"| `{a['anchor_value']}` | {a['anchor_type']} | {conf} | {steps_str} | {ocr} |"
             )
     else:
-        parts.append("")
         parts.append("*No linked evidence anchors found.*")
 
     note = evidence_bundle.get("frame_captures_note", "")
     if note:
         parts.extend(["", f"> {note}"])
     frame_captures = evidence_bundle.get("frame_captures") or []
-    parts.extend(["", "### Frame captures", ""])
+    parts.extend(["", "### Frame captures"])
     if frame_captures:
         for capture in frame_captures:
             anchor_ids = ", ".join(capture.get("linked_anchor_ids") or []) or "unlinked"
@@ -357,72 +617,266 @@ def build_export_docx(
     job_id: str,
     frame_bytes_map: Optional[Dict[str, bytes]] = None,
 ) -> bytes:
-    """Build evidence-linked DOCX export using python-docx."""
+    """Build SOP-style DOCX export using python-docx."""
     from docx import Document  # type: ignore[import-untyped]
 
     doc = Document()
-    doc.add_heading("Process Definition Document", level=0)
-
     pdd = draft.get("pdd") or {}
-    doc.add_paragraph(f"Purpose: {pdd.get('purpose', '')}")
-    doc.add_paragraph(f"Scope: {pdd.get('scope', '')}")
-
-    doc.add_heading("Steps", level=1)
-    for step in pdd.get("steps") or []:
-        anchors = ", ".join(
-            sa.get("anchor", "")
-            for sa in (step.get("source_anchors") or [])
-            if sa.get("anchor")
-        )
-        text = f"{step.get('id')}: {step.get('summary')}"
-        if anchors:
-            text += f" [anchors: {anchors}]"
-        doc.add_paragraph(text, style="List Bullet")
-
-    doc.add_heading("SIPOC", level=1)
+    steps = pdd.get("steps") or []
+    roles = _derive_roles(draft)
     sipoc = draft.get("sipoc") or []
+    controls = pdd.get("process_controls") or draft.get("process_controls") or []
+    exceptions = pdd.get("exceptions") or []
+    approval_rows = draft.get("approval_matrix") or []
+    automation = draft.get("automation_opportunities") or []
+    faqs = draft.get("faqs") or []
+
+    process_name = _needs_review(
+        pdd.get("process_name") or draft.get("subject_process") or pdd.get("purpose")
+    )
+
+    doc.add_heading("Standard Operating Procedure (SOP)", level=0)
+    doc.add_heading(process_name, level=1)
+    doc.add_paragraph(f"Function: {_needs_review(pdd.get('function'))}")
+    doc.add_paragraph(f"Sub-Function: {_needs_review(pdd.get('sub_function'))}")
+    doc.add_paragraph("Document Version: v1.0")
+    doc.add_paragraph("Document Status: Draft")
+    doc.add_paragraph(f"Effective Date: {_format_date(draft.get('generated_at'))}")
+
+    doc.add_heading("1. Document Control", level=1)
+    doc.add_heading("1.1 Key Stakeholders", level=2)
+    stakeholders = doc.add_table(rows=1, cols=4)
+    stakeholders.style = "Table Grid"
+    for i, h in enumerate(["#", "Name", "Position / Designation", "Email ID"]):
+        stakeholders.rows[0].cells[i].text = h
+    row = stakeholders.add_row().cells
+    row[0].text = "1"
+    row[1].text = "Needs Review"
+    row[2].text = "Needs Review"
+    row[3].text = "Needs Review"
+
+    doc.add_heading("1.2 Version History", level=2)
+    vh = doc.add_table(rows=1, cols=6)
+    vh.style = "Table Grid"
+    for i, h in enumerate(["Version", "Date", "Status", "Author", "Reviewed By", "Comments / Changes"]):
+        vh.rows[0].cells[i].text = h
+    row = vh.add_row().cells
+    row[0].text = "v1.0"
+    row[1].text = _format_date(draft.get("generated_at"))
+    row[2].text = "Draft"
+    row[3].text = "Needs Review"
+    row[4].text = "Needs Review"
+    row[5].text = "Initial export"
+
+    doc.add_heading("Index", level=1)
+    doc.add_paragraph("1. Document Control  2. Introduction  3. Process Steps  4. Process Exceptions  5. Process Controls  6. Approval Matrix  7. Appendix")
+
+    doc.add_heading("2. Introduction", level=1)
+    doc.add_heading("2.1 Process Overview", level=2)
+    doc.add_paragraph(_needs_review(pdd.get("process_overview") or pdd.get("scope")))
+    doc.add_heading("2.2 Process Objective", level=2)
+    doc.add_paragraph(_needs_review(pdd.get("process_objective") or pdd.get("purpose")))
+    doc.add_heading("2.3 Frequency", level=2)
+    doc.add_paragraph(_needs_review(pdd.get("frequency")))
+    doc.add_heading("2.4 SLA", level=2)
+    doc.add_paragraph(_needs_review(pdd.get("sla")))
+
+    doc.add_heading("2.5 RACI (task × role matrix)", level=2)
+    raci = doc.add_table(rows=1, cols=1 + len(roles))
+    raci.style = "Table Grid"
+    raci.rows[0].cells[0].text = "Task"
+    for i, role in enumerate(roles, start=1):
+        raci.rows[0].cells[i].text = role
+    if steps:
+        for step in steps:
+            actor = str((step or {}).get("actor") or "").strip()
+            row = raci.add_row().cells
+            row[0].text = _needs_review((step or {}).get("summary") or (step or {}).get("id"))
+            for i, role in enumerate(roles, start=1):
+                if actor and role == actor:
+                    row[i].text = "R"
+                elif actor:
+                    row[i].text = "—"
+                else:
+                    row[i].text = "Needs Review"
+    else:
+        row = raci.add_row().cells
+        row[0].text = "Needs Review"
+        for i in range(1, len(roles) + 1):
+            row[i].text = "Needs Review"
+
+    doc.add_heading("2.6 SIPOC (Supplier / Input / Process / Output / Customer)", level=2)
     if sipoc:
-        table = doc.add_table(rows=1, cols=6)
+        table = doc.add_table(rows=1, cols=7)
         table.style = "Table Grid"
         hdr_cells = table.rows[0].cells
-        for i, h in enumerate(["#", "Supplier", "Input", "Process Step", "Output", "Customer"]):
+        for i, h in enumerate(["Supplier", "Input", "Process", "Output", "Customer", "Step Anchor", "Source Anchor"]):
             hdr_cells[i].text = h
-        for idx, row in enumerate(sipoc, start=1):
+        for row_data in sipoc:
             cells = table.add_row().cells
-            cells[0].text = str(idx)
-            cells[1].text = row.get("supplier", "")
-            cells[2].text = row.get("input", "")
-            cells[3].text = row.get("process_step", "")
-            cells[4].text = row.get("output", "")
-            cells[5].text = row.get("customer", "")
+            cells[0].text = _needs_review(row_data.get("supplier"))
+            cells[1].text = _needs_review(row_data.get("input"))
+            cells[2].text = _needs_review(row_data.get("process_step"))
+            cells[3].text = _needs_review(row_data.get("output"))
+            cells[4].text = _needs_review(row_data.get("customer"))
+            cells[5].text = ", ".join(row_data.get("step_anchor") or []) or "Needs Review"
+            cells[6].text = _needs_review(row_data.get("source_anchor"))
     else:
         doc.add_paragraph("No SIPOC rows available.")
 
-    # Evidence bundle section
-    doc.add_heading("Evidence Bundle", level=1)
+    doc.add_heading("3. Process Steps", level=1)
+    if steps:
+        for idx, step in enumerate(steps, start=1):
+            doc.add_heading(
+                f"Step {idx}: {_needs_review(step.get('summary') or step.get('id'))}",
+                level=2,
+            )
+            doc.add_paragraph(f"Description: {_needs_review(step.get('summary'))}")
+            doc.add_paragraph(f"Tools / Systems: {_step_tools_systems(step)}")
+            doc.add_paragraph(
+                "Inputs / Outputs: "
+                f"{_needs_review(step.get('input'))} -> {_needs_review(step.get('output'))}"
+            )
+            doc.add_paragraph(
+                "Source Timestamp (evidence anchor): "
+                f"{_step_source_anchor(step)}"
+            )
+    else:
+        doc.add_paragraph("Step 1: Needs Review")
+        doc.add_paragraph("Description: Needs Review")
+        doc.add_paragraph("Tools / Systems: Needs Review")
+        doc.add_paragraph("Inputs / Outputs: Needs Review -> Needs Review")
+        doc.add_paragraph("Source Timestamp (evidence anchor): Needs Review")
+
+    doc.add_heading("4. Process Exceptions", level=1)
+    ex_table = doc.add_table(rows=1, cols=4)
+    ex_table.style = "Table Grid"
+    for i, h in enumerate(["Exception Scenario", "Description", "Action Required", "Owner"]):
+        ex_table.rows[0].cells[i].text = h
+    if exceptions:
+        for exc in exceptions:
+            row = ex_table.add_row().cells
+            if isinstance(exc, dict):
+                row[0].text = _needs_review(exc.get("scenario"))
+                row[1].text = _needs_review(exc.get("description"))
+                row[2].text = _needs_review(exc.get("action_required"))
+                row[3].text = _needs_review(exc.get("owner"))
+            else:
+                row[0].text = _needs_review(exc)
+                row[1].text = _needs_review(exc)
+                row[2].text = "Needs Review"
+                row[3].text = "Needs Review"
+    else:
+        row = ex_table.add_row().cells
+        row[0].text = "Needs Review"
+        row[1].text = "Needs Review"
+        row[2].text = "Needs Review"
+        row[3].text = "Needs Review"
+
+    doc.add_heading("5. Process Controls", level=1)
+    ctl_table = doc.add_table(rows=1, cols=5)
+    ctl_table.style = "Table Grid"
+    for i, h in enumerate(["Control #", "Process Step", "Control Description", "Manual/System", "Preventive/Detective"]):
+        ctl_table.rows[0].cells[i].text = h
+    if controls:
+        for idx, ctl in enumerate(controls, start=1):
+            row = ctl_table.add_row().cells
+            if isinstance(ctl, dict):
+                row[0].text = _needs_review(ctl.get("control_id") or f"control-{idx:02d}")
+                row[1].text = _needs_review(ctl.get("process_step_id") or ctl.get("process_step"))
+                row[2].text = _needs_review(ctl.get("control_description"))
+                row[3].text = _needs_review(ctl.get("manual_or_system"))
+                row[4].text = _needs_review(ctl.get("preventive_or_detective"))
+            else:
+                row[0].text = f"control-{idx:02d}"
+                row[1].text = "Needs Review"
+                row[2].text = _needs_review(ctl)
+                row[3].text = "Needs Review"
+                row[4].text = "Needs Review"
+    else:
+        row = ctl_table.add_row().cells
+        row[0].text = "control-01"
+        row[1].text = "Needs Review"
+        row[2].text = "Needs Review"
+        row[3].text = "Needs Review"
+        row[4].text = "Needs Review"
+
+    doc.add_heading("6. Approval Matrix", level=1)
+    appr_table = doc.add_table(rows=1, cols=2)
+    appr_table.style = "Table Grid"
+    appr_table.rows[0].cells[0].text = "Role"
+    appr_table.rows[0].cells[1].text = "Responsibility"
+    if approval_rows:
+        for row_data in approval_rows:
+            row = appr_table.add_row().cells
+            if isinstance(row_data, dict):
+                row[0].text = _needs_review(row_data.get("role"))
+                row[1].text = _needs_review(row_data.get("responsibility"))
+            else:
+                row[0].text = _needs_review(row_data)
+                row[1].text = "Needs Review"
+    else:
+        for role in roles:
+            row = appr_table.add_row().cells
+            row[0].text = role
+            row[1].text = "Needs Review"
+
+    doc.add_heading("7. Appendix", level=1)
+    doc.add_heading("Automation Opportunities", level=2)
+    auto_table = doc.add_table(rows=1, cols=4)
+    auto_table.style = "Table Grid"
+    for i, h in enumerate(["ID", "Description", "Quantification", "Automation Signal"]):
+        auto_table.rows[0].cells[i].text = h
+    if automation:
+        for idx, item in enumerate(automation, start=1):
+            row = auto_table.add_row().cells
+            if isinstance(item, dict):
+                row[0].text = _needs_review(item.get("id") or f"auto-{idx:02d}")
+                row[1].text = _needs_review(item.get("description"))
+                row[2].text = _needs_review(item.get("quantification"))
+                row[3].text = _needs_review(item.get("automation_signal"))
+            else:
+                row[0].text = f"auto-{idx:02d}"
+                row[1].text = _needs_review(item)
+                row[2].text = "Needs Review"
+                row[3].text = "Needs Review"
+    else:
+        row = auto_table.add_row().cells
+        row[0].text = "auto-01"
+        row[1].text = "Needs Review"
+        row[2].text = "Needs Review"
+        row[3].text = "Needs Review"
+
+    doc.add_heading("FAQs", level=2)
+    if faqs:
+        for idx, faq in enumerate(faqs, start=1):
+            if isinstance(faq, dict):
+                doc.add_paragraph(f"{idx}. Q: {_needs_review(faq.get('question'))}")
+                doc.add_paragraph(f"   A: {_needs_review(faq.get('answer'))}")
+            else:
+                doc.add_paragraph(f"{idx}. {_needs_review(faq)}")
+    else:
+        doc.add_paragraph("1. Needs Review")
+
+    # Keep evidence manifest in the appendix for traceability.
+    doc.add_heading("Evidence Bundle Manifest", level=2)
     strength = evidence_bundle.get("evidence_strength") or "unknown"
     doc.add_paragraph(f"Evidence Strength: {strength}")
-
     linked_anchors = evidence_bundle.get("linked_anchors") or []
     if linked_anchors:
         table = doc.add_table(rows=1, cols=5)
         table.style = "Table Grid"
-        hdr_cells = table.rows[0].cells
         for i, h in enumerate(["Anchor", "Type", "Confidence", "Linked Steps", "OCR Snippet"]):
-            hdr_cells[i].text = h
+            table.rows[0].cells[i].text = h
         for a in linked_anchors:
-            cells = table.add_row().cells
-            cells[0].text = a["anchor_value"]
-            cells[1].text = a["anchor_type"]
-            cells[2].text = f"{a.get('confidence', 0.0):.2f}"
-            cells[3].text = ", ".join(a.get("linked_step_ids") or []) or "—"
-            cells[4].text = (a.get("ocr_snippet") or "—")[:120]
+            row = table.add_row().cells
+            row[0].text = a["anchor_value"]
+            row[1].text = a["anchor_type"]
+            row[2].text = f"{a.get('confidence', 0.0):.2f}"
+            row[3].text = ", ".join(a.get("linked_step_ids") or []) or "—"
+            row[4].text = (a.get("ocr_snippet") or "—")[:120]
     else:
         doc.add_paragraph("No linked evidence anchors found.")
-
-    note = evidence_bundle.get("frame_captures_note", "")
-    if note:
-        doc.add_paragraph(note)
 
     frame_captures = evidence_bundle.get("frame_captures") or []
     if frame_captures:
