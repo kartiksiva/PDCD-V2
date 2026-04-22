@@ -3009,3 +3009,75 @@ Implemented follow-up hardening for `gpt-5.4-mini` transcript extraction by addi
   - `subject_process` resolves to the operational process (for example, complaint handling)
   - `evidence_items >= 15` with non-placeholder timestamp anchors
   - `transcript_quality in {high, medium}`.
+
+## Section 23: Issue #68 — SOP Export Template Alignment (2026-04-20)
+
+Aligned V2 markdown/docx exports to the custom SOP template and extended processing prompt/schema guidance for SOP-specific fields.
+
+### What was added
+
+- `backend/app/export_builder.py`
+  - Reworked `build_export_markdown(...)` from PDD-style layout to SOP template layout with sections:
+    - SOP header (process/function/sub-function/version/status/effective date)
+    - Document Control (key stakeholders, version history)
+    - Index
+    - Introduction (overview/objective/frequency/SLA)
+    - RACI matrix (task × role)
+    - SIPOC table
+    - Process Steps with:
+      - Description
+      - Tools / Systems
+      - Inputs / Outputs
+      - Source Timestamp (evidence anchor)
+    - Process Exceptions table
+    - Process Controls table
+    - Approval Matrix table
+    - Appendix with Automation Opportunities + FAQs
+    - Evidence Bundle Manifest (retained for anchor traceability)
+  - Added `Needs Review` fallback handling for missing fields across all SOP sections.
+  - Kept evidence-anchor retention per step and retained frame-capture reporting.
+
+- `backend/app/export_builder.py` (DOCX)
+  - Reworked `build_export_docx(...)` to mirror the same SOP structure/sections as markdown.
+  - Added table-based sections for RACI, SIPOC, Exceptions, Controls, Approval Matrix, and Automation Opportunities.
+  - Preserved evidence manifest table and frame embedding behavior.
+
+- `backend/app/agents/processing.py`
+  - Expanded `_PDD_SCHEMA` with SOP-supporting fields:
+    - `process_name`, `function`, `sub_function`, `process_overview`, `process_objective`, `frequency`, `sla`
+    - `steps[].tools_systems`
+    - `process_controls[]`
+  - Expanded `_USER_PROMPT_TEMPLATE` output shape with:
+    - `automation_opportunities[]`
+    - `faqs[]`
+    - `approval_matrix[]`
+  - Added prompt rules instructing model to populate tools/systems and automation opportunities with quantification where possible.
+  - Added post-processing defaults in `run_processing(...)` for new SOP fields and fallback values (`Needs Review`) without breaking existing draft contract fields.
+
+### Tests added/updated
+
+- `tests/unit/test_export_builder.py`
+  - Updated markdown/docx assertions to match SOP title and SOP section headings while preserving anchor/evidence checks.
+
+- `tests/unit/test_agents.py`
+  - Updated processing prompt-contract assertions to cover new SOP extraction signals:
+    - automation opportunities shape
+    - tools/systems extraction instruction.
+
+### Validation
+
+- `pytest -q tests/unit/test_export_builder.py tests/unit/test_agents.py -k "processing_prompt_contract_includes_alignment_and_priority_rules or BuildExportMarkdown or BuildExportDocx"`
+  - Result: `21 passed`
+- `pytest -q tests/unit/test_agents.py tests/unit/test_worker.py -k "processing_ or build_export_markdown_with_draft"`
+  - Result: `12 passed`
+- `pytest -q tests/unit tests/integration`
+  - Result: `359 passed, 2 skipped`
+
+### Decisions
+
+- Kept SOP export additive and backward-compatible with existing draft data by using deterministic `Needs Review` fallbacks instead of forcing strict upstream field presence.
+- Retained evidence bundle manifest and per-step source anchors to preserve V2 traceability differentiator.
+
+### Open questions
+
+- Stakeholder/version-history population remains placeholder-only in v2 (no dedicated persistence model yet); future work can populate from explicit metadata fields when available.

@@ -21,6 +21,13 @@ _SYSTEM_PROMPT = (
 
 _PDD_SCHEMA = """\
 {
+  "process_name": "string",
+  "function": "string",
+  "sub_function": "string",
+  "process_overview": "string",
+  "process_objective": "string",
+  "frequency": "string",
+  "sla": "string",
   "purpose": "string — one-sentence purpose of the process",
   "scope": "string — in/out of scope boundaries",
   "triggers": ["list of events that start the process"],
@@ -31,6 +38,7 @@ _PDD_SCHEMA = """\
       "summary": "string",
       "actor": "string",
       "system": "string",
+      "tools_systems": "string",
       "input": "string",
       "output": "string",
       "exception": "string or null",
@@ -41,6 +49,15 @@ _PDD_SCHEMA = """\
   "systems": ["list of all systems"],
   "business_rules": ["list of rules extracted from evidence"],
   "exceptions": ["list of exception conditions"],
+  "process_controls": [
+    {
+      "control_id": "control-01",
+      "process_step_id": "step-01",
+      "control_description": "string",
+      "manual_or_system": "manual|system",
+      "preventive_or_detective": "preventive|detective"
+    }
+  ],
   "outputs": ["list of process outputs"],
   "metrics": {"coverage": "high|medium|low", "confidence": 0.0},
   "risks": ["list of identified risks"]
@@ -79,6 +96,20 @@ Generate a complete PDD and SIPOC from the evidence above. Return a JSON object 
   "pdd": {pdd_schema},
   "sipoc": {sipoc_schema},
   "assumptions": ["list of assumptions made"],
+  "automation_opportunities": [
+    {{
+      "id": "auto-01",
+      "description": "string",
+      "quantification": "string",
+      "automation_signal": "high|medium|low"
+    }}
+  ],
+  "faqs": [
+    {{"question": "string", "answer": "string"}}
+  ],
+  "approval_matrix": [
+    {{"role": "string", "responsibility": "string"}}
+  ],
   "confidence_summary": {{
     "overall": 0.0,
     "source_quality": "high|medium|low",
@@ -97,6 +128,10 @@ Rules:
 - Use conservative language: do not invent roles, systems, or business rules not supported by evidence.
 - If evidence is sparse or transcript-only, still produce best-effort structure and list explicit
   assumptions in assumptions[] instead of fabricating detail.
+- Populate steps[].tools_systems from evidence; use "Needs Review" when the system/tool cannot
+  be determined from evidence.
+- Populate automation_opportunities[] from repetitive/rule-based/manual effort patterns in evidence.
+  Include quantification where possible (volume, time, rework, touchpoints); otherwise "Needs Review".
 - Every evidence item must map to at least one PDD step
 - Every PDD step must appear in at least one SIPOC row
 - step_anchor MUST be a non-empty JSON array with at least one PDD step ID from the steps list above (e.g. ["step-01"]). Never leave step_anchor as [] or null.
@@ -290,6 +325,9 @@ def run_processing(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
     draft.setdefault("generated_at", _utc_now())
     draft.setdefault("version", 1)
     draft.setdefault("assumptions", [])
+    draft.setdefault("automation_opportunities", [])
+    draft.setdefault("faqs", [])
+    draft.setdefault("approval_matrix", [])
     draft.setdefault("confidence_summary", {
         "overall": 0.65,
         "source_quality": "medium",
@@ -297,6 +335,18 @@ def run_processing(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
         "confidence_delta": 0.0,
     })
     draft["confidence_summary"].setdefault("confidence_delta", 0.0)
+    pdd = draft.setdefault("pdd", {})
+    pdd.setdefault("process_name", "Needs Review")
+    pdd.setdefault("function", "Needs Review")
+    pdd.setdefault("sub_function", "Needs Review")
+    pdd.setdefault("process_overview", pdd.get("purpose", "Needs Review"))
+    pdd.setdefault("process_objective", pdd.get("purpose", "Needs Review"))
+    pdd.setdefault("frequency", "Needs Review")
+    pdd.setdefault("sla", "Needs Review")
+    pdd.setdefault("process_controls", [])
+    for step in pdd.get("steps") or []:
+        if isinstance(step, dict):
+            step.setdefault("tools_systems", step.get("system") or "Needs Review")
 
     job["draft"] = draft
     from app.job_logic import estimate_cost_usd
