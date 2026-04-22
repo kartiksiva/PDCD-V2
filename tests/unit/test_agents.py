@@ -307,12 +307,14 @@ def test_extraction_prompt_contract_is_media_first():
     assert "When video or audio is available" in system_prompt
     assert "When transcript is the only source, treat it as primary evidence" in system_prompt
     assert "source_type" in user_prompt
+    assert "evidence_type" in user_prompt
     assert '"subject_process":' in user_prompt
     assert "video|audio|transcript|frame" in user_prompt
     assert "Unknown Speaker" in user_prompt
     assert "extraction method:" in user_prompt.lower()
     assert "[00:10:50-00:11:40] Priya Nair (Customer)" in user_prompt
     assert "remove only genuine non-process content" in user_prompt.lower()
+    assert 'set evidence_type to "future_state"' in user_prompt
     assert "do not invent timestamps" in user_prompt.lower()
     assert "15–30 evidence items" in user_prompt
     assert "collapse adjacent steps" in user_prompt.lower()
@@ -484,6 +486,9 @@ def test_processing_prompt_contract_includes_alignment_and_priority_rules():
     assert '"confidence_delta": 0.0' in user_prompt
     assert '"automation_opportunities": [' in user_prompt
     assert "Populate steps[].tools_systems from evidence" in user_prompt
+    assert "PDD steps[] must include only current as-is executable actions." in user_prompt
+    assert "Future-state proposals, recommendations, target-state workflows" in user_prompt
+    assert "Prefer concrete figures (percentages, counts, durations, frequencies, and error rates)" in user_prompt
 
 
 def test_processing_profile_guidance_balanced_and_quality():
