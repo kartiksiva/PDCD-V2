@@ -750,6 +750,9 @@ async def update_draft(job_id: str, payload: DraftUpdateRequest) -> Dict[str, An
         "insufficient_evidence",
         "transcript_mismatch",
         "unknown_speaker",
+        "SLA_UNRESOLVED",
+        "FREQUENCY_UNRESOLVED",
+        "EXCEPTIONS_SUPPRESSED",
     }
     job["review_notes"]["flags"] = [
         flag

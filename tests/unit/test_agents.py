@@ -318,6 +318,41 @@ def test_extraction_prompt_contract_is_media_first():
     assert "do not invent timestamps" in user_prompt.lower()
     assert "15–30 evidence items" in user_prompt
     assert "collapse adjacent steps" in user_prompt.lower()
+    assert '"quantitative_facts": [' in user_prompt
+    assert '"exception_patterns": [' in user_prompt
+    assert '"workaround_rationale": [' in user_prompt
+    assert '"roles_detected": [' in user_prompt
+
+
+def test_parse_fact_extraction_defaults_on_missing_keys():
+    from app.agents.extraction import _parse_fact_extraction
+
+    parsed = _parse_fact_extraction({})
+
+    assert parsed == {
+        "quantitative_facts": [],
+        "exception_patterns": [],
+        "workaround_rationale": [],
+        "roles_detected": [],
+    }
+
+
+def test_parse_fact_extraction_defaults_on_null_and_invalid_types():
+    from app.agents.extraction import _parse_fact_extraction
+
+    parsed = _parse_fact_extraction(
+        {
+            "quantitative_facts": None,
+            "exception_patterns": "not-a-list",
+            "workaround_rationale": [{"workaround": "sheet", "reason": "crm trust gap"}],
+            "roles_detected": ["Analyst", "", None, "Manager", 12],
+        }
+    )
+
+    assert parsed["quantitative_facts"] == []
+    assert parsed["exception_patterns"] == []
+    assert parsed["workaround_rationale"] == [{"workaround": "sheet", "reason": "crm trust gap"}]
+    assert parsed["roles_detected"] == ["Analyst", "Manager"]
 
 
 def test_extraction_tokens_default_to_4096(monkeypatch):
@@ -497,13 +532,24 @@ def test_processing_prompt_contract_includes_alignment_and_priority_rules():
     assert "PDD steps[] must include only current as-is executable actions." in user_prompt
     assert "Future-state proposals, recommendations, target-state workflows" in user_prompt
     assert "Prefer concrete figures (percentages, counts, durations, frequencies, and error rates)" in user_prompt
+    assert "Quantitative population rule" in user_prompt
+    assert 'do not emit "Needs Review"' in user_prompt
+    assert "Full lifecycle rule" in user_prompt
+    assert "Exception completeness rule" in user_prompt
+    assert "Approval matrix coverage rule" in user_prompt
+    assert "manual: human action or decision without system enforcement" in user_prompt
+    assert "Automation opportunity completeness" in user_prompt
+    assert "Workaround rationale rule" in user_prompt
 
 
 def test_processing_profile_guidance_balanced_and_quality():
     from app.agents.processing import _profile_guidance
 
-    assert "Be concise" in _profile_guidance("balanced")
-    assert "Be thorough" in _profile_guidance("quality")
+    assert "Target 8-14 steps" in _profile_guidance("balanced")
+    assert "Capture only as-is evidence" in _profile_guidance("balanced")
+    assert "Target 10-18 steps" in _profile_guidance("quality")
+    assert "all SLA figures" in _profile_guidance("quality")
+    assert "all named exceptions" in _profile_guidance("quality")
 
 
 def test_processing_passes_alignment_and_profile_guidance_to_prompt():
@@ -528,7 +574,7 @@ def test_processing_passes_alignment_and_profile_guidance_to_prompt():
 
     prompt = captured["user_content"]
     assert "Alignment verdict: suspected_mismatch" in prompt
-    assert "Be concise. Prefer fewer, higher-confidence steps." in prompt
+    assert "Target 8-14 steps. Merge sub-steps." in prompt
 
 
 def test_processing_uses_quality_profile_guidance():
@@ -551,7 +597,7 @@ def test_processing_uses_quality_profile_guidance():
         run_processing(job, _quality_profile())
 
     prompt = captured["user_content"]
-    assert "Be thorough. Include observable sub-steps, exceptions, and system interactions." in prompt
+    assert "Target 10-18 steps. Preserve distinct steps even if adjacent." in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -723,6 +769,91 @@ def test_reviewing_flags_unknown_speaker():
     assert "unknown_speaker" in flag_codes
 
 
+def test_reviewing_flags_sla_unresolved_when_sla_fact_exists():
+    from app.agents.reviewing import run_reviewing
+
+    pdd = _full_pdd()
+    pdd["sla"] = "Needs Review"
+    pdd["frequency"] = "Daily"
+    draft = {
+        "pdd": pdd,
+        "sipoc": _full_sipoc(),
+        "confidence_summary": {"overall": 0.7, "source_quality": "high", "evidence_strength": "high"},
+    }
+    job = _job_with_draft(draft, has_video=True, has_audio=True, has_transcript=True)
+    job["extracted_facts"] = {
+        "quantitative_facts": [
+            {"fact_type": "sla", "value": "24h regulatory", "anchor": "00:10:00"}
+        ],
+        "exception_patterns": [],
+        "workaround_rationale": [],
+        "roles_detected": [],
+    }
+
+    run_reviewing(job, _balanced_profile())
+
+    codes = [f["code"] for f in job["review_notes"]["flags"]]
+    assert "SLA_UNRESOLVED" in codes
+    assert job["agent_review"]["decision"] != "blocked"
+
+
+def test_reviewing_flags_frequency_unresolved_when_volume_fact_exists():
+    from app.agents.reviewing import run_reviewing
+
+    pdd = _full_pdd()
+    pdd["sla"] = "24h"
+    pdd["frequency"] = "Needs Review"
+    draft = {
+        "pdd": pdd,
+        "sipoc": _full_sipoc(),
+        "confidence_summary": {"overall": 0.7, "source_quality": "high", "evidence_strength": "high"},
+    }
+    job = _job_with_draft(draft, has_video=True, has_audio=True, has_transcript=True)
+    job["extracted_facts"] = {
+        "quantitative_facts": [
+            {"fact_type": "volume", "value": "180-220/day", "anchor": "00:12:00"}
+        ],
+        "exception_patterns": [],
+        "workaround_rationale": [],
+        "roles_detected": [],
+    }
+
+    run_reviewing(job, _balanced_profile())
+
+    codes = [f["code"] for f in job["review_notes"]["flags"]]
+    assert "FREQUENCY_UNRESOLVED" in codes
+    assert job["agent_review"]["decision"] != "blocked"
+
+
+def test_reviewing_flags_exceptions_suppressed_when_patterns_exist():
+    from app.agents.reviewing import run_reviewing
+
+    pdd = _full_pdd()
+    pdd["sla"] = "24h"
+    pdd["frequency"] = "Daily"
+    pdd["exceptions"] = []
+    draft = {
+        "pdd": pdd,
+        "sipoc": _full_sipoc(),
+        "confidence_summary": {"overall": 0.7, "source_quality": "high", "evidence_strength": "high"},
+    }
+    job = _job_with_draft(draft, has_video=True, has_audio=True, has_transcript=True)
+    job["extracted_facts"] = {
+        "quantitative_facts": [],
+        "exception_patterns": [
+            {"scenario": "Strategic customer bypass", "trigger": "VIP flag", "anchor": "00:15:00"}
+        ],
+        "workaround_rationale": [],
+        "roles_detected": [],
+    }
+
+    run_reviewing(job, _balanced_profile())
+
+    codes = [f["code"] for f in job["review_notes"]["flags"]]
+    assert "EXCEPTIONS_SUPPRESSED" in codes
+    assert job["agent_review"]["decision"] != "blocked"
+
+
 # ---------------------------------------------------------------------------
 # load_transcript_text helper tests
 # ---------------------------------------------------------------------------
@@ -738,6 +869,15 @@ def test_load_transcript_text_inline_fallback():
 
     result = load_transcript_text(job, storage=MagicMock())
     assert result == "Hello world transcript"
+
+
+def test_default_job_payload_has_extracted_facts_default():
+    from app.job_logic import InputFile, JobCreateRequest, default_job_payload
+
+    req = JobCreateRequest(profile="balanced", input_files=[InputFile(source_type="transcript", size_bytes=10)])
+    payload = default_job_payload(req)
+
+    assert payload["extracted_facts"] == {}
 
 
 def test_load_transcript_text_from_storage(tmp_path):
