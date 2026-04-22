@@ -130,11 +130,16 @@ Rules:
 - Quantitative population rule: if extracted_facts.quantitative_facts includes fact_type "sla",
   populate pdd.sla from that fact and do not emit "Needs Review" for SLA. If it includes
   fact_type "volume", populate pdd.frequency from that fact and do not emit "Needs Review"
-  for frequency.
+  for frequency. If it includes fact_type "staffing", include the staffing context in pdd
+  either in process_overview narrative or as staffing_note under pdd.metrics.
 - Full lifecycle rule: if evidence includes a close/confirm/conclude action, include that as
   an explicit closing step. Do not end the process at "escalate" or "resolve" without a close step.
 - Exception completeness rule: for each extracted_facts.exception_patterns entry, include a matching
   entry in pdd.exceptions. Do not collapse distinct exception scenarios into one generic exception.
+- Exception population rule: for each entry in pdd.exceptions[], populate action_required and
+  owner from exception trigger context and step ownership. owner must come from
+  extracted_facts.roles_detected when available; otherwise use "Process Owner". Do not emit
+  "Needs Review" for action_required or owner when exception context and roles are available.
 - Approval matrix coverage rule: every role listed in extracted_facts.roles_detected must appear in
   approval_matrix with explicit responsibility value R/A/C/I.
 - Control type definitions:

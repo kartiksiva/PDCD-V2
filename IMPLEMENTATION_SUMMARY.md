@@ -3247,3 +3247,42 @@ Implemented the issue-specified single-pass quality upgrade across extraction, p
 ### Open questions
 
 - None for this issue scope; next validation should be live transcript rerun to observe improved SLA/frequency/exception carry-through in end-to-end outputs.
+
+## Section 27: Issue #76 — Exception Owner/Action Prompting + Staffing Fact Surfacing (2026-04-22)
+
+Implemented targeted processing prompt upgrades so exception rows are fully populated and staffing facts are not dropped.
+
+### What was added
+
+- `backend/app/agents/processing.py`
+  - Extended quantitative population rule to include `fact_type: "staffing"` with explicit instruction to surface staffing context in either:
+    - `pdd.process_overview` narrative, or
+    - `pdd.metrics.staffing_note`.
+  - Added explicit **Exception population rule** requiring each `pdd.exceptions[]` item to include:
+    - `action_required`
+    - `owner`
+  - Added owner fallback requirement: use a role from `extracted_facts.roles_detected` when available, otherwise use `"Process Owner"`.
+  - Added no-`"Needs Review"` instruction for exception `action_required`/`owner` when context is available.
+
+- `tests/unit/test_agents.py`
+  - Expanded processing prompt contract assertions for:
+    - exception population (`action_required`, `owner`, `Process Owner` fallback)
+    - staffing fact handling (`fact_type: "staffing"` and placement guidance)
+  - Added dedicated prompt contract tests:
+    - `test_processing_prompt_contract_includes_exception_action_owner_population`
+    - `test_processing_prompt_contract_includes_staffing_fact_rule`
+
+### Validation
+
+- `pytest -q tests/unit/test_agents.py -k "processing_prompt_contract or processing_profile_guidance or processing_passes_alignment or processing_uses_quality_profile_guidance"`
+  - Result: `6 passed, 63 deselected, 1 warning`
+- `pytest -q tests/unit/test_agents.py`
+  - Result: `69 passed, 1 warning`
+
+### Decisions
+
+- Kept this issue strictly prompt+tests only, with no processing post-parse mutation, matching issue scope.
+
+### Open questions
+
+- None for this issue scope.
