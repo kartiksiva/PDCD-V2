@@ -3081,3 +3081,58 @@ Aligned V2 markdown/docx exports to the custom SOP template and extended process
 ### Open questions
 
 - Stakeholder/version-history population remains placeholder-only in v2 (no dedicated persistence model yet); future work can populate from explicit metadata fields when available.
+
+## Section 24: Issue #70 — Future-State Filtering + Quantification Prompt Tightening (2026-04-22)
+
+Implemented prompt-level controls to reduce future-state leakage into as-is process steps and improve automation-opportunity quantification specificity.
+
+### What was added
+
+- `backend/app/agents/extraction.py`
+  - Extended extraction schema contract in prompt with `evidence_items[].evidence_type` (`as_is|future_state`).
+  - Added explicit extraction rules:
+    - tag current executable process actions/pain points as `as_is`
+    - tag recommendations/target-state/proposed improvements as `future_state`
+    - keep future-state content separated from as-is evidence items.
+
+- `backend/app/agents/processing.py`
+  - Added strict placement rule:
+    - `pdd.steps[]` must contain current as-is executable actions only.
+    - future-state recommendations/target-state workflow content must be moved to `automation_opportunities[]` or `assumptions[]`.
+  - Added stronger quantification guidance for `automation_opportunities[].quantification`:
+    - prefer concrete numbers (percentages, counts, durations, frequencies, error rates)
+    - include specific values verbatim when present in evidence (for example `20% reassignment`, `200/day`, `1-2 day delay`).
+
+- `tests/unit/test_agents.py`
+  - Updated extraction prompt contract assertions for:
+    - `evidence_type`
+    - explicit future-state tagging guidance.
+  - Updated processing prompt contract assertions for:
+    - as-is-only steps rule
+    - future-state relocation rule
+    - concrete-figures quantification guidance.
+
+### Validation
+
+- `pytest -q tests/unit/test_agents.py -k "extraction_prompt_contract_is_media_first or processing_prompt_contract_includes_alignment_and_priority_rules"`
+  - Result: `2 passed`
+- `pytest -q tests/unit tests/integration`
+  - Result: `359 passed, 2 skipped`
+
+### Live transcript re-run status
+
+- Attempted rerun with:
+  - transcript: `/Users/karthicks/kAgents/Projects/PFCD/samples/process-discovery-session-transcript-copy-vtt-as-txt.txt`
+  - profile/model path: `PFCD_PROVIDER=openai`, `OPENAI_CHAT_MODEL_BALANCED=gpt-5.4-mini`, `OPENAI_CHAT_MODEL_QUALITY=gpt-5.4`
+- Blocked by upstream provider quota:
+  - `openai.RateLimitError: insufficient_quota (429)`
+- Because of quota block, live acceptance checks (`<=18` as-is steps, no future-state leakage in steps, concrete quantification carry-through) remain pending quota restoration.
+
+### Decisions
+
+- Kept this change prompt-only and backward-compatible; no schema persistence migrations or runtime parsing changes required.
+- Left downstream placement/validation behavior to existing extraction->processing flow while tightening model instructions.
+
+### Open questions
+
+- After quota restoration, rerun the sample transcript to validate step-count and leakage acceptance gates against real model output.

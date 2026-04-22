@@ -39,6 +39,7 @@ Return a JSON object with this exact shape:
       "system": "string",
       "input_artifact": "string",
       "output_artifact": "string",
+      "evidence_type": "as_is|future_state",
       "source_type": "video|audio|transcript|frame",
       "anchor": "HH:MM:SS-HH:MM:SS or section label",
       "confidence": 0.0
@@ -64,6 +65,9 @@ Rules:
 - subject_process is the operational process being documented, NOT the discovery meeting itself
 - each evidence item is one step of subject_process — not a meeting action and not a summary of the session
 - if the transcript is a discovery session, extract process steps from participants' answers (Q&A content)
+- set evidence_type to "as_is" for currently executed process actions and current pain points
+- set evidence_type to "future_state" for proposed improvements, recommendations, target-state design,
+  or consultant suggestions; do not mix these into as_is evidence items
 - remove only genuine non-process content: greetings, audio-check talk, scheduling coordination, and filler
   phrases
 - collapse adjacent steps with the same actor and substantially the same action into one item

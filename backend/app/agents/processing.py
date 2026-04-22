@@ -128,10 +128,16 @@ Rules:
 - Use conservative language: do not invent roles, systems, or business rules not supported by evidence.
 - If evidence is sparse or transcript-only, still produce best-effort structure and list explicit
   assumptions in assumptions[] instead of fabricating detail.
+- PDD steps[] must include only current as-is executable actions.
+- Future-state proposals, recommendations, target-state workflows, and consultant suggestions must NOT
+  appear in pdd.steps[]; place them in automation_opportunities[] or assumptions[] instead.
 - Populate steps[].tools_systems from evidence; use "Needs Review" when the system/tool cannot
   be determined from evidence.
 - Populate automation_opportunities[] from repetitive/rule-based/manual effort patterns in evidence.
   Include quantification where possible (volume, time, rework, touchpoints); otherwise "Needs Review".
+- Prefer concrete figures (percentages, counts, durations, frequencies, and error rates) from evidence
+  over generic descriptions. If evidence includes a specific number (e.g. "20% reassignment rate",
+  "200 complaints/day", "1-2 day delay"), include it verbatim in quantification.
 - Every evidence item must map to at least one PDD step
 - Every PDD step must appear in at least one SIPOC row
 - step_anchor MUST be a non-empty JSON array with at least one PDD step ID from the steps list above (e.g. ["step-01"]). Never leave step_anchor as [] or null.
