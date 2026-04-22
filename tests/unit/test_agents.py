@@ -366,6 +366,14 @@ def test_processing_usage_tokens_defaults_to_zero_when_missing():
     assert completion_tokens == 0
 
 
+def test_processing_tokens_default_to_16384(monkeypatch):
+    from app.agents.processing import _max_completion_tokens
+
+    monkeypatch.delenv("PFCD_MAX_PROCESSING_TOKENS", raising=False)
+    monkeypatch.delenv("PFCD_MAX_COMPLETION_TOKENS", raising=False)
+    assert _max_completion_tokens() == 16384
+
+
 def test_processing_times_out_long_llm_call(monkeypatch):
     import asyncio
 

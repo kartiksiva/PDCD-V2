@@ -13,7 +13,10 @@ from typing import Any, Dict
 from uuid import uuid4
 
 from azure.servicebus import ServiceBusMessage
-from azure.servicebus.exceptions import ServiceBusConnectionError as SBConnectionError
+from azure.servicebus.exceptions import (
+    MessageLockLostError,
+    ServiceBusConnectionError as SBConnectionError,
+)
 
 from app.agents.alignment import run_anchor_alignment
 from app.agents.extraction import run_extraction
@@ -419,13 +422,26 @@ def run() -> None:
                         try:
                             body = _read_message_body(message.body)
                             worker.handle_message(message, body)
-                            receiver.complete_message(message)
+                            try:
+                                receiver.complete_message(message)
+                            except MessageLockLostError:
+                                logger.warning(
+                                    "Message lock expired before complete; message will be retried by Service Bus"
+                                )
                         except json.JSONDecodeError as exc:
                             logger.error("Unparseable message body; dead-lettering: %s", exc)
-                            receiver.dead_letter_message(message, reason="UnparseableBody")
+                            try:
+                                receiver.dead_letter_message(message, reason="UnparseableBody")
+                            except MessageLockLostError:
+                                logger.warning("Message lock expired before dead-letter")
                         except Exception as exc:
                             logger.error("Unhandled error processing message; abandoning: %s", exc, exc_info=True)
-                            receiver.abandon_message(message)
+                            try:
+                                receiver.abandon_message(message)
+                            except MessageLockLostError:
+                                logger.warning(
+                                    "Message lock expired before abandon; Service Bus will retry"
+                                )
         except SBConnectionError as exc:
             consecutive_connection_errors += 1
             delay = _connection_backoff_seconds(consecutive_connection_errors)

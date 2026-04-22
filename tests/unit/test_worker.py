@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from azure.servicebus.exceptions import MessageLockLostError
 from azure.servicebus.exceptions import ServiceBusConnectionError as SBConnectionError
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -476,6 +477,67 @@ def test_run_uses_configured_receive_wait_and_idle_backoff(monkeypatch):
 
     assert fake_orchestrator.waits == [9]
     assert sleeps == [0.25]
+
+
+def test_run_continues_when_complete_loses_message_lock(monkeypatch):
+    from app.workers import runner as runner_mod
+
+    monkeypatch.setenv("PFCD_WORKER_ROLE", "processing")
+    monkeypatch.setattr(runner_mod.logging, "basicConfig", lambda **_: None)
+    monkeypatch.setattr(runner_mod, "_maybe_start_health_server", lambda: None)
+
+    class _FakeMessage:
+        body = [b"{}"]
+
+    class _FakeReceiver:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.completed = 0
+
+        def receive_messages(self, **_: Any):
+            self.calls += 1
+            if self.calls == 1:
+                return [_FakeMessage()]
+            raise KeyboardInterrupt()
+
+        def complete_message(self, _message: Any) -> None:
+            self.completed += 1
+            raise MessageLockLostError()
+
+        def dead_letter_message(self, _message: Any, **__: Any) -> None:
+            raise AssertionError("No message should be dead-lettered in this test")
+
+        def abandon_message(self, _message: Any) -> None:
+            raise AssertionError("No message should be abandoned in this test")
+
+    class _FakeOrchestrator:
+        def __init__(self) -> None:
+            self.enabled = True
+            self.receiver = _FakeReceiver()
+
+        @contextmanager
+        def receive(self, _phase: str, max_wait_time: int = 5):
+            del max_wait_time
+            yield self.receiver
+
+    fake_orchestrator = _FakeOrchestrator()
+
+    class _FakeWorker:
+        def __init__(self, _phase: str) -> None:
+            self.orchestrator = fake_orchestrator
+            self.handled = 0
+
+        def handle_message(self, _message: Any, _body: Any) -> None:
+            self.handled += 1
+
+    fake_worker = _FakeWorker("processing")
+    monkeypatch.setattr(runner_mod, "Worker", lambda _phase: fake_worker)
+
+    with pytest.raises(KeyboardInterrupt):
+        runner_mod.run()
+
+    assert fake_worker.handled == 1
+    assert fake_orchestrator.receiver.completed == 1
 
 
 def test_connection_backoff_seconds_is_bounded(monkeypatch):
