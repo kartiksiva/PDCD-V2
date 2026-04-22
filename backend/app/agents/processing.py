@@ -183,16 +183,16 @@ def _extract_usage_tokens(metadata: Dict[str, Any]) -> tuple[int, int]:
 def _max_completion_tokens() -> int:
     # PFCD_MAX_PROCESSING_TOKENS takes precedence; falls back to PFCD_MAX_COMPLETION_TOKENS.
     # Processing generates PDD+SIPOC JSON from all evidence items, so it needs a higher
-    # ceiling than extraction (default 8192 vs extraction's 4096).
+    # ceiling than extraction (default 16384 vs extraction's 4096).
     raw = (
         os.environ.get("PFCD_MAX_PROCESSING_TOKENS")
         or os.environ.get("PFCD_MAX_COMPLETION_TOKENS")
-        or "8192"
+        or "16384"
     ).strip()
     try:
         value = int(raw)
     except ValueError:
-        return 8192
+        return 16384
     return max(512, value)
 
 

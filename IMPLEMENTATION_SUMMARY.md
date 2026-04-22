@@ -3136,3 +3136,51 @@ Implemented prompt-level controls to reduce future-state leakage into as-is proc
 ### Open questions
 
 - After quota restoration, rerun the sample transcript to validate step-count and leakage acceptance gates against real model output.
+
+## Section 25: Issue #71 — Processing Token Ceiling + MessageLockLostError Guard (2026-04-22)
+
+Implemented two surgical stability fixes for the processing worker repeat-fail loop observed on quality-profile jobs.
+
+### What was added
+
+- `backend/app/agents/processing.py`
+  - Raised processing default completion-token ceiling in `_max_completion_tokens()`:
+    - default fallback changed from `8192` to `16384`
+    - invalid-value fallback changed from `8192` to `16384`
+  - This prevents default quality-profile truncation on large SOP payloads when `PFCD_MAX_PROCESSING_TOKENS` is unset.
+
+- `backend/app/workers/runner.py`
+  - Imported `MessageLockLostError` from `azure.servicebus.exceptions`.
+  - Wrapped all settlement calls in lock-loss guards inside `run()` message loop:
+    - `receiver.complete_message(...)`
+    - `receiver.dead_letter_message(...)`
+    - `receiver.abandon_message(...)`
+  - On lock-loss, worker now logs warnings and continues instead of propagating exceptions and crashing the process.
+
+### Tests added/updated
+
+- `tests/unit/test_agents.py`
+  - Added `test_processing_tokens_default_to_16384` to pin the new default behavior.
+
+- `tests/unit/test_worker.py`
+  - Added `test_run_continues_when_complete_loses_message_lock`:
+    - simulates `MessageLockLostError` during `complete_message`
+    - verifies the loop continues (no crash) and processes the message path.
+
+### Validation
+
+- `pytest -q tests/unit/test_agents.py -k "processing_tokens_default_to_16384 or processing_times_out_long_llm_call"`
+  - Result: `2 passed`
+- `pytest -q tests/unit/test_worker.py -k "message_lock or complete_loses_message_lock or run_recreates_receiver_after_servicebus_error"`
+  - Result: `2 passed`
+- `pytest -q tests/unit tests/integration`
+  - Result: `361 passed, 2 skipped`
+
+### Decisions
+
+- Kept lock-loss handling narrowly scoped to settlement operations rather than broader exception suppression.
+- Kept `16384` as code default so operators are protected even when env overrides are missing.
+
+### Open questions
+
+- Optional future hardening: add `AutoLockRenewer` for long-running processing calls to further reduce lock-loss frequency under high-latency model runs.
