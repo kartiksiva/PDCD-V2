@@ -168,6 +168,21 @@ def _needs_review(value: Any) -> str:
     return str(value)
 
 
+def _format_date(value: Any) -> str:
+    """Format an ISO timestamp or datetime to DD-MMM-YYYY for SOP headers."""
+    if value is None:
+        return "Needs Review"
+    from datetime import datetime
+    s = str(value).strip()
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ",
+                "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s[:26].rstrip("Z"), fmt.rstrip("z").rstrip("%z")).strftime("%d-%b-%Y")
+        except ValueError:
+            continue
+    return s or "Needs Review"
+
+
 def _derive_roles(draft: Dict[str, Any]) -> List[str]:
     pdd = draft.get("pdd") or {}
     roles: List[str] = []
@@ -221,7 +236,7 @@ def build_export_markdown(draft: Dict[str, Any], evidence_bundle: Dict[str, Any]
         f"**Sub-Function:** {_needs_review(pdd.get('sub_function'))}",
         "**Document Version:** v1.0",
         "**Document Status:** Draft",
-        f"**Effective Date:** {_needs_review(draft.get('generated_at'))}",
+        f"**Effective Date:** {_format_date(draft.get('generated_at'))}",
         "",
         "---",
         "",
@@ -234,7 +249,7 @@ def build_export_markdown(draft: Dict[str, Any], evidence_bundle: Dict[str, Any]
         "### 1.2 Version History",
         "| Version | Date | Status | Author | Reviewed By | Comments / Changes |",
         "|---------|------|--------|--------|-------------|-------------------|",
-        f"| v1.0 | {_needs_review(draft.get('generated_at'))} | Draft | Needs Review | Needs Review | Initial export |",
+        f"| v1.0 | {_format_date(draft.get('generated_at'))} | Draft | Needs Review | Needs Review | Initial export |",
         "",
         "---",
         "",
@@ -270,7 +285,7 @@ def build_export_markdown(draft: Dict[str, Any], evidence_bundle: Dict[str, Any]
             if actor and role == actor:
                 row.append("R")
             elif actor:
-                row.append("C")
+                row.append("—")
             else:
                 row.append("Needs Review")
         parts.append("| " + " | ".join(row) + " |")
@@ -626,7 +641,7 @@ def build_export_docx(
     doc.add_paragraph(f"Sub-Function: {_needs_review(pdd.get('sub_function'))}")
     doc.add_paragraph("Document Version: v1.0")
     doc.add_paragraph("Document Status: Draft")
-    doc.add_paragraph(f"Effective Date: {_needs_review(draft.get('generated_at'))}")
+    doc.add_paragraph(f"Effective Date: {_format_date(draft.get('generated_at'))}")
 
     doc.add_heading("1. Document Control", level=1)
     doc.add_heading("1.1 Key Stakeholders", level=2)
@@ -647,7 +662,7 @@ def build_export_docx(
         vh.rows[0].cells[i].text = h
     row = vh.add_row().cells
     row[0].text = "v1.0"
-    row[1].text = _needs_review(draft.get("generated_at"))
+    row[1].text = _format_date(draft.get("generated_at"))
     row[2].text = "Draft"
     row[3].text = "Needs Review"
     row[4].text = "Needs Review"
@@ -681,7 +696,7 @@ def build_export_docx(
                 if actor and role == actor:
                     row[i].text = "R"
                 elif actor:
-                    row[i].text = "C"
+                    row[i].text = "—"
                 else:
                     row[i].text = "Needs Review"
     else:
