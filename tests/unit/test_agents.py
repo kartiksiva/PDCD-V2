@@ -536,10 +536,33 @@ def test_processing_prompt_contract_includes_alignment_and_priority_rules():
     assert 'do not emit "Needs Review"' in user_prompt
     assert "Full lifecycle rule" in user_prompt
     assert "Exception completeness rule" in user_prompt
+    assert "Exception population rule" in user_prompt
+    assert "action_required and" in user_prompt
+    assert "owner from exception trigger context" in user_prompt
+    assert 'otherwise use "Process Owner"' in user_prompt
     assert "Approval matrix coverage rule" in user_prompt
     assert "manual: human action or decision without system enforcement" in user_prompt
     assert "Automation opportunity completeness" in user_prompt
     assert "Workaround rationale rule" in user_prompt
+    assert 'fact_type "staffing"' in user_prompt
+
+
+def test_processing_prompt_contract_includes_exception_action_owner_population():
+    from app.agents import processing
+
+    user_prompt = processing._USER_PROMPT_TEMPLATE
+    assert "Exception population rule" in user_prompt
+    assert "action_required" in user_prompt
+    assert "owner" in user_prompt
+    assert 'use "Process Owner"' in user_prompt
+
+
+def test_processing_prompt_contract_includes_staffing_fact_rule():
+    from app.agents import processing
+
+    user_prompt = processing._USER_PROMPT_TEMPLATE
+    assert 'fact_type "staffing"' in user_prompt
+    assert "process_overview narrative or as staffing_note under pdd.metrics" in user_prompt
 
 
 def test_processing_profile_guidance_balanced_and_quality():
