@@ -111,7 +111,7 @@ def run_reviewing(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:  
     # 5. Unknown speakers
     extracted = job.get("extracted_evidence") or {}
     speakers = extracted.get("speakers_detected") or []
-    if "Unknown" in speakers:
+    if any("Unknown" in s for s in speakers):
         flags.append(_flag(
             "unknown_speaker",
             "warning",

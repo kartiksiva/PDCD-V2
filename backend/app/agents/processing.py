@@ -48,7 +48,14 @@ _PDD_SCHEMA = """\
   "roles": ["list of all actor names"],
   "systems": ["list of all systems"],
   "business_rules": ["list of rules extracted from evidence"],
-  "exceptions": ["list of exception conditions"],
+  "exceptions": [
+    {
+      "scenario": "string — description of the exception condition",
+      "trigger": "string — what causes this exception",
+      "action_required": "string — corrective or escalation action to take",
+      "owner": "string — role responsible for handling this exception"
+    }
+  ],
   "process_controls": [
     {
       "control_id": "control-01",
@@ -59,7 +66,7 @@ _PDD_SCHEMA = """\
     }
   ],
   "outputs": ["list of process outputs"],
-  "metrics": {"coverage": "high|medium|low", "confidence": 0.0},
+  "metrics": {"coverage": "high|medium|low", "confidence": 0.0, "staffing_note": "string or null"},
   "risks": ["list of identified risks"]
 }"""
 
