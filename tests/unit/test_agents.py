@@ -1295,3 +1295,65 @@ def test_reviewing_uses_computed_evidence_strength():
     assert job["agent_signals"]["evidence_strength"] == "medium"
     # Degraded to medium means decision is needs_review, not approve_for_draft
     assert job["agent_review"]["decision"] == "needs_review"
+
+
+# ---------------------------------------------------------------------------
+# Bug-fix regression tests (rules review 2026-04-23)
+# ---------------------------------------------------------------------------
+
+def test_processing_schema_exceptions_are_structured_objects():
+    """BUG-1: pdd.exceptions schema must define objects with action_required and owner fields."""
+    from app.agents.processing import _PDD_SCHEMA
+
+    assert "action_required" in _PDD_SCHEMA, (
+        "pdd.exceptions schema must include 'action_required' field "
+        "so the LLM can populate it (P-08 rule)"
+    )
+    assert "owner" in _PDD_SCHEMA, (
+        "pdd.exceptions schema must include 'owner' field "
+        "so the LLM can populate it (P-08 rule)"
+    )
+    assert "scenario" in _PDD_SCHEMA, (
+        "pdd.exceptions schema must include 'scenario' field"
+    )
+
+
+def test_processing_schema_metrics_has_staffing_note():
+    """BUG-3: pdd.metrics schema must include staffing_note field referenced by P-05 rule."""
+    from app.agents.processing import _PDD_SCHEMA
+
+    assert "staffing_note" in _PDD_SCHEMA, (
+        "pdd.metrics schema must include 'staffing_note' field "
+        "so P-05 staffing rule can direct the LLM to populate it"
+    )
+
+
+def test_reviewing_unknown_speaker_fires_for_unknown_speaker_string():
+    """BUG-2: unknown_speaker flag must fire when speakers_detected contains 'Unknown Speaker'."""
+    from app.agents.reviewing import run_reviewing
+
+    draft = {"pdd": _full_pdd(), "sipoc": _full_sipoc(), "confidence_summary": {"overall": 0.88, "source_quality": "high", "evidence_strength": "high"}}
+    job = _job_with_draft(draft, has_video=True, has_audio=True, has_transcript=True)
+    # Simulate LLM following E-12: "Unknown Speaker" (with space)
+    job["extracted_evidence"]["speakers_detected"] = ["Agent Smith", "Unknown Speaker"]
+
+    run_reviewing(job, _balanced_profile())
+
+    codes = [f["code"] for f in job["review_notes"]["flags"]]
+    assert "unknown_speaker" in codes, (
+        "unknown_speaker flag should fire when speakers_detected contains 'Unknown Speaker'"
+    )
+
+
+def test_reviewing_unknown_speaker_fires_for_unknown_exact():
+    """BUG-2: unknown_speaker flag also fires for exact 'Unknown' (adapter fallback path)."""
+    from app.agents.reviewing import run_reviewing
+
+    draft = {"pdd": _full_pdd(), "sipoc": _full_sipoc(), "confidence_summary": {"overall": 0.88, "source_quality": "high", "evidence_strength": "high"}}
+    job = _job_with_draft(draft, has_video=True, has_audio=True, has_transcript=True)
+    job["extracted_evidence"]["speakers_detected"] = ["Unknown"]
+
+    run_reviewing(job, _balanced_profile())
+
+    codes = [f["code"] for f in job["review_notes"]["flags"]]
+    assert "unknown_speaker" in codes
