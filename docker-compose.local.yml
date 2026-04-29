@@ -22,7 +22,7 @@ services:
       OPENAI_CHAT_MODEL_QUALITY: ${OPENAI_CHAT_MODEL_QUALITY:-gpt-4o}
       OPENAI_TRANSCRIPTION_MODEL: ${OPENAI_TRANSCRIPTION_MODEL:-whisper-1}
       OPENAI_VISION_MODEL: ${OPENAI_VISION_MODEL:-gpt-4o-mini}
-      DATABASE_URL: ${DATABASE_URL:-sqlite:///./storage/pfcd.db}
+      DATABASE_URL: ${DATABASE_URL}
       EXPORTS_BASE_PATH: ${EXPORTS_BASE_PATH:-/app/storage/exports}
       PFCD_CORS_ORIGINS: ${PFCD_CORS_ORIGINS:-http://127.0.0.1:3000,http://localhost:3000}
       UPLOADS_DIR: ${UPLOADS_DIR:-/app/storage/uploads}
@@ -126,7 +126,7 @@ services:
       OPENAI_CHAT_MODEL_QUALITY: ${OPENAI_CHAT_MODEL_QUALITY:-gpt-4o}
       OPENAI_TRANSCRIPTION_MODEL: ${OPENAI_TRANSCRIPTION_MODEL:-whisper-1}
       OPENAI_VISION_MODEL: ${OPENAI_VISION_MODEL:-gpt-4o-mini}
-      DATABASE_URL: ${DATABASE_URL:-sqlite:///./storage/pfcd.db}
+      DATABASE_URL: ${DATABASE_URL}
       EXPORTS_BASE_PATH: ${EXPORTS_BASE_PATH:-/app/storage/exports}
       UPLOADS_DIR: ${UPLOADS_DIR:-/app/storage/uploads}
       PFCD_MAX_RETRIES: ${PFCD_MAX_RETRIES:-3}
@@ -173,7 +173,7 @@ services:
       OPENAI_CHAT_MODEL_QUALITY: ${OPENAI_CHAT_MODEL_QUALITY:-gpt-4o}
       OPENAI_TRANSCRIPTION_MODEL: ${OPENAI_TRANSCRIPTION_MODEL:-whisper-1}
       OPENAI_VISION_MODEL: ${OPENAI_VISION_MODEL:-gpt-4o-mini}
-      DATABASE_URL: ${DATABASE_URL:-sqlite:///./storage/pfcd.db}
+      DATABASE_URL: ${DATABASE_URL}
       EXPORTS_BASE_PATH: ${EXPORTS_BASE_PATH:-/app/storage/exports}
       UPLOADS_DIR: ${UPLOADS_DIR:-/app/storage/uploads}
       PFCD_MAX_RETRIES: ${PFCD_MAX_RETRIES:-3}
@@ -220,7 +220,7 @@ services:
       OPENAI_CHAT_MODEL_QUALITY: ${OPENAI_CHAT_MODEL_QUALITY:-gpt-4o}
       OPENAI_TRANSCRIPTION_MODEL: ${OPENAI_TRANSCRIPTION_MODEL:-whisper-1}
       OPENAI_VISION_MODEL: ${OPENAI_VISION_MODEL:-gpt-4o-mini}
-      DATABASE_URL: ${DATABASE_URL:-sqlite:///./storage/pfcd.db}
+      DATABASE_URL: ${DATABASE_URL}
       EXPORTS_BASE_PATH: ${EXPORTS_BASE_PATH:-/app/storage/exports}
       UPLOADS_DIR: ${UPLOADS_DIR:-/app/storage/uploads}
       PFCD_MAX_RETRIES: ${PFCD_MAX_RETRIES:-3}
