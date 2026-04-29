@@ -112,18 +112,31 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Run DB migrations
+# Run DB migrations (before starting workers/frontends)
 alembic upgrade head
 
 # Start API server (local dev)
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
+Startup order for local stack:
+1. Start API
+2. Run `alembic upgrade head`
+3. Start workers and frontends
+
+### DB Target Check
+
+```bash
+# Verify active DATABASE_URL and migration head before starting workers
+echo $DATABASE_URL   # should show postgresql+psycopg://...
+cd backend && .venv/bin/alembic upgrade head
+```
+
 ### Required Environment Variables
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `DATABASE_URL` | SQLAlchemy connection string | local default `sqlite:///./pfcd.db`; PostgreSQL example `postgresql+psycopg://pfcd_user:password@127.0.0.1:5432/pfcd` |
+| `DATABASE_URL` | SQLAlchemy connection string (authoritative DB target) | PostgreSQL example `postgresql+psycopg://pfcd_user:password@127.0.0.1:5432/pfcd?sslmode=disable`; Azure PostgreSQL example `postgresql+psycopg://pfcd_admin:password@<server>.postgres.database.azure.com:5432/pfcd?sslmode=require` |
 | `AZURE_STORAGE_CONNECTION_STRING` | Blob storage | local fallback if unset |
 | `AZURE_STORAGE_CONTAINER_EVIDENCE` | Blob container for frame captures/evidence assets | `evidence` |
 | `AZURE_SERVICE_BUS_CONNECTION_STRING` | Service Bus namespace | `""` (skips queue dispatch) |
@@ -162,6 +175,8 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 | `APP_INSIGHTS_NAME` | Azure Application Insights component name (bootstrap/ops baseline) | `${PROJECT}-${ENVIRONMENT}-appi` |
 | `ALERT_ACTION_GROUP_NAME` | Azure Monitor action group name (bootstrap/ops baseline) | `${PROJECT}-${ENVIRONMENT}-ops-ag` |
 | `ALERT_EMAIL` | Alert notification recipient used by bootstrap action group setup | `""` (alerts created without notifications) |
+
+`AZURE_SQL_SERVER_NAME` and `AZURE_SQL_DATABASE_NAME` are informational only; runtime DB selection is controlled by `DATABASE_URL`.
 
 ### Frontend Dev Environment Variables
 

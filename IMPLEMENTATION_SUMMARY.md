@@ -3319,3 +3319,38 @@ Implemented a Python Streamlit frontend under `streamlit_app/` to mirror the exi
 ### Open Questions
 
 - None.
+
+---
+
+## Section 15: Issue #81 Local PostgreSQL Default (2026-04-29)
+
+Reconfigured local runtime configuration to default to PostgreSQL while preserving Azure PostgreSQL support through the same `DATABASE_URL` contract.
+
+### Completed
+
+- Updated `docker-compose.local.yml` DB wiring for `api`, `worker-extracting`, `worker-processing`, and `worker-reviewing`:
+  - `DATABASE_URL: ${DATABASE_URL:-sqlite:///./storage/pfcd.db}` → `DATABASE_URL: ${DATABASE_URL}`
+  - Effect: fail-fast when DB URL is not provided; no silent SQLite fallback in local app runtime.
+- Updated `docker-compose.local.env.example`:
+  - Added local PostgreSQL default example using `postgresql+psycopg://...@host.docker.internal...`.
+  - Added commented Azure PostgreSQL Flexible Server example with `sslmode=require`.
+  - Kept SQLite as commented CI/test-only variant.
+  - Added explicit migration reminder before workers (`alembic upgrade head`).
+  - Added clarification that `AZURE_SQL_SERVER_NAME` / `AZURE_SQL_DATABASE_NAME` are informational; `DATABASE_URL` is authoritative.
+- Updated `REFERENCE.md`:
+  - `DATABASE_URL` row now uses PostgreSQL examples as primary guidance.
+  - Added local startup order note: API → Alembic migration → workers/frontends.
+  - Added a `DB Target Check` subsection showing `echo $DATABASE_URL` and `alembic upgrade head`.
+  - Added explicit note that `AZURE_SQL_*` variables are informational only.
+
+### Validation
+
+- `docker compose --env-file docker-compose.local.env.example -f docker-compose.local.yml config --services` ✅
+
+### Decisions
+
+- Runtime DB target remains a single switch (`DATABASE_URL`) for both local and Azure, with no app code change.
+
+### Open Questions
+
+- None.
