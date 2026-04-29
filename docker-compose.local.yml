@@ -88,6 +88,18 @@ services:
     ports:
       - "${PFCD_LOCAL_FRONTEND_PORT:-3000}:80"
 
+  streamlit:
+    profiles: ["streamlit"]
+    build:
+      context: ./streamlit_app
+    ports:
+      - "8501:8501"
+    environment:
+      API_BASE: http://api:8000
+      PFCD_API_KEY: ${PFCD_API_KEY:-}
+    depends_on:
+      - api
+
   worker-extracting:
     build:
       context: ./backend

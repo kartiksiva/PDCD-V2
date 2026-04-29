@@ -3286,3 +3286,36 @@ Implemented targeted processing prompt upgrades so exception rows are fully popu
 ### Open questions
 
 - None for this issue scope.
+
+---
+
+## Section 14: Issue #79 Streamlit UI Parity (2026-04-29)
+
+Implemented a Python Streamlit frontend under `streamlit_app/` to mirror the existing React/Tailwind flow against the same FastAPI backend.
+
+### Completed
+
+- Added `streamlit_app/api_client.py` with API parity functions:
+  - `list_jobs`, `get_job`, `upload_file` (SAS two-step upload-url + PUT), `create_job`, `confirm_cost`, `save_draft`, `finalize_job`, `download_export`, `dev_simulate`.
+- Added `streamlit_app/app.py` with 5 tabs:
+  - `📋 Jobs`: list + refresh/new/open actions via `st.dataframe`.
+  - `➕ New Job`: multi-file uploader, per-file source type, profile selection, Teams metadata inputs, cost confirmation flow.
+  - `⏳ Status`: phase tracker (Extracting → Processing → Reviewing), refresh, dev simulate.
+  - `✏️ Review`: editable PDD fields, editable SIPOC via `st.data_editor`, flags panel, unknown speaker resolution, Save Draft + Finalize gate on blocker severity.
+  - `📥 Exports`: confidence/evidence metrics plus JSON/Markdown/PDF/DOCX download buttons.
+- Added `streamlit_app/requirements.txt` (`streamlit`, `requests`, `pandas`).
+- Added `streamlit_app/Dockerfile` (`python:3.11-slim`, exposes `8501`, Streamlit run command).
+- Added `streamlit_app/README.md` with env vars, local run, and Docker run instructions.
+- Updated `docker-compose.local.yml` with opt-in `streamlit` service profile (`profiles: ["streamlit"]`) wired to local API.
+
+### Validation
+
+- `python3 -m py_compile streamlit_app/api_client.py streamlit_app/app.py` ✅
+
+### Decisions
+
+- `streamlit` compose service points to `http://api:8000` to match existing compose service naming and ensure in-network container resolution.
+
+### Open Questions
+
+- None.
