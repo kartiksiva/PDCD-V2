@@ -179,7 +179,7 @@ class Worker:
             if not job.get("draft"):
                 build_draft(job)
             cost = run_reviewing(job, profile_conf)
-            if job.get("agent_review", {}).get("decision") != "blocked":
+            if str((job.get("agent_review") or {}).get("decision") or "").strip().lower() != "blocked":
                 cost += run_llm_semantic_review(job, profile_conf, self.storage)
             else:
                 job.setdefault("review_notes", {}).setdefault("llm_semantic_flags", [])
