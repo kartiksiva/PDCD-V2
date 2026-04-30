@@ -3416,3 +3416,33 @@ Completed Phase A checklist item **A2 · C3** on branch `codex/c3-alignment-self
 ### Open Questions
 
 - None.
+
+---
+
+## Section 18: Issue #84 (A3/C2) Evidence Tier Correction (2026-04-30)
+
+Completed Phase A checklist item **A3 · C2** on branch `codex/c2-evidence-video-tier`.
+
+### Completed
+
+- Updated `backend/app/agents/evidence.py` structural hierarchy:
+  - `video + audio` remains `high`.
+  - `video-only` (no audio, no transcript) now resolves to `medium` (was `low`).
+  - `video + transcript` remains `medium`.
+  - `transcript-only` remains `medium`.
+  - `audio-only` and no-source fallbacks remain `low`.
+- Updated `tests/unit/test_agents.py`:
+  - Renamed/updated video-only evidence test to expect `medium`.
+  - Updated reviewing-path assertion to expect computed `medium` evidence strength while preserving blocker behavior for explicit insufficient-evidence flags.
+
+### Validation
+
+- `cd backend && .venv/bin/pytest ../tests/unit/test_agents.py -x --tb=short` ✅ (73 passed)
+
+### Decisions
+
+- Kept reviewing blocker semantics unchanged; this item corrects evidence tiering only.
+
+### Open Questions
+
+- None.
