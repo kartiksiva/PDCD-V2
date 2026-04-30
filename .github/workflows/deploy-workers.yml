@@ -24,42 +24,7 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_DB: pfcd_test
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d pfcd_test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: pip install -r backend/requirements.txt
-
-      - name: Run tests
-        run: pytest tests/unit tests/integration -x --tb=short
-        env:
-          DATABASE_URL: "sqlite:///./test-ci.db"
-          PYTHONPATH: backend
-
-      - name: Run PostgreSQL smoke test
-        run: pytest tests/integration/test_postgres_smoke.py -x --tb=short
-        env:
-          PFCD_POSTGRES_SMOKE_DATABASE_URL: "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/pfcd_test"
-          PYTHONPATH: backend
+    uses: ./.github/workflows/pg-smoke.yml
 
   build:
     needs: test

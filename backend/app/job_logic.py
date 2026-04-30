@@ -416,13 +416,27 @@ def apply_cost_tracking_and_cap_warning(job: Dict[str, Any], *, phase: str, cost
     )
 
 
+_UPLOADS_DIR = os.environ.get("UPLOADS_DIR", "./storage/uploads")
+
+
+def _is_safe_storage_key(key: str) -> bool:
+    """Return True if *key* is a relative path within the uploads directory."""
+    abs_key = os.path.abspath(key)
+    abs_dir = os.path.abspath(_UPLOADS_DIR) + os.sep
+    return abs_key.startswith(abs_dir)
+
+
 def load_transcript_text(job: Dict[str, Any], storage: Any) -> Optional[str]:
     """Load transcript text from storage. Returns None if no transcript input."""
     for inp in job.get("input_manifest", {}).get("inputs", []):
         if inp.get("source_type") == "transcript":
             if inp.get("storage_key"):
+                key = inp["storage_key"]
+                if not _is_safe_storage_key(key):
+                    logger.warning("Rejecting transcript storage_key outside uploads dir: %r", key)
+                    return None
                 try:
-                    with open(inp["storage_key"], "rb") as handle:
+                    with open(key, "rb") as handle:
                         return handle.read().decode("utf-8")
                 except Exception:
                     return None

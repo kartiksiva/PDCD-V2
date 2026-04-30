@@ -152,6 +152,10 @@ services:
       - pfcd-local-storage:/app/storage
 
   worker-processing:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: worker
     image: pfcd-worker:local
     depends_on:
       api:
@@ -199,6 +203,10 @@ services:
       - pfcd-local-storage:/app/storage
 
   worker-reviewing:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: worker
     image: pfcd-worker:local
     depends_on:
       api:

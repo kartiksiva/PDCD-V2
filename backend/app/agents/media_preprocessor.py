@@ -11,6 +11,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Keep in sync with transcription.py:_MAX_TRANSCRIPTION_BYTES (24 MB Whisper limit).
 _MAX_TRANSCRIPTION_BYTES = 24 * 1024 * 1024
 _FFMPEG_TIMEOUT_SEC = max(1.0, float(os.environ.get("PFCD_FFMPEG_TIMEOUT_SEC", "120")))
 _TIMESTAMP_RE = re.compile(

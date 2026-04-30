@@ -1,6 +1,6 @@
 import React from 'react'
 
-const HEADERS = ['Supplier', 'Input', 'Process Step', 'Output', 'Customer', 'Anchor']
+const HEADERS = ['Supplier', 'Input', 'Process Step', 'Output', 'Customer', 'Step Anchor', 'Source Anchor']
 
 export default function SipocTable({ sipoc }) {
   if (!sipoc || sipoc.length === 0) {
@@ -29,6 +29,9 @@ export default function SipocTable({ sipoc }) {
                 <td className="border border-gray-200 px-3 py-2 font-medium">{row.process_step ?? '—'}</td>
                 <td className="border border-gray-200 px-3 py-2">{row.output ?? '—'}</td>
                 <td className="border border-gray-200 px-3 py-2">{row.customer ?? '—'}</td>
+                <td className="border border-gray-200 px-3 py-2">
+                  <span className="font-mono text-xs">{row.step_anchor ?? '—'}</span>
+                </td>
                 <td className="border border-gray-200 px-3 py-2">
                   {hasAnchorIssue ? (
                     <span className="text-gray-400 italic text-xs">{row.anchor_missing_reason}</span>

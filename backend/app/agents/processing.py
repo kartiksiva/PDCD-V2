@@ -365,6 +365,15 @@ def run_processing(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
     if processing_fallback_used:
         job.setdefault("agent_signals", {})["processing_fallback"] = True
 
+    # Guard: if the LLM returned a JSON object that is missing both pdd and sipoc,
+    # the response likely has a different shape (e.g., wrapped in a "result" key).
+    # Surface this as a clear runtime error rather than masking it with sipoc_empty.
+    if not isinstance(draft.get("pdd"), dict) and not isinstance(draft.get("sipoc"), list):
+        raise RuntimeError(
+            f"Processing LLM response is missing required 'pdd' and 'sipoc' keys; "
+            f"top-level keys present: {list(draft.keys())!r}"
+        )
+
     # Ensure required top-level keys are present
     draft.setdefault("generated_at", _utc_now())
     draft.setdefault("version", 1)

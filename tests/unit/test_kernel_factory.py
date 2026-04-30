@@ -8,8 +8,8 @@ import app.agents.kernel_factory as kernel_factory
 
 
 def test_kernel_helpers_are_not_lru_cached():
-    assert not hasattr(kernel_factory._cached_kernel_azure, "cache_info")
-    assert not hasattr(kernel_factory._cached_kernel_openai, "cache_info")
+    assert not hasattr(kernel_factory._build_kernel_azure, "cache_info")
+    assert not hasattr(kernel_factory._build_kernel_openai, "cache_info")
 
 
 def test_get_kernel_uses_default_api_version(monkeypatch):
@@ -18,7 +18,7 @@ def test_get_kernel_uses_default_api_version(monkeypatch):
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", endpoint)
     monkeypatch.delenv("AZURE_OPENAI_API_VERSION", raising=False)
 
-    with patch("app.agents.kernel_factory._cached_kernel_azure", return_value="kernel") as cached:
+    with patch("app.agents.kernel_factory._build_kernel_azure", return_value="kernel") as cached:
         result = kernel_factory.get_kernel("my-deployment")
 
     assert result == "kernel"
@@ -31,7 +31,7 @@ def test_get_kernel_uses_env_api_version(monkeypatch):
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", endpoint)
     monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
 
-    with patch("app.agents.kernel_factory._cached_kernel_azure", return_value="kernel") as cached:
+    with patch("app.agents.kernel_factory._build_kernel_azure", return_value="kernel") as cached:
         result = kernel_factory.get_kernel("my-deployment")
 
     assert result == "kernel"
@@ -42,7 +42,7 @@ def test_get_kernel_openai_provider_uses_openai_cache(monkeypatch):
     monkeypatch.setenv("PFCD_PROVIDER", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
-    with patch("app.agents.kernel_factory._cached_kernel_openai", return_value="kernel") as cached:
+    with patch("app.agents.kernel_factory._build_kernel_openai", return_value="kernel") as cached:
         result = kernel_factory.get_kernel("gpt-4o-mini")
 
     assert result == "kernel"

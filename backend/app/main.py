@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-from app.auth import verify_api_key
+from app.auth import _reload_configured_key, verify_api_key
 from app.export_builder import (
     build_evidence_bundle,
     build_export_docx,
@@ -55,6 +55,8 @@ ORCHESTRATOR = ServiceBusOrchestrator()
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # Refresh auth key cache so test reloads pick up monkeypatched env
+    _reload_configured_key()
     # Validate CORS config at startup so bad env vars produce a clear logged error
     # rather than an opaque RuntimeError buried in the import chain.
     _cors_origins()

@@ -242,15 +242,26 @@ def render_new_job_tab() -> None:
                     f"Estimated profile={create_res.get('cost_estimate', {}).get('profile', profile)}, "
                     f"cap=${create_res.get('cost_estimate', {}).get('cost_cap_usd', 'n/a')}."
                 )
-                if st.button("Confirm cost and start", key="new_confirm_cost", use_container_width=True):
-                    confirmed = confirm_cost(api_base(), api_key(), create_res["job_id"])
-                    st.session_state["current_job"] = get_job(api_base(), api_key(), confirmed["job_id"])
-                    st.success(f"Job started: {confirmed['job_id']}")
+                # Persist the job_id across reruns so the confirm button still works
+                st.session_state["_pending_confirm_job_id"] = create_res["job_id"]
             else:
                 st.session_state["current_job"] = get_job(api_base(), api_key(), create_res["job_id"])
                 st.success(f"Job created: {create_res['job_id']}")
         except Exception as exc:
             st.error(f"Create job failed: {exc}")
+
+    # Confirm cost button rendered outside the form submission block so it
+    # survives the Streamlit rerun that clears the form submission state.
+    pending_confirm_id = st.session_state.get("_pending_confirm_job_id")
+    if pending_confirm_id:
+        if st.button("Confirm cost and start", key="new_confirm_cost", use_container_width=True):
+            try:
+                confirmed = confirm_cost(api_base(), api_key(), pending_confirm_id)
+                st.session_state["current_job"] = get_job(api_base(), api_key(), confirmed["job_id"])
+                del st.session_state["_pending_confirm_job_id"]
+                st.success(f"Job started: {confirmed['job_id']}")
+            except Exception as exc:
+                st.error(f"Confirm cost failed: {exc}")
 
 
 def _phase_dot(done: bool, active: bool) -> str:
@@ -470,18 +481,24 @@ def render_exports_tab() -> None:
         ("pdf", "Download PDF", "application/pdf"),
         ("docx", "Download DOCX", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
     ]:
-        try:
-            blob, filename = download_export(api_base(), api_key(), job["job_id"], fmt)
-            st.download_button(
-                label,
-                data=blob,
-                file_name=filename,
-                mime=mime,
-                key=f"exports_download_{fmt}",
-                use_container_width=True,
-            )
-        except Exception as exc:
-            st.warning(f"{fmt.upper()} unavailable: {exc}")
+        cache_key = f"_export_{job['job_id']}_{fmt}"
+        cached = st.session_state.get(cache_key)
+        if cached is None:
+            try:
+                cached = download_export(api_base(), api_key(), job["job_id"], fmt)
+                st.session_state[cache_key] = cached
+            except Exception as exc:
+                st.warning(f"{fmt.upper()} unavailable: {exc}")
+                continue
+        blob, filename = cached
+        st.download_button(
+            label,
+            data=blob,
+            file_name=filename,
+            mime=mime,
+            key=f"exports_download_{fmt}",
+            use_container_width=True,
+        )
 
 
 def main() -> None:

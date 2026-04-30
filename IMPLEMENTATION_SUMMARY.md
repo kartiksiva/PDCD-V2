@@ -3601,3 +3601,39 @@ Completed the remaining Phase A checklist items in one combined branch: `codex/i
 ### B8·H15 — RFC 4122 v4 UUID polyfill
 - `frontend/src/api.js`: replaced `upload-${Date.now()}-${Math.random().toString(16).slice(2)}` fallback with RFC 4122 v4 bit-manipulation polyfill.
 - `streamlit_app/api_client.py`: replaced `f"upload-{os.urandom(8).hex()}"` with `str(uuid.uuid4())`.
+
+---
+
+## Section 23 — Phase C: Stability & Infrastructure Hardening (2026-04-20)
+
+**Branch:** `codex/issue-86-phase-c` → PR #95 → merged to main  
+**Tests:** 385 passed, 2 skipped  
+**Issue:** #86
+
+### C1·H8 — Lazy SQLAlchemy engine
+- `backend/app/db.py`: complete rewrite — `get_engine(url)` per-URL cache, `_get_session_factory(url)` factory cache, `session_scope(database_url=None)` parameter, `clear_engine_cache()` test isolation helper. Removed module-level `ENGINE`/`SessionLocal` globals.
+- `backend/app/repository.py`: removed `ENGINE` import; added `_database_url` instance var, `from_url(database_url)` classmethod, `engine` property. All 8 `session_scope()` calls updated to `session_scope(self._database_url)`.
+
+### C2·M1 — Atomic manifest write
+- `backend/app/main.py`: `_save_upload_manifest` now writes to a `tempfile.NamedTemporaryFile` in the same directory as the destination, then calls `os.replace` to atomically rename. Crash mid-write no longer leaves truncated JSON.
+
+### C3·M2 — Streaming upload
+- `backend/app/main.py`: `upload_file` endpoint reads the `SpooledTemporaryFile` in 64 KB chunks inside `anyio.to_thread.run_sync`. Avoids a single large `bytes` allocation for large uploads.
+
+### C4·M3 — CORS validation deferred to lifespan
+- `backend/app/main.py`: added `_cors_origins_safe()` — parses CORS origins without raising; invalid entries are logged and skipped (used at module level for `add_middleware` registration). Added `_cors_origins()` call in `_lifespan` for strict validation at startup — bad config now fails with a clear logged error rather than an opaque import-time `RuntimeError`.
+
+### C5·M4 — Concurrent draft update returns 409
+- `backend/app/main.py`: both `_repo_upsert_job` calls in `update_draft` now catch `ConcurrentModificationError` and raise `HTTPException(409)`. Previously a concurrent edit+finalize race would return a 500.
+
+### C6·M8 — Frame size caps in PDF/DOCX export
+- `backend/app/export_builder.py`: both `build_export_pdf` and `build_export_docx` now cap frame rendering to `_MAX_FRAMES = 10` and skip individual frames exceeding `_MAX_FRAME_BYTES = 5 MB`. Oversized frames render a placeholder text row instead.
+
+### C7·M9 — Purge retry counter
+- `backend/app/workers/cleanup.py`: `purge_pending_jobs` now reads/increments `purge_attempt_count` on the job before each attempt. After `MAX_PURGE_ATTEMPTS` (default 5, env: `PFCD_MAX_PURGE_ATTEMPTS`) the job is skipped and a `GDPR retention warning` is logged.
+
+### C8·M10 — SIGTERM graceful shutdown
+- `backend/app/workers/cleanup.py`: `time.sleep(POLL_INTERVAL_SECONDS)` replaced with `_shutdown_event.wait(POLL_INTERVAL_SECONDS)`. A `SIGTERM` handler sets `_shutdown_event` to break the poll loop after the current pass completes. Prevents hard-kill mid-purge on rolling restart.
+
+### Test fix
+- `tests/unit/test_repository.py`: `_stale_session_scope` mock updated to accept `database_url=None` parameter to match the new `session_scope` signature.
