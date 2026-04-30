@@ -12,6 +12,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _MAX_TRANSCRIPTION_BYTES = 24 * 1024 * 1024
+_FFMPEG_TIMEOUT_SEC = max(1.0, float(os.environ.get("PFCD_FFMPEG_TIMEOUT_SEC", "120")))
 _TIMESTAMP_RE = re.compile(
     r"^(?P<start>\d{2}:\d{2}:\d{2}[.,]\d{3})\s+-->\s+"
     r"(?P<end>\d{2}:\d{2}:\d{2}[.,]\d{3})(?P<rest>.*)$"
@@ -25,8 +26,9 @@ def is_ffmpeg_available() -> bool:
             ["ffmpeg", "-version"],
             capture_output=True,
             check=False,
+            timeout=_FFMPEG_TIMEOUT_SEC,
         )
-    except FileNotFoundError:
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
     return result.returncode == 0
 
@@ -51,6 +53,7 @@ def extract_audio_track(video_path: str, output_dir: str) -> str | None:
             ],
             capture_output=True,
             check=False,
+            timeout=_FFMPEG_TIMEOUT_SEC,
         )
         if result.returncode != 0:
             logger.warning("ffmpeg audio extraction failed for %s", video_path)
@@ -88,6 +91,7 @@ def split_audio_chunks(
             ],
             capture_output=True,
             check=False,
+            timeout=_FFMPEG_TIMEOUT_SEC,
         )
         if result.returncode != 0:
             logger.warning("ffmpeg chunking failed for %s", audio_path)
@@ -129,6 +133,7 @@ def extract_keyframes(
             ],
             capture_output=True,
             check=False,
+            timeout=_FFMPEG_TIMEOUT_SEC,
         )
         if result.returncode != 0:
             logger.warning("ffmpeg keyframe extraction failed for %s", video_path)
