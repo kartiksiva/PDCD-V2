@@ -697,7 +697,7 @@ def test_reviewing_blocks_on_insufficient_evidence():
     flag_codes = [f["code"] for f in job["review_notes"]["flags"]]
     assert "insufficient_evidence" in flag_codes
     assert job["agent_review"]["decision"] == "blocked"
-    assert job["agent_signals"]["evidence_strength"] == "low"
+    assert job["agent_signals"]["evidence_strength"] == "medium"
 
 
 def test_reviewing_sets_frame_first_evidence_flag():
@@ -1159,9 +1159,9 @@ def test_evidence_strength_medium_transcript_only():
     assert compute_evidence_strength(False, False, True) == "medium"
 
 
-def test_evidence_strength_low_video_only():
+def test_evidence_strength_medium_video_only():
     from app.agents.evidence import compute_evidence_strength
-    assert compute_evidence_strength(True, False, False) == "low"
+    assert compute_evidence_strength(True, False, False) == "medium"
 
 
 def test_evidence_strength_low_no_sources():
