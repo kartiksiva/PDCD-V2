@@ -1,5 +1,6 @@
 import os
 import re
+import uuid
 from typing import Any, Dict, Optional, Tuple
 
 import requests
@@ -64,7 +65,7 @@ def upload_file(
     mime_type: str,
     source_type: str,
 ) -> Dict[str, Any]:
-    upload_job_id = f"upload-{os.urandom(8).hex()}"
+    upload_job_id = str(uuid.uuid4())
     upload_meta = _request_json(
         "POST",
         f"{_api_root(base)}/jobs/{upload_job_id}/upload-url",

@@ -324,7 +324,9 @@ def _apply_source_type_defaults(extracted: Dict[str, Any], primary_source_type: 
         resolved = "transcript"
     for item in items:
         if isinstance(item, dict):
-            item["source_type"] = resolved
+            # Preserve LLM-assigned per-item source_type; only supply the
+            # primary-source default when the field is absent or blank.
+            item.setdefault("source_type", resolved)
 
 
 def _parse_fact_extraction(extracted: Dict[str, Any]) -> Dict[str, Any]:

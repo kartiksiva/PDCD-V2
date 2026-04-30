@@ -124,8 +124,9 @@ def validate_sipoc(
         missing_reason_raw = row.get("anchor_missing_reason") or ""
         has_missing_reason = bool(str(missing_reason_raw).strip())
 
-        # 5. Aggregate counts
-        if has_step_anchor and has_source_anchor:
+        # 5. Aggregate counts — a row only counts as fully-anchored when all
+        # step refs resolve to known PDD steps (invalid refs indicate stale/wrong data).
+        if has_step_anchor and has_source_anchor and not invalid_step_refs:
             valid_anchor_count += 1
         else:
             missing_anchor_count += 1
@@ -135,7 +136,7 @@ def validate_sipoc(
 
         row_result = SIPOCRowResult(
             row_index=idx,
-            valid=not missing_fields and has_step_anchor and has_source_anchor,
+            valid=not missing_fields and has_step_anchor and has_source_anchor and not invalid_step_refs,
             missing_fields=missing_fields,
             has_step_anchor=has_step_anchor,
             has_source_anchor=has_source_anchor,

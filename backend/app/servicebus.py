@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -68,6 +69,7 @@ class ServiceBusOrchestrator:
         self.queue_config = _get_queue_config()
         self._enqueue_client: Optional[ServiceBusClient] = None
         self._senders: Dict[str, Any] = {}
+        self._sender_lock = threading.Lock()
 
     @property
     def enabled(self) -> bool:
@@ -81,16 +83,17 @@ class ServiceBusOrchestrator:
         return self._enqueue_client
 
     def _get_sender(self, queue_name: str):
-        sender = self._senders.get(queue_name)
-        if sender is not None:
+        with self._sender_lock:
+            sender = self._senders.get(queue_name)
+            if sender is not None:
+                return sender
+            client = self._get_enqueue_client()
+            if client is None:
+                return None
+            sender = client.get_queue_sender(queue_name)
+            sender.__enter__()
+            self._senders[queue_name] = sender
             return sender
-        client = self._get_enqueue_client()
-        if client is None:
-            return None
-        sender = client.get_queue_sender(queue_name)
-        sender.__enter__()
-        self._senders[queue_name] = sender
-        return sender
 
     def close(self) -> None:
         for sender in self._senders.values():

@@ -174,6 +174,7 @@ def test_extraction_sets_source_type_to_video_when_video_is_primary():
     job["_transcript_text_inline"] = _load_fixture("scenario_a", "transcript.vtt")
     job["input_manifest"]["video"]["storage_key"] = "/tmp/demo.mp4"
 
+    # LLM does not set source_type — the default should be filled in from the primary source.
     llm_payload = {
         "evidence_items": [
             {
@@ -185,7 +186,6 @@ def test_extraction_sets_source_type_to_video_when_video_is_primary():
                 "output_artifact": "validated invoice",
                 "anchor": "00:00:00-00:00:03",
                 "confidence": 0.8,
-                "source_type": "transcript",
             }
         ],
         "speakers_detected": ["Finance Analyst"],
@@ -205,6 +205,48 @@ def test_extraction_sets_source_type_to_video_when_video_is_primary():
             run_extraction(job, _balanced_profile())
 
     assert job["extracted_evidence"]["evidence_items"][0]["source_type"] == "video"
+
+
+def test_extraction_preserves_llm_assigned_source_type():
+    """LLM-assigned per-item source_type must not be overwritten by the default."""
+    from app.agents.extraction import run_extraction
+
+    job = _make_job(has_video=True, has_audio=True, has_transcript=True)
+    job["_transcript_text_inline"] = _load_fixture("scenario_a", "transcript.vtt")
+    job["input_manifest"]["video"]["storage_key"] = "/tmp/demo.mp4"
+
+    llm_payload = {
+        "evidence_items": [
+            {
+                "id": "ev-01",
+                "summary": "Presenter describes slide",
+                "actor": "Finance Analyst",
+                "system": "PowerPoint",
+                "input_artifact": "slide deck",
+                "output_artifact": "notes",
+                "anchor": "00:00:00-00:00:03",
+                "confidence": 0.75,
+                "source_type": "transcript",
+            }
+        ],
+        "speakers_detected": ["Finance Analyst"],
+        "subject_process": "Invoice Processing",
+        "process_domain": "Accounts Payable",
+        "transcript_quality": "high",
+    }
+
+    with patch(
+        "app.agents.adapters.video.transcribe_audio_blob",
+        return_value="WEBVTT\n\n00:00:00.000 --> 00:00:03.000\nFinance Analyst: Open SAP.\n",
+    ):
+        with patch(
+            "app.agents.extraction._call_extraction",
+            side_effect=_async_sk_response(json.dumps(llm_payload), 10, 10),
+        ):
+            run_extraction(job, _balanced_profile())
+
+    # LLM said "transcript"; setdefault must not overwrite with "video".
+    assert job["extracted_evidence"]["evidence_items"][0]["source_type"] == "transcript"
 
 
 def test_extraction_uses_video_fact_hints_when_llm_returns_no_items():

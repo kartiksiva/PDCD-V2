@@ -184,8 +184,8 @@ def test_multiple_step_anchors_partially_invalid():
 
     flag_codes = [f["code"] for f in result.flags]
     assert "sipoc_invalid_step_ref" in flag_codes
-    # step-01 is valid, so the row still has a step_anchor → counts toward quality gate
-    assert result.valid_anchor_count == 1
+    # Any invalid step ref means the row cannot count toward the quality gate
+    assert result.valid_anchor_count == 0
 
 
 # ---------------------------------------------------------------------------

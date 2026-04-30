@@ -106,33 +106,15 @@ PR expectations:
 <claude-mem-context>
 # Memory Context
 
-# [PFCD-V2] recent context, 2026-04-20 3:02pm GMT+5:30
+# [PFCD-V2] recent context, 2026-04-30 9:01pm GMT+5:30
 
 Legend: 🎯session 🔴bugfix 🟣feature 🔄refactor ✅change 🔵discovery ⚖️decision
 Format: ID TIME TYPE TITLE
 Fetch details: get_observations([IDs]) | Search: mem-search skill
 
-Stats: 50 obs (18,078t read) | 335,221t work | 95% savings
+Stats: 50 obs (18,761t read) | 742,924t work | 97% savings
 
-### Apr 19, 2026
-283 11:04p 🔴 Critical GHCO Bundle — 5 Security/Concurrency Bugs Fixed on codex/fix-critical-ghco-issues
-284 " 🔵 gh CLI Token Still Invalid — PR Creation Blocked Again
-285 " ⚖️ Optimistic Locking — Single Job-Level Lock, Separate Draft Version
-288 11:05p ✅ Critical GHCO Bug Bundle — 20 Files Staged for Commit
-289 " ✅ Critical GHCO Issues #36-#40 Committed to Branch
 ### Apr 20, 2026
-294 9:24a 🔵 PFCD-V2 docker-compose.local.yml — Full Service + Env Var Map Confirmed
-295 " 🔵 PFCD-V2 Required Env Vars for Local Docker — Minimum Set to Unblock Stuck Queue Item
-297 9:25a 🔵 PFCD-V2 Docker Stack Missing Worker Services — Root Cause of Stuck Queue Item
-298 " 🔵 PFCD-V2 /dev/simulate Endpoint — Local Dev Escape Hatch for Queue-Stuck Jobs
-300 9:27a 🔵 PFCD-V2 Live /health Probe — 6 Missing Env Vars Confirmed on Running Docker Stack
-301 " 🔵 PFCD-V2 Stuck Job e97bbf65 — Full State Confirmed via Live API
-302 " 🔵 backend/docker-compose.smoke.yml — Worker Service Pattern for Local Docker with Real Workers
-304 9:50a 🔵 PFCD-V2 Local Docker API — SQLite Missing jobs.version Column
-305 9:51a 🔵 PFCD-V2 Local SQLite DB — Alembic Migration History Absent, Table Pre-exists Without version Column
-308 " 🔵 PFCD-V2 Local SQLite Schema — Confirmed Missing version Column, Full Migration Chain Mapped
-309 " 🔴 PFCD-V2 Local SQLite Schema Repaired — jobs.version Column Added Without Data Loss
-312 9:53a 🔵 PFCD-V2 Local Docker Stack — Post-Migration State and Remaining Gaps
 315 9:55a 🟣 docker-compose.local.yml — Three Worker Services Added for Full Local Pipeline
 317 9:59a 🟣 PFCD-V2 Local Docker Stack — All 5 Containers Running Including 3 Workers
 318 " 🔵 PFCD-V2 Workers — All Three Connected to Azure Service Bus and Listening
@@ -166,6 +148,24 @@ Stats: 50 obs (18,078t read) | 335,221t work | 95% savings
 372 " ✅ Issue #9 Marked Complete — HANDOVER.md + IMPLEMENTATION_SUMMARY.md Updated
 375 3:00p ✅ Issue #9 Committed on codex/fix-issue-9 Branch
 376 3:01p ✅ AGENTS.md — Issue Workflow Updated, HANDOVER.md Deprecated
+379 3:02p 🔵 Issue #9 Commit on codex/fix-issue-9 but Working Tree Now on main With Same Unstaged Changes
+380 3:03p 🔵 Git Write Failures Caused by Sandbox Permission Restrictions + 98% Full Disk
+### Apr 30, 2026
+398 6:46p 🔵 PFCD-V2 docs/ Folder Structure — opus_report.md Found as Untracked File
+399 6:47p 🔵 PFCD-V2 Opus 4.7 Code Review — 3 Critical, 15 High, 17 Medium Findings with 4-Phase Action Plan
+400 " 🔵 PFCD-V2 Pipeline Rules — 18 Extraction + 24 Processing + 16 Reviewing Deterministic Rules Documented
+404 6:49p 🔵 C1 Path Traversal in export_builder.py — Exact Lines Confirmed via Code Inspection
+405 " 🔵 C3 Alignment Self-Comparison — Line 345 Confirmed; uploaded_transcript Fallback Equals transcript_text
+406 " 🔵 H5 ffmpeg Timeout — All 4 subprocess.run() Calls Confirmed Missing timeout= Parameter
+407 " 🔵 H7 Finalize Race Confirmed — DraftReview.jsx:232-282 Has No inFlightSavePromise Guard
+408 " 🔵 H1 No AutoLockRenewer + H13 Bootstrap Vestigial Vars — Both Confirmed via Code Inspection
+409 " 🔵 H11 setdefault Empty-String Miss + M13 Streamlit Re-download — Both Confirmed
+410 7:03p 🔵 PFCD-84 Issue Identified — Streamlit App Main Shell & Navigation
+411 " 🔵 Streamlit App Skeleton Already Exists in streamlit_app/
+412 7:08p 🔵 Streamlit App Docker Config — Dockerfile Missing, Compose Files Present
+413 7:09p 🔵 GitHub Issue #84 True Scope — Phase A: 9 Critical/High Fixes (Not Streamlit)
+414 " 🔴 C1 Path Traversal Fix — export_builder.py Frame Storage Key Validation
+415 " 🔵 Git Commit Blocked — .git/index.lock Operation Not Permitted in Sandbox
 
-Access 335k tokens of past work via get_observations([IDs]) or mem-search skill.
+Access 743k tokens of past work via get_observations([IDs]) or mem-search skill.
 </claude-mem-context>
