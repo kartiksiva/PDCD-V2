@@ -3601,3 +3601,107 @@ Completed the remaining Phase A checklist items in one combined branch: `codex/i
 ### B8·H15 — RFC 4122 v4 UUID polyfill
 - `frontend/src/api.js`: replaced `upload-${Date.now()}-${Math.random().toString(16).slice(2)}` fallback with RFC 4122 v4 bit-manipulation polyfill.
 - `streamlit_app/api_client.py`: replaced `f"upload-{os.urandom(8).hex()}"` with `str(uuid.uuid4())`.
+
+---
+
+## Section 23 — Phase C: Stability & Infrastructure Hardening (2026-04-20)
+
+**Branch:** `codex/issue-86-phase-c` → PR #95 → merged to main  
+**Tests:** 385 passed, 2 skipped  
+**Issue:** #86
+
+### C1·H8 — Lazy SQLAlchemy engine
+- `backend/app/db.py`: complete rewrite — `get_engine(url)` per-URL cache, `_get_session_factory(url)` factory cache, `session_scope(database_url=None)` parameter, `clear_engine_cache()` test isolation helper. Removed module-level `ENGINE`/`SessionLocal` globals.
+- `backend/app/repository.py`: removed `ENGINE` import; added `_database_url` instance var, `from_url(database_url)` classmethod, `engine` property. All 8 `session_scope()` calls updated to `session_scope(self._database_url)`.
+
+### C2·M1 — Atomic manifest write
+- `backend/app/main.py`: `_save_upload_manifest` now writes to a `tempfile.NamedTemporaryFile` in the same directory as the destination, then calls `os.replace` to atomically rename. Crash mid-write no longer leaves truncated JSON.
+
+### C3·M2 — Streaming upload
+- `backend/app/main.py`: `upload_file` endpoint reads the `SpooledTemporaryFile` in 64 KB chunks inside `anyio.to_thread.run_sync`. Avoids a single large `bytes` allocation for large uploads.
+
+### C4·M3 — CORS validation deferred to lifespan
+- `backend/app/main.py`: added `_cors_origins_safe()` — parses CORS origins without raising; invalid entries are logged and skipped (used at module level for `add_middleware` registration). Added `_cors_origins()` call in `_lifespan` for strict validation at startup — bad config now fails with a clear logged error rather than an opaque import-time `RuntimeError`.
+
+### C5·M4 — Concurrent draft update returns 409
+- `backend/app/main.py`: both `_repo_upsert_job` calls in `update_draft` now catch `ConcurrentModificationError` and raise `HTTPException(409)`. Previously a concurrent edit+finalize race would return a 500.
+
+### C6·M8 — Frame size caps in PDF/DOCX export
+- `backend/app/export_builder.py`: both `build_export_pdf` and `build_export_docx` now cap frame rendering to `_MAX_FRAMES = 10` and skip individual frames exceeding `_MAX_FRAME_BYTES = 5 MB`. Oversized frames render a placeholder text row instead.
+
+### C7·M9 — Purge retry counter
+- `backend/app/workers/cleanup.py`: `purge_pending_jobs` now reads/increments `purge_attempt_count` on the job before each attempt. After `MAX_PURGE_ATTEMPTS` (default 5, env: `PFCD_MAX_PURGE_ATTEMPTS`) the job is skipped and a `GDPR retention warning` is logged.
+
+### C8·M10 — SIGTERM graceful shutdown
+- `backend/app/workers/cleanup.py`: `time.sleep(POLL_INTERVAL_SECONDS)` replaced with `_shutdown_event.wait(POLL_INTERVAL_SECONDS)`. A `SIGTERM` handler sets `_shutdown_event` to break the poll loop after the current pass completes. Prevents hard-kill mid-purge on rolling restart.
+
+### Test fix
+- `tests/unit/test_repository.py`: `_stale_session_scope` mock updated to accept `database_url=None` parameter to match the new `session_scope` signature.
+
+---
+
+## Section 24 — Phase D Hygiene Items (PR #96, 2026-04-30)
+
+Branch: `codex/issue-87-phase-d` → squash merged to main via PR #96  
+Tests: 385 passed, 2 skipped
+
+### M5 — storage.py migration fallback
+- `backend/app/storage.py`: when blob-mode `load_bytes()` cannot find a blob but the export metadata has a local path, falls back to local file read. Supports graceful migration for exports written before blob storage was configured.
+
+### M6 — load_transcript_text path traversal defence
+- `backend/app/job_logic.py`: `_is_safe_storage_key()` validates that `inp["storage_key"]` is within `_UPLOADS_DIR` (resolved via `os.path.abspath`). Absolute paths and `../` traversal sequences are rejected with a warning; returns `None` rather than opening arbitrary paths.
+
+### M7 — _format_date tz-aware strings
+- `backend/app/export_builder.py`: replaced manual strptime loop with `datetime.fromisoformat()` (Python 3.7+). Handles timezone-aware strings including `+05:30` offsets. Legacy `Z`-suffix handled separately for Python < 3.11.
+
+### M11 — api.js same-origin gate for SAS uploads
+- `frontend/src/api.js`: added `_isSameOrigin(url)` helper. `X-API-Key` header only sent to upload URLs that share the same origin as the API base. Prevents auth header leakage to external SAS blob URLs.
+
+### M12 — api.js dead exportUrl removed
+- `frontend/src/api.js`: deleted unauthenticated dead `exportUrl(jobId, fmt)` function. No callers remain; all downloads go through `downloadExport` which uses `_fetch`.
+
+### M13 — Streamlit lazy export cache
+- `streamlit_app/app.py`: export bytes cached in `st.session_state[f"_export_{job_id}_{fmt}"]`. `download_export()` only called once per job+format combination, not on every rerun.
+
+### M14 — requirements.txt pinned versions
+- `backend/requirements.txt`: `azure-ai-agents>=1.2.0b3` → `==1.2.0b6`; `pydantic>=2.11.0` → `==2.12.5` (installed versions at time of audit).
+
+### M15 — Reusable CI pg-smoke workflow
+- `.github/workflows/pg-smoke.yml`: new `workflow_call` workflow with Postgres 16 service, unit+integration tests, and PostgreSQL smoke test.
+- `deploy-backend.yml` and `deploy-workers.yml`: replaced duplicate 30-line `test:` job with a single `uses: ./.github/workflows/pg-smoke.yml` call.
+
+### M16 — reviewing.py exact Unknown speaker match
+- `backend/app/agents/reviewing.py`: `any("Unknown" in s ...)` → `any(s.strip() in {"Unknown", "Unknown Speaker"} ...)`. Prevents false positives for speakers whose names contain the word "Unknown" as a substring.
+
+### M17 — processing.py post-parse guard
+- `backend/app/agents/processing.py`: after `_parse_processing_json(raw)`, raises `RuntimeError` if both `pdd` and `sipoc` keys are absent. Surfaces unexpected LLM response shapes early instead of silently producing a stub draft.
+
+### L1 — auth.py per-request env read retained
+- `backend/app/auth.py`: kept per-request `os.environ.get("PFCD_API_KEY", "")` (original pattern). Startup caching was tested but broke `importlib.reload(main_mod)` in auth tests (lifespan not triggered by Starlette TestClient without context manager). Decision: per-request read is correct for this test pattern; overhead is negligible.
+
+### L2 — deploy-backend.yml Key Vault secretRef for PFCD_API_KEY
+- `.github/workflows/deploy-backend.yml`: `PFCD_API_KEY` now uses `secretRef: pfcd-api-key` (KV URL `https://{KV}.vault.azure.net/secrets/pfcd-api-key`). Removed plaintext `"${PFCD_API_KEY_VALUE}"` from manifest env and `PFCD_API_KEY_VALUE` from step env.
+
+### L3 — pytest.ini postgres marker
+- `pytest.ini`: added `postgres: PostgreSQL integration tests` marker to suppress `PytestUnknownMarkWarning`.
+
+### L4 — extraction.py brace escape
+- `backend/app/agents/extraction.py`: escapes `{` and `}` in `content_text` before `_USER_PROMPT_TEMPLATE.format(transcript_text=...)` to prevent `KeyError` if transcript contains Python format-string placeholders.
+
+### L6 — docker-compose.local.yml worker build contexts
+- `docker-compose.local.yml`: added `build: context: ./backend / dockerfile: Dockerfile / target: worker` to `worker-processing` and `worker-reviewing` services. Previously these relied on `image: pfcd-worker:local` already existing; now they build correctly from source.
+
+### L7 — SipocTable.jsx step_anchor column
+- `frontend/src/components/SipocTable.jsx`: added `Step Anchor` column (reads `row.step_anchor`). Now shows 7 columns matching the editable table in `DraftReview.jsx`.
+
+### L8 — Streamlit confirm_cost session state persistence
+- `streamlit_app/app.py`: pending job ID stored in `st.session_state["_pending_confirm_job_id"]` on cost-confirmation creation. Confirm button rendered outside the form submission block so it survives reruns.
+
+### L9 — kernel_factory.py rename
+- `backend/app/agents/kernel_factory.py`: `_cached_kernel_azure` → `_build_kernel_azure`; `_cached_kernel_openai` → `_build_kernel_openai`. Names were misleading (no caching). Tests updated.
+
+### L10 — media_preprocessor.py keep-in-sync comment
+- `backend/app/agents/media_preprocessor.py`: added keep-in-sync comment for `_MAX_TRANSCRIPTION_BYTES = 24 * 1024 * 1024`. True consolidation via import is blocked by a circular import (`transcription` imports `media_preprocessor` at module level).
+
+### Bug fix caught in review
+- `frontend/src/api.js`: `_resolveUploadUrl` function declaration was accidentally dropped when inserting `_isSameOrigin`. Fixed before merge.

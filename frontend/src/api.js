@@ -69,9 +69,15 @@ export async function listJobs() {
   return res.json()
 }
 
-export function exportUrl(jobId, fmt) {
-  return `${BASE}/jobs/${jobId}/exports/${fmt}`
+
+function _isSameOrigin(url) {
+  try {
+    return new URL(url).origin === new URL(BASE, window.location.href).origin
+  } catch {
+    return true // relative URL — safe to include auth header
+  }
 }
+
 
 function _resolveUploadUrl(url) {
   if (/^https?:\/\//i.test(url)) return url
@@ -104,7 +110,7 @@ export async function uploadFile(file, sourceType = 'document') {
   const uploadUrl = _resolveUploadUrl(uploadMeta.upload.url)
   const uploadHeaders = {
     ...(uploadMeta.upload.headers ?? {}),
-    ...(uploadMeta.upload.requires_api_auth ? authHeaders() : {}),
+    ...(uploadMeta.upload.requires_api_auth && _isSameOrigin(uploadUrl) ? authHeaders() : {}),
   }
   const uploadRes = await fetch(uploadUrl, {
     method: uploadMeta.upload.method ?? 'PUT',

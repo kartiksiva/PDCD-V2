@@ -189,12 +189,18 @@ def _format_date(value: Any) -> str:
         return "Needs Review"
     from datetime import datetime
     s = str(value).strip()
-    for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ",
-                "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+    # datetime.fromisoformat handles both naive and tz-aware ISO 8601 strings
+    # (including "+05:30" offsets) natively in Python 3.7+.
+    try:
+        return datetime.fromisoformat(s).strftime("%d-%b-%Y")
+    except ValueError:
+        pass
+    # Legacy fallback for "Z"-suffixed strings not handled by fromisoformat < 3.11
+    if s.endswith("Z"):
         try:
-            return datetime.strptime(s[:26].rstrip("Z"), fmt.rstrip("z").rstrip("%z")).strftime("%d-%b-%Y")
+            return datetime.fromisoformat(s[:-1]).strftime("%d-%b-%Y")
         except ValueError:
-            continue
+            pass
     return s or "Needs Review"
 
 

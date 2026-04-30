@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_AZURE_OPENAI_API_VERSION = "2024-10-21"
 
 
-def _cached_kernel_azure(endpoint: str, deployment: str, api_version: str):
+def _build_kernel_azure(endpoint: str, deployment: str, api_version: str):
     from azure.identity import DefaultAzureCredential, get_bearer_token_provider
     from semantic_kernel import Kernel
     from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion
@@ -33,7 +33,7 @@ def _cached_kernel_azure(endpoint: str, deployment: str, api_version: str):
     return kernel
 
 
-def _cached_kernel_openai(api_key: str, model: str):
+def _build_kernel_openai(api_key: str, model: str):
     from semantic_kernel import Kernel
     from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion
 
@@ -49,7 +49,7 @@ def get_kernel(deployment: str):
             "Initializing Semantic Kernel OpenAIChatCompletion with model=%s",
             deployment,
         )
-        return _cached_kernel_openai(os.environ["OPENAI_API_KEY"], deployment)
+        return _build_kernel_openai(os.environ["OPENAI_API_KEY"], deployment)
 
     endpoint = os.environ["AZURE_OPENAI_ENDPOINT"]
     api_version = os.environ.get("AZURE_OPENAI_API_VERSION", _DEFAULT_AZURE_OPENAI_API_VERSION)
@@ -59,7 +59,7 @@ def get_kernel(deployment: str):
         deployment,
         api_version,
     )
-    return _cached_kernel_azure(endpoint, deployment, api_version)
+    return _build_kernel_azure(endpoint, deployment, api_version)
 
 
 def get_chat_service(deployment: str):

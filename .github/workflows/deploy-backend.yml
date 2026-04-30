@@ -19,42 +19,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_DB: pfcd_test
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d pfcd_test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: pip install -r backend/requirements.txt
-
-      - name: Run tests
-        run: pytest tests/unit tests/integration -x --tb=short
-        env:
-          DATABASE_URL: "sqlite:///./test-ci.db"
-          PYTHONPATH: backend
-
-      - name: Run PostgreSQL smoke test
-        run: pytest tests/integration/test_postgres_smoke.py -x --tb=short
-        env:
-          PFCD_POSTGRES_SMOKE_DATABASE_URL: "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/pfcd_test"
-          PYTHONPATH: backend
+    uses: ./.github/workflows/pg-smoke.yml
 
   deploy:
     needs: test
@@ -173,7 +138,6 @@ jobs:
       - name: Render backend ACA manifest
         env:
           PFCD_CORS_ORIGINS_VALUE: ${{ secrets.PFCD_CORS_ORIGINS }}
-          PFCD_API_KEY_VALUE: ${{ secrets.PFCD_API_KEY }}
           AZURE_OPENAI_ENDPOINT_VALUE: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
         run: |
           env_id="$(az containerapp env show \
@@ -215,6 +179,9 @@ jobs:
                 - name: sbconn
                   keyVaultUrl: https://${{ vars.AZURE_KEY_VAULT_NAME }}.vault.azure.net/secrets/service-bus-connection-string
                   identity: system
+                - name: pfcd-api-key
+                  keyVaultUrl: https://${{ vars.AZURE_KEY_VAULT_NAME }}.vault.azure.net/secrets/pfcd-api-key
+                  identity: system
             template:
               containers:
                 - name: api
@@ -223,7 +190,7 @@ jobs:
                     - name: PFCD_CORS_ORIGINS
                       value: "${PFCD_CORS_ORIGINS_VALUE}"
                     - name: PFCD_API_KEY
-                      value: "${PFCD_API_KEY_VALUE}"
+                      secretRef: pfcd-api-key
                     - name: DATABASE_URL
                       secretRef: dburl
                     - name: AZURE_STORAGE_CONNECTION_STRING

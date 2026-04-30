@@ -12,6 +12,10 @@ from fastapi.security import APIKeyHeader
 _API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
+def _reload_configured_key() -> None:
+    """No-op shim — kept for lifespan callers. The key is read per-request."""
+
+
 async def verify_api_key(api_key: Optional[str] = Security(_API_KEY_HEADER)) -> None:
     """Enforce X-API-Key header when PFCD_API_KEY env var is set.
 

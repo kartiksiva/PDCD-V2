@@ -458,7 +458,11 @@ def run_extraction(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
                 _call_extraction(
                     deployment,
                     _SYSTEM_PROMPT,
-                    _USER_PROMPT_TEMPLATE.format(transcript_text=content_text) + _build_speaker_hint(job),
+                    # Escape braces in transcript so .format() doesn't treat them as
+                    # interpolation targets (theoretical prompt injection via {…} sequences).
+                    _USER_PROMPT_TEMPLATE.format(
+                        transcript_text=content_text.replace("{", "{{").replace("}", "}}")
+                    ) + _build_speaker_hint(job),
                 ),
                 timeout=timeout_seconds,
             )

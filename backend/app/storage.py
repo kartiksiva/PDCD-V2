@@ -127,6 +127,14 @@ class ExportStorage:
             blob_client = self._client.get_blob_client(self.container, location)
             return blob_client.download_blob().readall()
         if storage == "local" and self._client:
+            # Graceful fallback: historical exports written in local mode are still readable
+            # even after the deployment migrated to blob storage.
+            if location and os.path.isfile(location):
+                logger.warning(
+                    "Reading local export %r in blob storage mode (migration fallback)", location
+                )
+                with open(location, "rb") as handle:
+                    return handle.read()
             raise FileNotFoundError("Local export metadata cannot be read in blob storage mode.")
         if not location:
             raise FileNotFoundError("Export location missing")
