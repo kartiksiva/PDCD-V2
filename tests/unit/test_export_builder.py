@@ -221,6 +221,41 @@ class TestBuildEvidenceBundle:
         values = [a["anchor_value"] for a in bundle["linked_anchors"]]
         assert "00:05:00" in values
 
+    def test_frame_captures_reject_unsafe_storage_keys(self):
+        draft = {
+            "pdd": {
+                "purpose": "p",
+                "scope": "s",
+                "steps": [_step("step-1", "x", [{"anchor": "00:00:10", "confidence": 0.8}])],
+            },
+            "sipoc": [_sipoc_row("x", "00:00:10", ["step-1"])],
+        }
+        job = {
+            "extracted_evidence": {
+                "evidence_items": [
+                    {
+                        "metadata": {
+                            "frame_storage_keys": [
+                                ("job-123/frames/frame_0001.jpg", 10.0),
+                                ("/tmp/frame.jpg", 11.0),
+                                ("../frames/frame_0002.jpg", 12.0),
+                                ("./frames/frame_0003.jpg", 13.0),
+                            ]
+                        }
+                    }
+                ]
+            },
+            "agent_signals": {
+                "frame_storage_keys": [
+                    ("job-123/frames/frame_0001.jpg", 10.0),
+                    ("..\\frames\\frame_0004.jpg", 14.0),
+                ]
+            },
+        }
+        bundle = build_evidence_bundle(draft, job)
+        captures = bundle["frame_captures"]
+        assert captures == [{"storage_key": "job-123/frames/frame_0001.jpg", "timestamp_sec": 10.0, "linked_anchor_ids": ["a-1"]}]
+
 
 # ---------------------------------------------------------------------------
 # build_export_markdown

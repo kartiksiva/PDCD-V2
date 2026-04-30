@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -35,6 +34,18 @@ def _timestamp_to_seconds(value: str) -> float:
         return total
     except (TypeError, ValueError):
         return -1.0
+
+
+def _is_safe_storage_key(storage_key: str) -> bool:
+    normalized = (storage_key or "").strip().replace("\\", "/")
+    if not normalized:
+        return False
+    if normalized.startswith("/") or normalized.startswith("./"):
+        return False
+    parts = normalized.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        return False
+    return True
 
 
 def build_evidence_bundle(finalized_draft: Dict[str, Any], job: Dict[str, Any]) -> Dict[str, Any]:
@@ -101,8 +112,12 @@ def build_evidence_bundle(finalized_draft: Dict[str, Any], job: Dict[str, Any]) 
     for item in evidence_items:
         frame_keys = (item.get("metadata") or {}).get("frame_storage_keys") or []
         for storage_key, timestamp_sec in frame_keys:
+            if not _is_safe_storage_key(storage_key):
+                continue
             frame_captures.append({"storage_key": storage_key, "timestamp_sec": timestamp_sec})
     for storage_key, timestamp_sec in (job.get("agent_signals") or {}).get("frame_storage_keys") or []:
+        if not _is_safe_storage_key(storage_key):
+            continue
         if not any(
             existing["storage_key"] == storage_key and existing["timestamp_sec"] == timestamp_sec
             for existing in frame_captures
@@ -583,12 +598,6 @@ def build_export_pdf(
             key = capture.get("storage_key", "")
             timestamp_sec = capture.get("timestamp_sec", 0.0)
             image_bytes = (frame_bytes_map or {}).get(key)
-            if not image_bytes and (os.path.isabs(key) or (key.startswith(".") and os.path.exists(key))):
-                try:
-                    with open(key, "rb") as handle:
-                        image_bytes = handle.read()
-                except OSError:
-                    pass
             if image_bytes:
                 try:
                     pdf.image(io.BytesIO(image_bytes), w=120)
@@ -885,12 +894,6 @@ def build_export_docx(
             key = capture.get("storage_key", "")
             timestamp_sec = capture.get("timestamp_sec", 0.0)
             image_bytes = (frame_bytes_map or {}).get(key)
-            if not image_bytes and (os.path.isabs(key) or (key.startswith(".") and os.path.exists(key))):
-                try:
-                    with open(key, "rb") as handle:
-                        image_bytes = handle.read()
-                except OSError:
-                    pass
             if image_bytes:
                 try:
                     doc.add_picture(io.BytesIO(image_bytes))
