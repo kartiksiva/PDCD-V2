@@ -3705,3 +3705,48 @@ Tests: 385 passed, 2 skipped
 
 ### Bug fix caught in review
 - `frontend/src/api.js`: `_resolveUploadUrl` function declaration was accidentally dropped when inserting `_isSameOrigin`. Fixed before merge.
+
+---
+
+## Section 25 — Issue #97 LLM Semantic Review Layer (PR #98, 2026-05-01)
+
+Branch: `codex/issue-97-llm-semantic-review` → PR #98 (open)
+
+### Advisory semantic review module
+- Added `backend/app/agents/llm_reviewer.py` with `run_llm_semantic_review(job, profile_conf, storage) -> float`.
+- LLM pass remains advisory-only and writes to `review_notes.llm_semantic_flags` (separate from deterministic `review_notes.flags`).
+- Feature gate added: `PFCD_REVIEW_LLM_ENABLED` (`false` by default), auto-enabled for `quality` profile.
+- Citation filter implemented: `_drop_uncited_flags` drops flags missing `evidence_id` or `anchor`.
+- Transcript grounding implemented via `_build_anchor_slices` using transcript snippets keyed by evidence anchors.
+- Coverage-gap fallback is deterministic for unmapped evidence anchors to ensure actionable advisory output.
+
+### Reviewing worker integration
+- `backend/app/workers/runner.py`: reviewing phase now calls `run_llm_semantic_review(...)` only when deterministic decision is not `blocked`.
+- LLM review cost is added into phase cost tracking (`cost += llm_cost`).
+
+### Payload contract updates
+- `backend/app/job_logic.py`:
+  - Added `review_notes.llm_semantic_flags` default `[]`.
+  - Added `agent_signals.llm_review_stats` with `{total_flags: 0, accepted_by_human: 0}`.
+
+### Export updates
+- `backend/app/export_builder.py`:
+  - Evidence bundle now carries `llm_semantic_flags` from job review notes.
+  - Added Markdown section `## 5A. AI Semantic Review Notes` (rendered only when flags exist).
+  - Added DOCX section `5A. AI Semantic Review Notes` (rendered only when flags exist).
+  - Section columns: `Flag | Evidence ID | Step | Anchor | Snippet`.
+
+### Reference docs
+- `REFERENCE.md` env table updated with `PFCD_REVIEW_LLM_ENABLED` and auto-enable behavior for quality profile.
+
+### Tests
+- Added `tests/unit/test_llm_reviewer.py` with 5 tests:
+  - uncited flags dropped
+  - coverage flag for unmapped evidence
+  - no flags when all evidence mapped
+  - disabled by default (no LLM call)
+  - runner skips LLM review when deterministic decision is `blocked`
+- Extended `tests/unit/test_export_builder.py` to cover Markdown/DOCX semantic review section visibility and rendering.
+- Validation run:
+  - `backend/.venv/bin/python3.12 -m pytest tests/unit/test_llm_reviewer.py tests/unit/test_worker.py tests/unit/test_export_builder.py -q` → `85 passed`
+  - `backend/.venv/bin/python3.12 -m pytest tests/unit/test_job_logic.py -q` → `18 passed`
