@@ -3386,3 +3386,33 @@ Started Phase A hardening from Issue #84 by delivering checklist item **A1 · C1
 ### Open Questions
 
 - None.
+
+---
+
+## Section 17: Issue #84 (A2/C3) Alignment Self-Compare Regression Guard (2026-04-30)
+
+Completed Phase A checklist item **A2 · C3** on branch `codex/c3-alignment-selfcompare`.
+
+### Completed
+
+- Added regression test in `tests/unit/test_agents.py`:
+  - `test_run_anchor_alignment_marks_suspected_mismatch_for_divergent_texts`
+- Test setup intentionally provides divergent values for:
+  - `job["_video_transcript_inline"]`
+  - `job["_transcript_text_inline"]`
+- Assertions verify:
+  - `consistency_method == "text_similarity"`
+  - verdict resolves to `suspected_mismatch`
+  - `transcript_media_consistency.verdict` is also `suspected_mismatch`
+
+### Validation
+
+- `cd backend && .venv/bin/pytest ../tests/unit/test_agents.py -k divergent_texts -x --tb=short` ✅ (1 passed)
+
+### Decisions
+
+- No patch to `backend/app/agents/alignment.py`; regression test confirms existing behavior is correct and the reported self-compare concern is a false alarm for current fields.
+
+### Open Questions
+
+- None.
