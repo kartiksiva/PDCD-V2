@@ -3354,3 +3354,35 @@ Reconfigured local runtime configuration to default to PostgreSQL while preservi
 ### Open Questions
 
 - None.
+
+---
+
+## Section 16: Issue #84 (A1/C1) Export Path Traversal Guard (2026-04-30)
+
+Started Phase A hardening from Issue #84 by delivering checklist item **A1 · C1**.
+
+### Completed
+
+- Updated `backend/app/export_builder.py` to reject unsafe frame `storage_key` values when building `evidence_bundle.frame_captures`:
+  - Rejects absolute paths.
+  - Rejects `.` / `..` path segments (including backslash variants).
+- Removed direct filesystem fallback reads (`open(storage_key, "rb")`) from:
+  - `build_export_pdf(...)`
+  - `build_export_docx(...)`
+- Result: export rendering now uses only bytes pre-resolved by storage helpers (`frame_bytes_map` path), eliminating direct local-path reads from export payload values.
+- Added regression test in `tests/unit/test_export_builder.py`:
+  - `test_frame_captures_reject_unsafe_storage_keys`
+  - Verifies only safe storage keys are retained and linked.
+
+### Validation
+
+- `cd backend && .venv/bin/pytest ../tests/unit/test_export_builder.py -x --tb=short` ✅ (49 passed)
+- `cd backend && .venv/bin/pytest ../tests/integration/test_exports.py -x --tb=short` ✅ (8 passed)
+
+### Decisions
+
+- Kept the fix scoped to A1/C1 in Issue #84; no behavior changes to unrelated export or worker flows.
+
+### Open Questions
+
+- None.
