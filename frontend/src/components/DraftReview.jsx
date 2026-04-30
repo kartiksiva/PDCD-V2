@@ -218,6 +218,7 @@ export default function DraftReview({ job, onFinalized }) {
   const [speakerResolutions, setSpeakerResolutions] = useState(() => job?.speaker_resolutions ?? {})
   const [saveState, setSaveState] = useState('idle')
   const saveTimer = useRef(null)
+  const inFlightSaveRef = useRef(Promise.resolve())
 
   useEffect(() => {
     setEditedDraft(job?.draft ?? {})
@@ -229,19 +230,30 @@ export default function DraftReview({ job, onFinalized }) {
 
   useEffect(() => () => clearTimeout(saveTimer.current), [])
 
+  async function persistDraft(nextDraft, nextResolutions) {
+    const result = await saveDraft(job.job_id, nextDraft, nextResolutions ?? speakerResolutions)
+    setEditedDraft(result.draft ?? nextDraft)
+    setLiveFlags(result.review_notes?.flags ?? [])
+    setSpeakerResolutions(result.speaker_resolutions ?? (nextResolutions ?? speakerResolutions))
+    setSaveState('saved')
+    return result
+  }
+
+  function queueSave(nextDraft, nextResolutions) {
+    const chained = inFlightSaveRef.current
+      .catch(() => {})
+      .then(() => persistDraft(nextDraft, nextResolutions))
+    inFlightSaveRef.current = chained
+    return chained
+  }
+
   function scheduleSave(nextDraft, nextResolutions) {
     clearTimeout(saveTimer.current)
     setSaveState('saving')
-    saveTimer.current = setTimeout(async () => {
-      try {
-        const result = await saveDraft(job.job_id, nextDraft, nextResolutions ?? speakerResolutions)
-        setEditedDraft(result.draft ?? nextDraft)
-        setLiveFlags(result.review_notes?.flags ?? [])
-        setSpeakerResolutions(result.speaker_resolutions ?? (nextResolutions ?? speakerResolutions))
-        setSaveState('saved')
-      } catch {
+    saveTimer.current = setTimeout(() => {
+      queueSave(nextDraft, nextResolutions).catch(() => {
         setSaveState('error')
-      }
+      })
     }, 1500)
   }
 
@@ -269,7 +281,9 @@ export default function DraftReview({ job, onFinalized }) {
     setError(null)
     setLoading(true)
     try {
-      const saved = await saveDraft(job.job_id, editedDraft, speakerResolutions)
+      await inFlightSaveRef.current.catch(() => {})
+      setSaveState('saving')
+      const saved = await queueSave(editedDraft, speakerResolutions)
       setEditedDraft(saved.draft ?? editedDraft)
       setLiveFlags(saved.review_notes?.flags ?? [])
       setSpeakerResolutions(saved.speaker_resolutions ?? speakerResolutions)

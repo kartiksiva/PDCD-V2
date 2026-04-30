@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict
 from uuid import uuid4
 
-from azure.servicebus import ServiceBusMessage
+from azure.servicebus import AutoLockRenewer, ServiceBusMessage
 from azure.servicebus.exceptions import (
     MessageLockLostError,
     ServiceBusConnectionError as SBConnectionError,
@@ -55,6 +55,7 @@ PHASE_NEXT = {
 PHASE_ORDER = ["extracting", "processing", "reviewing"]
 
 MAX_MESSAGE_BODY_BYTES = 10 * 1024 * 1024  # 10 MB
+DEFAULT_LOCK_RENEWAL_SECONDS = 900
 
 _TERMINAL_STATUSES = {
     JobStatus.COMPLETED.value,
@@ -344,6 +345,13 @@ def _receive_wait_seconds() -> int:
     return 5
 
 
+def _message_lock_renewal_seconds() -> int:
+    value = os.environ.get("PFCD_WORKER_LOCK_RENEWAL_SECONDS", str(DEFAULT_LOCK_RENEWAL_SECONDS)).strip()
+    if value.isdigit():
+        return max(60, min(int(value), 3600))
+    return DEFAULT_LOCK_RENEWAL_SECONDS
+
+
 def _idle_backoff_seconds(consecutive_empty_receives: int) -> float:
     if consecutive_empty_receives <= 0:
         return 0.0
@@ -365,13 +373,15 @@ def run() -> None:
     _health_server = _maybe_start_health_server()
     phase = _resolve_phase()
     receive_wait_seconds = _receive_wait_seconds()
+    lock_renewal_seconds = _message_lock_renewal_seconds()
     logger.info(
-        "Worker runtime OpenAI config: role=%s endpoint=%s chat_deployment=%s api_version=%s receive_wait=%ss",
+        "Worker runtime OpenAI config: role=%s endpoint=%s chat_deployment=%s api_version=%s receive_wait=%ss lock_renew=%ss",
         phase,
         os.environ.get("AZURE_OPENAI_ENDPOINT"),
         os.environ.get("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME"),
         os.environ.get("AZURE_OPENAI_API_VERSION"),
         receive_wait_seconds,
+        lock_renewal_seconds,
     )
     worker = Worker(phase)
     if not worker.orchestrator.enabled:
@@ -392,56 +402,65 @@ def run() -> None:
                 consecutive_connection_errors = 0
                 logger.info("Worker listening on phase %s", phase)
                 consecutive_empty_receives = 0
-                while True:
-                    try:
-                        messages = receiver.receive_messages(
-                            max_message_count=1,
-                            max_wait_time=receive_wait_seconds,
-                        )
-                    except SBConnectionError as exc:
-                        consecutive_connection_errors += 1
-                        delay = _connection_backoff_seconds(consecutive_connection_errors)
-                        logger.warning(
-                            "Service Bus receive error on phase %s (consecutive=%d); "
-                            "recreating receiver in %.1fs: %s",
-                            phase,
-                            consecutive_connection_errors,
-                            delay,
-                            exc,
-                        )
-                        time.sleep(delay)
-                        break
-                    if not messages:
-                        consecutive_empty_receives += 1
-                        delay = _idle_backoff_seconds(consecutive_empty_receives)
-                        if delay > 0:
-                            time.sleep(delay)
-                        continue
-                    consecutive_empty_receives = 0
-                    for message in messages:
+                with AutoLockRenewer() as lock_renewer:
+                    while True:
                         try:
-                            body = _read_message_body(message.body)
-                            worker.handle_message(message, body)
-                            try:
-                                receiver.complete_message(message)
-                            except MessageLockLostError:
-                                logger.warning(
-                                    "Message lock expired before complete; message will be retried by Service Bus"
+                                messages = receiver.receive_messages(
+                                    max_message_count=1,
+                                    max_wait_time=receive_wait_seconds,
                                 )
-                        except json.JSONDecodeError as exc:
-                            logger.error("Unparseable message body; dead-lettering: %s", exc)
+                        except SBConnectionError as exc:
+                            consecutive_connection_errors += 1
+                            delay = _connection_backoff_seconds(consecutive_connection_errors)
+                            logger.warning(
+                                "Service Bus receive error on phase %s (consecutive=%d); "
+                                "recreating receiver in %.1fs: %s",
+                                phase,
+                                consecutive_connection_errors,
+                                delay,
+                                exc,
+                            )
+                            time.sleep(delay)
+                            break
+                        if not messages:
+                            consecutive_empty_receives += 1
+                            delay = _idle_backoff_seconds(consecutive_empty_receives)
+                            if delay > 0:
+                                time.sleep(delay)
+                            continue
+                        consecutive_empty_receives = 0
+                        for message in messages:
                             try:
-                                receiver.dead_letter_message(message, reason="UnparseableBody")
-                            except MessageLockLostError:
-                                logger.warning("Message lock expired before dead-letter")
-                        except Exception as exc:
-                            logger.error("Unhandled error processing message; abandoning: %s", exc, exc_info=True)
-                            try:
-                                receiver.abandon_message(message)
-                            except MessageLockLostError:
-                                logger.warning(
-                                    "Message lock expired before abandon; Service Bus will retry"
+                                lock_renewer.register(
+                                    receiver,
+                                    message,
+                                    max_lock_renewal_duration=lock_renewal_seconds,
                                 )
+                            except Exception as exc:
+                                logger.warning("Failed to register lock renewer for message: %s", exc)
+                            try:
+                                body = _read_message_body(message.body)
+                                worker.handle_message(message, body)
+                                try:
+                                    receiver.complete_message(message)
+                                except MessageLockLostError:
+                                    logger.warning(
+                                        "Message lock expired before complete; message will be retried by Service Bus"
+                                    )
+                            except json.JSONDecodeError as exc:
+                                logger.error("Unparseable message body; dead-lettering: %s", exc)
+                                try:
+                                    receiver.dead_letter_message(message, reason="UnparseableBody")
+                                except MessageLockLostError:
+                                    logger.warning("Message lock expired before dead-letter")
+                            except Exception as exc:
+                                logger.error("Unhandled error processing message; abandoning: %s", exc, exc_info=True)
+                                try:
+                                    receiver.abandon_message(message)
+                                except MessageLockLostError:
+                                    logger.warning(
+                                        "Message lock expired before abandon; Service Bus will retry"
+                                    )
         except SBConnectionError as exc:
             consecutive_connection_errors += 1
             delay = _connection_backoff_seconds(consecutive_connection_errors)

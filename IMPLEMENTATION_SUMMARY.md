@@ -3509,3 +3509,58 @@ Completed Phase A checklist item **A5 · H5** on branch `codex/h5-ffmpeg-timeout
 ### Open Questions
 
 - None.
+
+---
+
+## Section 21: Issue #84 Remaining Set (A6/H1, A7/H6, A8/H7, A9/H13) (2026-04-30)
+
+Completed the remaining Phase A checklist items in one combined branch: `codex/issue-84-rest`.
+
+### Completed
+
+- **A6/H1 — Service Bus lock-renewal guard (`backend/app/workers/runner.py`)**
+  - Added `AutoLockRenewer` registration for each received message before phase processing.
+  - Added `PFCD_WORKER_LOCK_RENEWAL_SECONDS` (default `900`, bounded to `60..3600`).
+  - Worker runtime log now reports lock-renew duration.
+  - Added regression test in `tests/unit/test_worker.py`:
+    - `test_run_registers_autolock_renewer_for_each_message`
+
+- **A7/H6 — 429/5xx bounded retry for transcription and vision**
+  - `backend/app/agents/transcription.py`:
+    - Added bounded backoff retries (1/2/4s) for HTTP `429/5xx`.
+    - Added `TranscriptionQuotaError` when `429` persists after retries.
+    - Added shared post helper to reopen file handles per attempt safely.
+  - `backend/app/agents/vision.py`:
+    - Added bounded backoff retries (1/2/4s) for HTTP `429/5xx` on both OpenAI and Azure calls.
+    - Added `VisionQuotaError` when `429` persists after retries.
+    - Added explicit quota-limited warning path in `analyze_frames(...)`.
+  - Added tests:
+    - New file `tests/unit/test_transcription.py` (retry success, retry exhaustion, quota-distinct surfacing)
+    - Extended `tests/unit/test_vision.py` (retry success and quota exhaustion)
+
+- **A8/H7 — finalize/save race in frontend (`frontend/src/components/DraftReview.jsx`)**
+  - Added `inFlightSaveRef` promise chain to serialize saves.
+  - Added `persistDraft(...)` + `queueSave(...)` so save operations do not overlap.
+  - `handleFinalize()` now awaits any in-flight save before executing the final save+finalize sequence.
+  - Debounced save callback now feeds into the shared in-flight queue.
+
+- **A9/H13 — bootstrap vestigial vars (`infra/dev-bootstrap.sh`)**
+  - Removed undefined SQL-era variable usage under `set -u`.
+  - Replaced with PostgreSQL secret writes:
+    - `postgres-server-name`
+    - `postgres-db-name`
+
+### Validation
+
+- `cd backend && .venv/bin/pytest ../tests/unit/test_worker.py -x --tb=short` ✅ (27 passed)
+- `cd backend && .venv/bin/pytest ../tests/unit/test_vision.py -x --tb=short` ✅ (12 passed)
+- `cd backend && .venv/bin/pytest ../tests/unit/test_transcription.py -x --tb=short` ✅ (3 passed)
+- `cd frontend && npm run build` ✅
+
+### Decisions
+
+- Combined remaining Issue #84 checklist items into one delivery branch/PR per user direction, while preserving item-level test coverage and file-local scope.
+
+### Open Questions
+
+- None.

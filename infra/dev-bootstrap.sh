@@ -190,8 +190,8 @@ ensure_key_vault() {
   az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "service-bus-queue-extracting" --value "$SERVICE_BUS_QUEUE_EXTRACTING" --output none
   az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "service-bus-queue-processing" --value "$SERVICE_BUS_QUEUE_PROCESSING" --output none
   az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "service-bus-queue-reviewing" --value "$SERVICE_BUS_QUEUE_REVIEWING" --output none
-  az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "sql-server-name" --value "$SQL_SERVER_NAME" --output none
-  az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "sql-db-name" --value "$SQL_DATABASE_NAME" --output none
+  az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "postgres-server-name" --value "$POSTGRES_SERVER_NAME" --output none
+  az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "postgres-db-name" --value "$POSTGRES_DATABASE_NAME" --output none
 
   local storage_conn
   storage_conn="$(az storage account show-connection-string --resource-group "$RESOURCE_GROUP" --name "$STORAGE_ACCOUNT" --query connectionString -o tsv)"
