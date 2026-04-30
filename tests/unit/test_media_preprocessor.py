@@ -100,6 +100,32 @@ def test_extract_keyframes_returns_list_of_tuples(monkeypatch):
     ]
 
 
+def test_ffmpeg_calls_include_timeout(monkeypatch, tmp_path):
+    import app.agents.media_preprocessor as media_preprocessor
+
+    calls: list[dict] = []
+
+    def _run(*args, **kwargs):
+        calls.append(kwargs)
+        return subprocess.CompletedProcess(args[0], 0)
+
+    monkeypatch.setattr(media_preprocessor.subprocess, "run", _run)
+    monkeypatch.setattr(
+        media_preprocessor.os.path,
+        "getsize",
+        lambda _path: media_preprocessor._MAX_TRANSCRIPTION_BYTES + 1,
+    )
+    monkeypatch.setattr(media_preprocessor.glob, "glob", lambda _pattern: [])
+
+    media_preprocessor.is_ffmpeg_available()
+    media_preprocessor.extract_audio_track("/tmp/demo.mp4", str(tmp_path))
+    media_preprocessor.split_audio_chunks("/tmp/demo.mp3")
+    media_preprocessor.extract_keyframes("/tmp/demo.mp4", str(tmp_path))
+
+    assert len(calls) == 4
+    assert all(call.get("timeout") == media_preprocessor._FFMPEG_TIMEOUT_SEC for call in calls)
+
+
 def test_transcribe_audio_blob_uses_preprocessor_for_large_file(monkeypatch, tmp_path):
     from app.agents.transcription import transcribe_audio_blob
 

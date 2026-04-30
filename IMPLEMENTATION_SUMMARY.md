@@ -3476,3 +3476,36 @@ Completed Phase A checklist item **A3 · C2** on branch `codex/c2-evidence-video
 ### Open Questions
 
 - None.
+
+---
+
+## Section 20: Issue #84 (A5/H5) ffmpeg Timeout Hardening (2026-04-30)
+
+Completed Phase A checklist item **A5 · H5** on branch `codex/h5-ffmpeg-timeout`.
+
+### Completed
+
+- Updated `backend/app/agents/media_preprocessor.py`:
+  - Added `_FFMPEG_TIMEOUT_SEC` from env (`PFCD_FFMPEG_TIMEOUT_SEC`, default `120`).
+  - Added `timeout=_FFMPEG_TIMEOUT_SEC` to all ffmpeg `subprocess.run(...)` calls:
+    - `is_ffmpeg_available()`
+    - `extract_audio_track(...)`
+    - `split_audio_chunks(...)`
+    - `extract_keyframes(...)`
+  - `is_ffmpeg_available()` now treats `subprocess.TimeoutExpired` as unavailable (`False`).
+- Added regression test in `tests/unit/test_media_preprocessor.py`:
+  - `test_ffmpeg_calls_include_timeout`
+  - Verifies all four ffmpeg subprocess invocations carry the timeout kwarg.
+
+### Validation
+
+- `cd backend && .venv/bin/pytest ../tests/unit/test_media_preprocessor.py -x --tb=short` ✅ (10 passed)
+- `cd backend && .venv/bin/pytest ../tests/unit/test_adapters.py -x --tb=short` ✅ (48 passed)
+
+### Decisions
+
+- Kept timeout policy centralized via a single env-backed constant to avoid diverging limits across media preprocessing steps.
+
+### Open Questions
+
+- None.
