@@ -590,22 +590,28 @@ def build_export_pdf(
         pdf.ln(2)
         _row(f"Note: {note}")
 
+    _MAX_FRAMES = 10
+    _MAX_FRAME_BYTES = 5 * 1024 * 1024  # 5 MB per frame
+
     frame_captures = evidence_bundle.get("frame_captures") or []
     if frame_captures:
         pdf.ln(3)
         _heading("Frame Captures", bold=True)
-        for capture in frame_captures:
+        for capture in frame_captures[:_MAX_FRAMES]:
             key = capture.get("storage_key", "")
             timestamp_sec = capture.get("timestamp_sec", 0.0)
             image_bytes = (frame_bytes_map or {}).get(key)
             if image_bytes:
-                try:
-                    pdf.image(io.BytesIO(image_bytes), w=120)
-                    pdf.set_font("Helvetica", size=8)
-                    pdf.cell(0, 5, f"Frame @ {timestamp_sec:.1f}s — {key}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                    pdf.set_font("Helvetica", size=11)
-                except Exception:
-                    _row(f"Frame @ {timestamp_sec:.1f}s (image unreadable): {key}")
+                if len(image_bytes) > _MAX_FRAME_BYTES:
+                    _row(f"Frame @ {timestamp_sec:.1f}s (skipped — image too large): {key}")
+                else:
+                    try:
+                        pdf.image(io.BytesIO(image_bytes), w=120)
+                        pdf.set_font("Helvetica", size=8)
+                        pdf.cell(0, 5, f"Frame @ {timestamp_sec:.1f}s — {key}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                        pdf.set_font("Helvetica", size=11)
+                    except Exception:
+                        _row(f"Frame @ {timestamp_sec:.1f}s (image unreadable): {key}")
             else:
                 pdf.set_font("Helvetica", size=8)
                 pdf.cell(
@@ -887,19 +893,25 @@ def build_export_docx(
     else:
         doc.add_paragraph("No linked evidence anchors found.")
 
+    _MAX_FRAMES = 10
+    _MAX_FRAME_BYTES = 5 * 1024 * 1024  # 5 MB per frame
+
     frame_captures = evidence_bundle.get("frame_captures") or []
     if frame_captures:
         doc.add_heading("Frame Captures", level=1)
-        for capture in frame_captures:
+        for capture in frame_captures[:_MAX_FRAMES]:
             key = capture.get("storage_key", "")
             timestamp_sec = capture.get("timestamp_sec", 0.0)
             image_bytes = (frame_bytes_map or {}).get(key)
             if image_bytes:
-                try:
-                    doc.add_picture(io.BytesIO(image_bytes))
-                    doc.add_paragraph(f"Frame @ {timestamp_sec:.1f}s — {key}")
-                except Exception:
-                    doc.add_paragraph(f"Frame @ {timestamp_sec:.1f}s (image unreadable): {key}")
+                if len(image_bytes) > _MAX_FRAME_BYTES:
+                    doc.add_paragraph(f"Frame @ {timestamp_sec:.1f}s (skipped — image too large): {key}")
+                else:
+                    try:
+                        doc.add_picture(io.BytesIO(image_bytes))
+                        doc.add_paragraph(f"Frame @ {timestamp_sec:.1f}s — {key}")
+                    except Exception:
+                        doc.add_paragraph(f"Frame @ {timestamp_sec:.1f}s (image unreadable): {key}")
             else:
                 doc.add_paragraph(f"Frame @ {timestamp_sec:.1f}s: {key} (not available)")
 
