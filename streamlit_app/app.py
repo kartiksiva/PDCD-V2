@@ -1,4 +1,5 @@
 import json
+import math
 import mimetypes
 import os
 import tempfile
@@ -68,6 +69,8 @@ def init_state() -> None:
     st.session_state.setdefault("api_base", os.getenv("API_BASE", "http://127.0.0.1:8000"))
     st.session_state.setdefault("api_key", os.getenv("PFCD_API_KEY", ""))
     st.session_state.setdefault("current_job", None)
+    st.session_state.setdefault("api_base_input", st.session_state["api_base"])
+    st.session_state.setdefault("api_key_input", st.session_state["api_key"])
 
 
 def infer_source_type(name: str, mime_type: str) -> str:
@@ -95,15 +98,20 @@ def render_jobs_tab() -> None:
     st.subheader("Jobs")
 
     left, mid, right = st.columns([1, 1, 3])
-    if left.button("Refresh", use_container_width=True):
+    if left.button("Refresh", key="jobs_refresh", use_container_width=True):
         st.rerun()
-    if mid.button("New Job", use_container_width=True):
+    if mid.button("New Job", key="jobs_new_job", use_container_width=True):
         st.session_state["current_job"] = None
         st.rerun()
 
     try:
         payload = list_jobs(api_base(), api_key())
-        jobs = payload.get("jobs", payload if isinstance(payload, list) else [])
+        if isinstance(payload, dict):
+            jobs = payload.get("jobs", [])
+        elif isinstance(payload, list):
+            jobs = payload
+        else:
+            jobs = []
     except Exception as exc:
         st.error(f"Failed to list jobs: {exc}")
         return
@@ -132,7 +140,7 @@ def render_jobs_tab() -> None:
 
     st.dataframe(pd.DataFrame(df_rows), use_container_width=True)
     selected_job_id = st.selectbox("Open job", options=[r["job_id"] for r in df_rows], index=0)
-    if st.button("Open Job", use_container_width=True):
+    if st.button("Open Job", key="jobs_open_job", use_container_width=True):
         try:
             st.session_state["current_job"] = get_job(api_base(), api_key(), selected_job_id)
             st.success(f"Loaded {selected_job_id}")
@@ -187,7 +195,7 @@ def render_new_job_tab() -> None:
         if recording_markers.strip():
             teams_metadata["recording_markers"] = json.loads(recording_markers)
 
-    if st.button("Create Job", type="primary", use_container_width=True):
+    if st.button("Create Job", key="new_create_job", type="primary", use_container_width=True):
         if not uploads:
             st.warning("Upload at least one file.")
             return
@@ -234,7 +242,7 @@ def render_new_job_tab() -> None:
                     f"Estimated profile={create_res.get('cost_estimate', {}).get('profile', profile)}, "
                     f"cap=${create_res.get('cost_estimate', {}).get('cost_cap_usd', 'n/a')}."
                 )
-                if st.button("Confirm cost and start", use_container_width=True):
+                if st.button("Confirm cost and start", key="new_confirm_cost", use_container_width=True):
                     confirmed = confirm_cost(api_base(), api_key(), create_res["job_id"])
                     st.session_state["current_job"] = get_job(api_base(), api_key(), confirmed["job_id"])
                     st.success(f"Job started: {confirmed['job_id']}")
@@ -262,12 +270,12 @@ def render_status_tab() -> None:
 
     job_id = job["job_id"]
     refresh, simulate = st.columns(2)
-    if refresh.button("Refresh", use_container_width=True):
+    if refresh.button("Refresh", key="status_refresh", use_container_width=True):
         try:
             st.session_state["current_job"] = get_job(api_base(), api_key(), job_id)
         except Exception as exc:
             st.error(f"Refresh failed: {exc}")
-    if simulate.button("Dev Simulate", use_container_width=True):
+    if simulate.button("Dev Simulate", key="status_simulate", use_container_width=True):
         try:
             dev_simulate(api_base(), api_key(), job_id)
             st.session_state["current_job"] = get_job(api_base(), api_key(), job_id)
@@ -297,6 +305,41 @@ def _unknown_speakers(job: Dict[str, Any]) -> List[str]:
     return [s for s in speakers if isinstance(s, str) and "unknown" in s.lower()]
 
 
+def _sanitize_json_value(value: Any) -> Any:
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return None
+    if isinstance(value, dict):
+        return {k: _sanitize_json_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_json_value(v) for v in value]
+    return value
+
+
+def _coerce_pdd_types(edited_pdd: Dict[str, Any], original_pdd: Dict[str, Any]) -> Dict[str, Any]:
+    """Preserve list/dict-typed PDD fields to avoid stringifying structured data."""
+    coerced = dict(edited_pdd)
+    for key, original in (original_pdd or {}).items():
+        current = coerced.get(key)
+        if isinstance(current, str) and isinstance(original, (list, dict)):
+            raw = current.strip()
+            if not raw:
+                coerced[key] = original
+                continue
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                # If user didn't provide valid JSON, keep existing structured payload.
+                coerced[key] = original
+                continue
+            if isinstance(original, list) and isinstance(parsed, list):
+                coerced[key] = parsed
+            elif isinstance(original, dict) and isinstance(parsed, dict):
+                coerced[key] = parsed
+            else:
+                coerced[key] = original
+    return coerced
+
+
 def render_review_tab() -> None:
     st.subheader("Review")
     job = st.session_state.get("current_job")
@@ -309,7 +352,8 @@ def render_review_tab() -> None:
         return
 
     draft = dict(job.get("finalized_draft") or job.get("draft") or {})
-    pdd = dict(draft.get("pdd") or {})
+    original_pdd = dict(draft.get("pdd") or {})
+    pdd = dict(original_pdd)
     sipoc = list(draft.get("sipoc") or [])
     flags = ((job.get("review_notes") or {}).get("flags") or [])
 
@@ -346,20 +390,25 @@ def render_review_tab() -> None:
     edited = st.data_editor(pd.DataFrame(sipoc_rows), use_container_width=True, num_rows="dynamic")
     sipoc_payload: List[Dict[str, Any]] = []
     for row in edited.to_dict(orient="records"):
-        out = dict(row)
-        out["step_anchor"] = [x.strip() for x in str(out.get("step_anchor", "")).split(",") if x.strip()]
+        out = _sanitize_json_value(dict(row))
+        step_anchor_raw = out.get("step_anchor")
+        if isinstance(step_anchor_raw, list):
+            out["step_anchor"] = [str(x).strip() for x in step_anchor_raw if str(x).strip()]
+        else:
+            out["step_anchor"] = [x.strip() for x in str(step_anchor_raw or "").split(",") if x.strip()]
         sipoc_payload.append(out)
 
     left, right = st.columns(2)
-    if left.button("Save Draft", use_container_width=True):
+    if left.button("Save Draft", key="review_save_draft", use_container_width=True):
         try:
+            pdd_for_save = _coerce_pdd_types(pdd, original_pdd)
             save_res = save_draft(
                 api_base(),
                 api_key(),
                 job["job_id"],
                 {
                     "version": draft.get("version", 1),
-                    "pdd": pdd,
+                    "pdd": pdd_for_save,
                     "sipoc": sipoc_payload,
                     "assumptions": draft.get("assumptions", []),
                 },
@@ -370,15 +419,16 @@ def render_review_tab() -> None:
         except Exception as exc:
             st.error(f"Save failed: {exc}")
 
-    if right.button("Finalize", use_container_width=True, disabled=len(blockers) > 0):
+    if right.button("Finalize", key="review_finalize", use_container_width=True, disabled=len(blockers) > 0):
         try:
+            pdd_for_save = _coerce_pdd_types(pdd, original_pdd)
             save_draft(
                 api_base(),
                 api_key(),
                 job["job_id"],
                 {
                     "version": draft.get("version", 1),
-                    "pdd": pdd,
+                    "pdd": pdd_for_save,
                     "sipoc": sipoc_payload,
                     "assumptions": draft.get("assumptions", []),
                 },
@@ -398,6 +448,15 @@ def render_exports_tab() -> None:
         st.info("Open or create a job first.")
         return
 
+    # Keep exports metrics in sync with latest backend state (post-finalize).
+    try:
+        live_job = get_job(api_base(), api_key(), job["job_id"])
+        st.session_state["current_job"] = live_job
+        job = live_job
+    except Exception:
+        # Non-blocking: still allow download attempts with current in-memory state.
+        pass
+
     draft = (job.get("finalized_draft") or job.get("draft") or {})
     summary = draft.get("confidence_summary") or {}
     col1, col2, col3 = st.columns(3)
@@ -413,7 +472,14 @@ def render_exports_tab() -> None:
     ]:
         try:
             blob, filename = download_export(api_base(), api_key(), job["job_id"], fmt)
-            st.download_button(label, data=blob, file_name=filename, mime=mime, use_container_width=True)
+            st.download_button(
+                label,
+                data=blob,
+                file_name=filename,
+                mime=mime,
+                key=f"exports_download_{fmt}",
+                use_container_width=True,
+            )
         except Exception as exc:
             st.warning(f"{fmt.upper()} unavailable: {exc}")
 
@@ -423,8 +489,10 @@ def main() -> None:
     init_state()
 
     st.sidebar.header("Connection")
-    st.session_state["api_base"] = st.sidebar.text_input("API_BASE", value=st.session_state["api_base"])
-    st.session_state["api_key"] = st.sidebar.text_input("PFCD_API_KEY", value=st.session_state["api_key"], type="password")
+    st.sidebar.text_input("API_BASE", key="api_base_input")
+    st.sidebar.text_input("PFCD_API_KEY", key="api_key_input", type="password")
+    st.session_state["api_base"] = st.session_state.get("api_base_input", st.session_state["api_base"])
+    st.session_state["api_key"] = st.session_state.get("api_key_input", st.session_state["api_key"])
     job = st.session_state.get("current_job")
     st.sidebar.caption(f"Current job: {job.get('job_id') if job else 'none'}")
 
