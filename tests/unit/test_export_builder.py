@@ -265,9 +265,9 @@ class TestBuildExportMarkdown:
     def _bundle(self):
         return build_evidence_bundle(DRAFT_WITH_ANCHORS, JOB_WITH_SIGNALS)
 
-    def test_contains_sop_title(self):
+    def test_contains_pdd_title(self):
         md = build_export_markdown(DRAFT_WITH_ANCHORS, self._bundle())
-        assert "# Standard Operating Procedure (SOP)" in md
+        assert "# Process Definition Document" in md
 
     def test_contains_purpose_and_scope(self):
         md = build_export_markdown(DRAFT_WITH_ANCHORS, self._bundle())
@@ -303,6 +303,51 @@ class TestBuildExportMarkdown:
     def test_frame_captures_note_present(self):
         md = build_export_markdown(DRAFT_WITH_ANCHORS, self._bundle())
         assert "Frame captures" in md
+
+    def test_exceptions_table_uses_trigger_field(self):
+        draft = {
+            "pdd": {
+                "purpose": "p",
+                "scope": "s",
+                "steps": [],
+                "exceptions": [
+                    {
+                        "scenario": "Validation failed",
+                        "trigger": "Missing mandatory field",
+                        "action_required": "Request correction",
+                        "owner": "Analyst",
+                    }
+                ],
+            },
+            "sipoc": [],
+        }
+        md = build_export_markdown(draft, build_evidence_bundle(draft, JOB_MINIMAL))
+        assert "Missing mandatory field" in md
+
+    def test_raci_uses_approval_matrix_for_non_actor_roles(self):
+        draft = {
+            "pdd": {
+                "purpose": "p",
+                "scope": "s",
+                "steps": [
+                    {
+                        "id": "step-01",
+                        "summary": "Capture request",
+                        "actor": "Analyst",
+                        "source_anchors": [{"anchor": "00:00:01-00:00:05", "confidence": 0.9}],
+                    }
+                ],
+                "roles": ["Analyst", "Manager", "Compliance"],
+                "exceptions": [],
+            },
+            "approval_matrix": [
+                {"role": "Manager", "responsibility": "A"},
+                {"role": "Compliance", "responsibility": "C"},
+            ],
+            "sipoc": [],
+        }
+        md = build_export_markdown(draft, build_evidence_bundle(draft, JOB_MINIMAL))
+        assert "| Capture request | R | A | C |" in md
 
     def test_empty_draft_returns_fallback(self):
         md = build_export_markdown({}, build_evidence_bundle({}, {}))
@@ -415,9 +460,79 @@ class TestBuildExportDocx:
         result = build_export_docx(DRAFT_WITH_ANCHORS, self._bundle(), "job-123")
         doc = Document(io.BytesIO(result))
         full_text = "\n".join(p.text for p in doc.paragraphs)
-        assert "Standard Operating Procedure (SOP)" in full_text or any(
-            "Standard Operating Procedure (SOP)" in para.text for para in doc.paragraphs
+        assert "Process Definition Document" in full_text or any(
+            "Process Definition Document" in para.text for para in doc.paragraphs
         )
+
+    def test_docx_exceptions_table_uses_trigger_field(self):
+        import io
+        from docx import Document
+
+        draft = {
+            "pdd": {
+                "purpose": "p",
+                "scope": "s",
+                "steps": [],
+                "exceptions": [
+                    {
+                        "scenario": "Validation failed",
+                        "trigger": "Missing mandatory field",
+                        "action_required": "Request correction",
+                        "owner": "Analyst",
+                    }
+                ],
+            },
+            "sipoc": [],
+        }
+        result = build_export_docx(draft, build_evidence_bundle(draft, JOB_MINIMAL), "job-1")
+        doc = Document(io.BytesIO(result))
+        exception_table = None
+        for table in doc.tables:
+            if table.rows and table.rows[0].cells and table.rows[0].cells[0].text == "Exception Scenario":
+                exception_table = table
+                break
+        assert exception_table is not None
+        assert exception_table.rows[1].cells[1].text == "Missing mandatory field"
+
+    def test_docx_raci_uses_approval_matrix_for_non_actor_roles(self):
+        import io
+        from docx import Document
+
+        draft = {
+            "pdd": {
+                "purpose": "p",
+                "scope": "s",
+                "steps": [
+                    {
+                        "id": "step-01",
+                        "summary": "Capture request",
+                        "actor": "Analyst",
+                        "source_anchors": [{"anchor": "00:00:01-00:00:05", "confidence": 0.9}],
+                    }
+                ],
+                "roles": ["Analyst", "Manager", "Compliance"],
+                "exceptions": [],
+            },
+            "approval_matrix": [
+                {"role": "Manager", "responsibility": "A"},
+                {"role": "Compliance", "responsibility": "C"},
+            ],
+            "sipoc": [],
+        }
+        result = build_export_docx(draft, build_evidence_bundle(draft, JOB_MINIMAL), "job-raci")
+        doc = Document(io.BytesIO(result))
+        raci_table = None
+        for table in doc.tables:
+            if table.rows and table.rows[0].cells and table.rows[0].cells[0].text == "Task":
+                raci_table = table
+                break
+        assert raci_table is not None
+        assert [cell.text for cell in raci_table.rows[1].cells] == [
+            "Capture request",
+            "R",
+            "A",
+            "C",
+        ]
 
     def test_contains_sipoc_table(self):
         import io

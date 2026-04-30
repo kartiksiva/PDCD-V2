@@ -242,6 +242,11 @@ def build_export_markdown(draft: Dict[str, Any], evidence_bundle: Dict[str, Any]
     sipoc_rows = draft.get("sipoc") or []
     roles = _derive_roles(draft)
     approval_rows = draft.get("approval_matrix") or []
+    approval_lookup = {
+        str(entry.get("role") or "").strip(): str(entry.get("responsibility") or "—").strip() or "—"
+        for entry in approval_rows
+        if isinstance(entry, dict)
+    }
     controls = pdd.get("process_controls") or draft.get("process_controls") or []
     llm_semantic_flags = evidence_bundle.get("llm_semantic_flags") or []
     exceptions = pdd.get("exceptions") or []
@@ -252,7 +257,7 @@ def build_export_markdown(draft: Dict[str, Any], evidence_bundle: Dict[str, Any]
     )
 
     parts = [
-        "# Standard Operating Procedure (SOP)",
+        "# Process Definition Document",
         "",
         f"## {process_name}",
         f"**Function:** {_needs_review(pdd.get('function'))}",
@@ -307,10 +312,8 @@ def build_export_markdown(draft: Dict[str, Any], evidence_bundle: Dict[str, Any]
         for role in roles:
             if actor and role == actor:
                 row.append("R")
-            elif actor:
-                row.append("—")
             else:
-                row.append("Needs Review")
+                row.append(approval_lookup.get(role, "—"))
         parts.append("| " + " | ".join(row) + " |")
 
     if not steps:
@@ -384,7 +387,7 @@ def build_export_markdown(draft: Dict[str, Any], evidence_bundle: Dict[str, Any]
                     + " | ".join(
                         [
                             _needs_review(exc.get("scenario")),
-                            _needs_review(exc.get("description")),
+                            _needs_review(exc.get("trigger")),
                             _needs_review(exc.get("action_required")),
                             _needs_review(exc.get("owner")),
                         ]
@@ -671,6 +674,11 @@ def build_export_docx(
     steps = pdd.get("steps") or []
     roles = _derive_roles(draft)
     sipoc = draft.get("sipoc") or []
+    approval_lookup = {
+        str(entry.get("role") or "").strip(): str(entry.get("responsibility") or "—").strip() or "—"
+        for entry in (draft.get("approval_matrix") or [])
+        if isinstance(entry, dict)
+    }
     controls = pdd.get("process_controls") or draft.get("process_controls") or []
     llm_semantic_flags = evidence_bundle.get("llm_semantic_flags") or []
     exceptions = pdd.get("exceptions") or []
@@ -682,7 +690,7 @@ def build_export_docx(
         pdd.get("process_name") or draft.get("subject_process") or pdd.get("purpose")
     )
 
-    doc.add_heading("Standard Operating Procedure (SOP)", level=0)
+    doc.add_heading("Process Definition Document", level=0)
     doc.add_heading(process_name, level=1)
     doc.add_paragraph(f"Function: {_needs_review(pdd.get('function'))}")
     doc.add_paragraph(f"Sub-Function: {_needs_review(pdd.get('sub_function'))}")
@@ -745,10 +753,8 @@ def build_export_docx(
             for i, role in enumerate(roles, start=1):
                 if actor and role == actor:
                     row[i].text = "R"
-                elif actor:
-                    row[i].text = "—"
                 else:
-                    row[i].text = "Needs Review"
+                    row[i].text = approval_lookup.get(role, "—")
     else:
         row = raci.add_row().cells
         row[0].text = "Needs Review"
@@ -808,7 +814,7 @@ def build_export_docx(
             row = ex_table.add_row().cells
             if isinstance(exc, dict):
                 row[0].text = _needs_review(exc.get("scenario"))
-                row[1].text = _needs_review(exc.get("description"))
+                row[1].text = _needs_review(exc.get("trigger"))
                 row[2].text = _needs_review(exc.get("action_required"))
                 row[3].text = _needs_review(exc.get("owner"))
             else:

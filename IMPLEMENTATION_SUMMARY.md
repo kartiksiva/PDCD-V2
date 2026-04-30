@@ -3750,3 +3750,38 @@ Branch: `codex/issue-97-llm-semantic-review` → PR #98 (open)
 - Validation run:
   - `backend/.venv/bin/python3.12 -m pytest tests/unit/test_llm_reviewer.py tests/unit/test_worker.py tests/unit/test_export_builder.py -q` → `85 passed`
   - `backend/.venv/bin/python3.12 -m pytest tests/unit/test_job_logic.py -q` → `18 passed`
+
+---
+
+## Section 26 — Issue #99 Export Quality Fixes (PR #100, 2026-05-01)
+
+Branch: `codex/issue-99-export-quality-fixes` → PR #100 (open)
+
+### Title consistency (Markdown/DOCX)
+- `backend/app/export_builder.py`:
+  - Markdown title changed from `# Standard Operating Procedure (SOP)` to `# Process Definition Document`.
+  - DOCX top heading changed from `Standard Operating Procedure (SOP)` to `Process Definition Document`.
+- Aligns Markdown + DOCX with existing PDF heading terminology.
+
+### Exception description field fix
+- `backend/app/export_builder.py`:
+  - Exception table “Description” now renders `exc["trigger"]` (schema-accurate) instead of `exc["description"]`.
+  - Applied in both Markdown and DOCX exception tables.
+
+### RACI per-task A/C/I mapping
+- `backend/app/export_builder.py`:
+  - Added `approval_lookup` from `draft["approval_matrix"]`.
+  - Per-step RACI row logic now renders:
+    - `R` for step actor role,
+    - `A/C/I` from `approval_matrix` for non-actor roles,
+    - fallback `—` when role is not present in approval matrix.
+  - Applied in both Markdown and DOCX RACI section (`2.5`).
+
+### Tests
+- `tests/unit/test_export_builder.py` updated with focused coverage:
+  - Markdown PDD title assertion.
+  - DOCX PDD title assertion.
+  - Markdown/DOCX exception table trigger rendering assertions.
+  - Markdown/DOCX RACI approval-matrix mapping assertions.
+- Validation run:
+  - `backend/.venv/bin/python3.12 -m pytest tests/unit/test_export_builder.py -q` → `57 passed`
