@@ -3389,6 +3389,36 @@ Started Phase A hardening from Issue #84 by delivering checklist item **A1 · C1
 
 ---
 
+## Section 19: Issue #84 (A4/H4) Kernel Cache / Event Loop Safety (2026-04-30)
+
+Completed Phase A checklist item **A4 · H4** on branch `codex/h4-kernel-cache-loop`.
+
+### Completed
+
+- Updated `backend/app/agents/kernel_factory.py`:
+  - Removed `@lru_cache` usage from:
+    - `_cached_kernel_azure(...)`
+    - `_cached_kernel_openai(...)`
+  - Removed now-unused `lru_cache` import.
+- Added regression guard in `tests/unit/test_kernel_factory.py`:
+  - `test_kernel_helpers_are_not_lru_cached`
+  - Verifies helper functions are not cache-decorated.
+
+### Validation
+
+- `cd backend && .venv/bin/pytest ../tests/unit/test_kernel_factory.py -x --tb=short` ✅ (5 passed)
+- `cd backend && .venv/bin/pytest ../tests/unit/test_agents.py -x --tb=short` ✅ (74 passed)
+
+### Decisions
+
+- Kept function names unchanged for compatibility with existing call sites and tests; only cache behavior was removed.
+
+### Open Questions
+
+- None.
+
+---
+
 ## Section 17: Issue #84 (A2/C3) Alignment Self-Compare Regression Guard (2026-04-30)
 
 Completed Phase A checklist item **A2 · C3** on branch `codex/c3-alignment-selfcompare`.

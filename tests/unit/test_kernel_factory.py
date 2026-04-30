@@ -7,6 +7,11 @@ from unittest.mock import patch
 import app.agents.kernel_factory as kernel_factory
 
 
+def test_kernel_helpers_are_not_lru_cached():
+    assert not hasattr(kernel_factory._cached_kernel_azure, "cache_info")
+    assert not hasattr(kernel_factory._cached_kernel_openai, "cache_info")
+
+
 def test_get_kernel_uses_default_api_version(monkeypatch):
     endpoint = "https://example.openai.azure.com/"
     monkeypatch.delenv("PFCD_PROVIDER", raising=False)
