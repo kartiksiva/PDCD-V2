@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-from functools import lru_cache
 
 from app.job_logic import _provider_name
 
@@ -13,7 +12,6 @@ logger = logging.getLogger(__name__)
 _DEFAULT_AZURE_OPENAI_API_VERSION = "2024-10-21"
 
 
-@lru_cache(maxsize=8)
 def _cached_kernel_azure(endpoint: str, deployment: str, api_version: str):
     from azure.identity import DefaultAzureCredential, get_bearer_token_provider
     from semantic_kernel import Kernel
@@ -35,7 +33,6 @@ def _cached_kernel_azure(endpoint: str, deployment: str, api_version: str):
     return kernel
 
 
-@lru_cache(maxsize=8)
 def _cached_kernel_openai(api_key: str, model: str):
     from semantic_kernel import Kernel
     from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion
