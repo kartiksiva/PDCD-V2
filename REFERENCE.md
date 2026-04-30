@@ -150,6 +150,7 @@ cd backend && .venv/bin/alembic upgrade head
 | `PFCD_CLEANUP_INTERVAL_SECONDS` | Cleanup worker poll interval | `300` |
 | `PFCD_JOB_TTL_DAYS` | Job retention window before expiry/cleanup | `7` |
 | `PFCD_LLM_TIMEOUT_SECONDS` | Max seconds allowed for a single extraction/processing LLM call | `120` |
+| `PFCD_REVIEW_LLM_ENABLED` | Enables advisory LLM semantic review flags in reviewing phase (`true`/`false`). Auto-enabled for `quality` profile. | `false` |
 | `PFCD_MAX_COMPLETION_TOKENS` | Max completion tokens for processing/vision LLM calls (fallback for extraction) | `2048` |
 | `PFCD_MAX_EXTRACTION_TOKENS` | Max completion tokens for extraction LLM calls (overrides `PFCD_MAX_COMPLETION_TOKENS`; higher budget for dense transcripts) | `4096` |
 | `PFCD_API_KEY` | Static API key for `X-API-Key` header | `""` (auth disabled if unset) |

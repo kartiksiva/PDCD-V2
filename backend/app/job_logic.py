@@ -294,10 +294,18 @@ def default_job_payload(payload: JobCreateRequest) -> Dict[str, Any]:
             "verdict": "inconclusive",
             "similarity_score": None,
         },
-        "review_notes": {"flags": [], "assumptions": []},
+        "review_notes": {
+            "flags": [],
+            "assumptions": [],
+            "llm_semantic_flags": [],
+        },
         "agent_signals": {
             "evidence_strength": None,  # set authoritatively by reviewing agent
             "alignment": None,
+            "llm_review_stats": {
+                "total_flags": 0,
+                "accepted_by_human": 0,
+            },
         },
         "agent_review": {
             "decision": None,

@@ -308,6 +308,27 @@ class TestBuildExportMarkdown:
         md = build_export_markdown({}, build_evidence_bundle({}, {}))
         assert "No finalized draft available" in md
 
+    def test_semantic_review_section_hidden_when_empty(self):
+        md = build_export_markdown(DRAFT_WITH_ANCHORS, self._bundle())
+        assert "## 5A. AI Semantic Review Notes" not in md
+
+    def test_semantic_review_section_rendered_when_flags_present(self):
+        bundle = self._bundle()
+        bundle["llm_semantic_flags"] = [
+            {
+                "code": "coverage_gap",
+                "message": "Evidence ev-03 is not mapped to any PDD step.",
+                "evidence_id": "ev-03",
+                "step_id": "",
+                "anchor": "00:00:20-00:00:30",
+                "snippet": "Analyst reconciles ERP billing",
+            }
+        ]
+        md = build_export_markdown(DRAFT_WITH_ANCHORS, bundle)
+        assert "## 5A. AI Semantic Review Notes" in md
+        assert "ev-03" in md
+        assert "00:00:20-00:00:30" in md
+
     def test_no_anchors_shows_fallback_message(self):
         draft = {"pdd": {"purpose": "p", "scope": "s", "steps": []}, "sipoc": []}
         bundle = {"linked_anchors": [], "evidence_strength": None, "frame_captures_note": ""}
@@ -462,3 +483,31 @@ class TestBuildExportDocx:
         result = build_export_docx(DRAFT_WITH_ANCHORS, bundle, "job-123", frame_bytes_map={})
         assert isinstance(result, bytes)
         assert result[:2] == b"PK"
+
+    def test_docx_semantic_review_section_hidden_when_empty(self):
+        import io
+        from docx import Document
+
+        result = build_export_docx(DRAFT_WITH_ANCHORS, self._bundle(), "job-123")
+        doc = Document(io.BytesIO(result))
+        assert not any(p.text.strip() == "5A. AI Semantic Review Notes" for p in doc.paragraphs)
+
+    def test_docx_semantic_review_section_rendered_when_flags_present(self):
+        import io
+        from docx import Document
+
+        bundle = self._bundle()
+        bundle["llm_semantic_flags"] = [
+            {
+                "code": "factual_drift",
+                "message": "Actor mismatch against cited evidence.",
+                "evidence_id": "ev-02",
+                "step_id": "step-02",
+                "anchor": "00:01:15",
+                "snippet": "Manager receives a copy only",
+            }
+        ]
+        result = build_export_docx(DRAFT_WITH_ANCHORS, bundle, "job-123")
+        doc = Document(io.BytesIO(result))
+        assert any(p.text.strip() == "5A. AI Semantic Review Notes" for p in doc.paragraphs)
+        assert any("ev-02" in cell.text for table in doc.tables for row in table.rows for cell in row.cells)
