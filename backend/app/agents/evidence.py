@@ -29,9 +29,9 @@ def compute_evidence_strength(
 
     Structural rules (PRD §7 evidence hierarchy):
       video + audio (with or without transcript) -> high
-      video + transcript, no audio              -> medium
+      video only (with or without transcript)   -> medium
       transcript only                           -> medium
-      video only, or no sources                 -> low
+      no sources, or audio only                 -> low
 
     Confidence degradation (applied after structural rule):
       If evidence_items provided and mean confidence < LOW_THRESHOLD,
@@ -39,7 +39,7 @@ def compute_evidence_strength(
     """
     if has_video and has_audio:
         strength = "high"
-    elif has_video and has_transcript:
+    elif has_video:
         strength = "medium"
     elif has_transcript:
         strength = "medium"
