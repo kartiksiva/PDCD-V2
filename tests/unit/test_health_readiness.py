@@ -73,3 +73,40 @@ def test_readiness_returns_503_when_required_env_missing(app_client, monkeypatch
     payload = resp.json()
     assert payload["status"] == "not_ready"
     assert "DATABASE_URL" in payload["missing_environment"]
+
+
+def test_health_returns_200_for_openai_provider_when_required_env_present(app_client, monkeypatch):
+    ctx = app_client
+    monkeypatch.setenv("PFCD_PROVIDER", "openai")
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///./test.db")
+    monkeypatch.setenv("AZURE_SERVICE_BUS_CONNECTION_STRING", "Endpoint=sb://test/;SharedAccessKeyName=x;SharedAccessKey=y")
+    monkeypatch.setenv("AZURE_SERVICE_BUS_QUEUE_EXTRACTING", "extracting")
+    monkeypatch.setenv("AZURE_SERVICE_BUS_QUEUE_PROCESSING", "processing")
+    monkeypatch.setenv("AZURE_SERVICE_BUS_QUEUE_REVIEWING", "reviewing")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    resp = ctx.client.get("/health")
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["status"] == "ok"
+    assert payload["provider"] == "openai"
+    assert payload["missing_environment"] == []
+    assert payload["environment_checks"]["OPENAI_API_KEY"] is True
+
+
+def test_health_returns_503_for_openai_provider_when_key_missing(app_client, monkeypatch):
+    ctx = app_client
+    monkeypatch.setenv("PFCD_PROVIDER", "openai")
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///./test.db")
+    monkeypatch.setenv("AZURE_SERVICE_BUS_CONNECTION_STRING", "Endpoint=sb://test/;SharedAccessKeyName=x;SharedAccessKey=y")
+    monkeypatch.setenv("AZURE_SERVICE_BUS_QUEUE_EXTRACTING", "extracting")
+    monkeypatch.setenv("AZURE_SERVICE_BUS_QUEUE_PROCESSING", "processing")
+    monkeypatch.setenv("AZURE_SERVICE_BUS_QUEUE_REVIEWING", "reviewing")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    resp = ctx.client.get("/health")
+    assert resp.status_code == 503
+    payload = resp.json()
+    assert payload["status"] == "degraded"
+    assert payload["provider"] == "openai"
+    assert "OPENAI_API_KEY" in payload["missing_environment"]

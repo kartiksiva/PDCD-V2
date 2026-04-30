@@ -347,24 +347,34 @@ async def _job_or_404(job_id: str) -> Dict[str, Any]:
 
 @app.get("/health")
 def health() -> Dict[str, Any]:
+    provider = (os.environ.get("PFCD_PROVIDER", "azure_openai") or "azure_openai").strip().lower()
     required_env = [
         "DATABASE_URL",
-        "AZURE_STORAGE_ACCOUNT_NAME",
-        "AZURE_SERVICE_BUS_NAMESPACE",
         "AZURE_SERVICE_BUS_CONNECTION_STRING",
         "AZURE_SERVICE_BUS_QUEUE_EXTRACTING",
         "AZURE_SERVICE_BUS_QUEUE_PROCESSING",
         "AZURE_SERVICE_BUS_QUEUE_REVIEWING",
-        "KEYVAULT_NAME",
-        "AZURE_OPENAI_ACCOUNT_NAME",
-        "AZURE_SPEECH_ACCOUNT_NAME",
     ]
+    if provider == "openai":
+        required_env.extend(
+            [
+                "OPENAI_API_KEY",
+            ]
+        )
+    else:
+        required_env.extend(
+            [
+                "AZURE_OPENAI_ENDPOINT",
+                "AZURE_OPENAI_CHAT_DEPLOYMENT_NAME",
+            ]
+        )
     checks = {name: bool(os.environ.get(name)) for name in required_env}
     degraded = [name for name, present in checks.items() if not present]
     status_code = 200 if not degraded else 503
     return JSONResponse(
         content={
             "status": "ok" if not degraded else "degraded",
+            "provider": provider,
             "timestamp": _utc_now(),
             "environment_checks": checks,
             "missing_environment": degraded,
