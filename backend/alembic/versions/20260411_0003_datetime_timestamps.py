@@ -22,24 +22,96 @@ _STR64 = sa.String(length=64)
 
 def upgrade() -> None:
     with op.batch_alter_table("jobs") as batch_op:
-        batch_op.alter_column("created_at", existing_type=_STR64, type_=_DT, existing_nullable=False)
-        batch_op.alter_column("updated_at", existing_type=_STR64, type_=_DT, existing_nullable=False)
-        batch_op.alter_column("user_saved_at", existing_type=_STR64, type_=_DT, existing_nullable=True)
-        batch_op.alter_column("deleted_at", existing_type=_STR64, type_=_DT, existing_nullable=True)
-        batch_op.alter_column("ttl_expires_at", existing_type=_STR64, type_=_DT, existing_nullable=True)
+        batch_op.alter_column(
+            "created_at",
+            existing_type=_STR64,
+            type_=_DT,
+            existing_nullable=False,
+            postgresql_using="created_at::timestamptz",
+        )
+        batch_op.alter_column(
+            "updated_at",
+            existing_type=_STR64,
+            type_=_DT,
+            existing_nullable=False,
+            postgresql_using="updated_at::timestamptz",
+        )
+        batch_op.alter_column(
+            "user_saved_at",
+            existing_type=_STR64,
+            type_=_DT,
+            existing_nullable=True,
+            postgresql_using="NULLIF(user_saved_at, '')::timestamptz",
+        )
+        batch_op.alter_column(
+            "deleted_at",
+            existing_type=_STR64,
+            type_=_DT,
+            existing_nullable=True,
+            postgresql_using="NULLIF(deleted_at, '')::timestamptz",
+        )
+        batch_op.alter_column(
+            "ttl_expires_at",
+            existing_type=_STR64,
+            type_=_DT,
+            existing_nullable=True,
+            postgresql_using="NULLIF(ttl_expires_at, '')::timestamptz",
+        )
 
     with op.batch_alter_table("drafts") as batch_op:
-        batch_op.alter_column("generated_at", existing_type=_STR64, type_=_DT, existing_nullable=True)
-        batch_op.alter_column("user_reconciled_at", existing_type=_STR64, type_=_DT, existing_nullable=True)
-        batch_op.alter_column("finalized_at", existing_type=_STR64, type_=_DT, existing_nullable=True)
-        batch_op.alter_column("updated_at", existing_type=_STR64, type_=_DT, existing_nullable=True)
+        batch_op.alter_column(
+            "generated_at",
+            existing_type=_STR64,
+            type_=_DT,
+            existing_nullable=True,
+            postgresql_using="NULLIF(generated_at, '')::timestamptz",
+        )
+        batch_op.alter_column(
+            "user_reconciled_at",
+            existing_type=_STR64,
+            type_=_DT,
+            existing_nullable=True,
+            postgresql_using="NULLIF(user_reconciled_at, '')::timestamptz",
+        )
+        batch_op.alter_column(
+            "finalized_at",
+            existing_type=_STR64,
+            type_=_DT,
+            existing_nullable=True,
+            postgresql_using="NULLIF(finalized_at, '')::timestamptz",
+        )
+        batch_op.alter_column(
+            "updated_at",
+            existing_type=_STR64,
+            type_=_DT,
+            existing_nullable=True,
+            postgresql_using="NULLIF(updated_at, '')::timestamptz",
+        )
 
     with op.batch_alter_table("agent_runs") as batch_op:
-        batch_op.alter_column("created_at", existing_type=_STR64, type_=_DT, existing_nullable=False)
-        batch_op.alter_column("updated_at", existing_type=_STR64, type_=_DT, existing_nullable=True)
+        batch_op.alter_column(
+            "created_at",
+            existing_type=_STR64,
+            type_=_DT,
+            existing_nullable=False,
+            postgresql_using="created_at::timestamptz",
+        )
+        batch_op.alter_column(
+            "updated_at",
+            existing_type=_STR64,
+            type_=_DT,
+            existing_nullable=True,
+            postgresql_using="NULLIF(updated_at, '')::timestamptz",
+        )
 
     with op.batch_alter_table("job_events") as batch_op:
-        batch_op.alter_column("created_at", existing_type=_STR64, type_=_DT, existing_nullable=False)
+        batch_op.alter_column(
+            "created_at",
+            existing_type=_STR64,
+            type_=_DT,
+            existing_nullable=False,
+            postgresql_using="created_at::timestamptz",
+        )
 
 
 def downgrade() -> None:
