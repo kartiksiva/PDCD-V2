@@ -81,7 +81,11 @@ function _resolveUploadUrl(url) {
 
 function _makeClientUploadJobId() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
-  return `upload-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  // RFC 4122 v4 polyfill for environments without crypto.randomUUID
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16)
+  })
 }
 
 export async function uploadFile(file, sourceType = 'document') {

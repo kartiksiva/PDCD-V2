@@ -19,11 +19,12 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "jobs",
-        sa.Column("extracted_evidence", sa.Text(), nullable=False, server_default="{}"),
-    )
+    with op.batch_alter_table("jobs") as batch_op:
+        batch_op.add_column(
+            sa.Column("extracted_evidence", sa.Text(), nullable=False, server_default="{}"),
+        )
 
 
 def downgrade() -> None:
-    op.drop_column("jobs", "extracted_evidence")
+    with op.batch_alter_table("jobs") as batch_op:
+        batch_op.drop_column("extracted_evidence")

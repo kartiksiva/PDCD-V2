@@ -386,8 +386,9 @@ def run_processing(job: Dict[str, Any], profile_conf: Dict[str, Any]) -> float:
     pdd.setdefault("sub_function", "Needs Review")
     pdd.setdefault("process_overview", pdd.get("purpose", "Needs Review"))
     pdd.setdefault("process_objective", pdd.get("purpose", "Needs Review"))
-    pdd.setdefault("frequency", "Needs Review")
-    pdd.setdefault("sla", "Needs Review")
+    # Use `or` rather than setdefault so empty strings are also replaced.
+    pdd["frequency"] = pdd.get("frequency") or "Needs Review"
+    pdd["sla"] = pdd.get("sla") or "Needs Review"
     pdd.setdefault("process_controls", [])
     for step in pdd.get("steps") or []:
         if isinstance(step, dict):

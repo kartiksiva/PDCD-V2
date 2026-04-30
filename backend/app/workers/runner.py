@@ -228,7 +228,15 @@ class Worker:
                 requested_by=f"worker:{self.phase}",
                 trace_id=message["trace_id"],
             )
+            # Outbox: persist intent to enqueue before sending so the cleanup
+            # sweeper can recover if the process crashes between upsert and send.
+            job["pending_next_phase"] = next_phase
+            job["updated_at"] = _utc_now()
+            self.repo.upsert_job(job_id, job)
             self.orchestrator.enqueue(next_phase, next_msg)
+            job["pending_next_phase"] = None
+            job["updated_at"] = _utc_now()
+            self.repo.upsert_job(job_id, job)
 
     def handle_message(self, message: ServiceBusMessage, raw_body: Any) -> None:
         payload = _load_message(raw_body)
@@ -285,6 +293,10 @@ class Worker:
                 trace_id=payload.get("trace_id", str(uuid4())),
             )
             delay_seconds = min(60, 2 ** attempt)
+            # Persist the updated agent_run state before re-enqueuing so cost
+            # tracking and failure snapshots survive even if the worker restarts.
+            job["updated_at"] = _utc_now()
+            self.repo.upsert_job(job_id, job)
             self.orchestrator.enqueue(self.phase, retry_payload, delay_seconds=delay_seconds)
             self.repo.append_job_event(
                 job_id,

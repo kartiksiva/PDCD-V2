@@ -1,0 +1,293 @@
+WEBVTT
+
+1
+00:00:00.000 --> 00:01:00.000
+Daniel Brooks (Service Provider): Thanks, everyone. The goal today is to understand how customer complaints are received, validated, assigned, tracked, and closed. We want to capture the actual process, not the documented process, so please describe the exceptions as well as the normal flow.
+
+2
+00:01:00.000 --> 00:02:00.000
+Anita Rao (Customer): That makes sense. This is a high-volume process for us, and we know there are inconsistencies depending on the complaint type and which team member picks it up.
+
+3
+00:02:00.000 --> 00:03:00.000
+Meera Iyer (Service Provider): Good. We are specifically looking for repeatable steps, decision points, handoffs, turnaround times, and systems involved. By the end of the session, we should have enough detail to identify which parts can be standardized and which parts are candidates for automation.
+
+4
+00:03:00.000 --> 00:04:00.000
+Vivek Menon (Customer): From a compliance standpoint, this process matters because we have SLA commitments and regulatory response timelines for certain complaint categories.
+
+5
+00:04:00.000 --> 00:05:00.000
+Sanjay Patel (Service Provider): Understood. We will note those controls separately because they usually influence both standardization and automation design.
+
+6
+00:05:00.000 --> 00:05:37.000
+Daniel Brooks: Let’s start with the trigger. What causes this process to begin?
+
+7
+00:05:37.000 --> 00:06:14.000
+Priya Nair (Customer): A complaint can come in through email, web form, customer support portal, or occasionally by phone. Phone complaints are manually documented by an agent and then entered into the same queue later.
+
+8
+00:06:14.000 --> 00:06:51.000
+Daniel Brooks: Approximately how many complaints do you receive each day?
+
+9
+00:06:51.000 --> 00:07:28.000
+Anita Rao: Around 180 to 220 per day on average. Mondays are usually higher, and after product releases we can see spikes.
+
+10
+00:07:28.000 --> 00:08:05.000
+Meera Iyer: Are all channels feeding into a single system?
+
+11
+00:08:05.000 --> 00:08:42.000
+Priya Nair: Not directly. Portal and web form complaints land in our CRM. Emails go to a shared mailbox. Phone complaints are first captured in a spreadsheet by the call team and then entered into CRM manually.
+
+12
+00:08:42.000 --> 00:09:19.000
+Sanjay Patel: So the process already starts with fragmented intake.
+
+13
+00:09:19.000 --> 00:10:00.000
+Anita Rao: Yes, and that is one of the biggest issues.
+
+14
+00:10:00.000 --> 00:10:50.000
+Daniel Brooks: Walk us through the current process from receipt to first action.
+
+15
+00:10:50.000 --> 00:11:40.000
+Priya Nair: Every morning, two analysts review the shared mailbox and the phone log spreadsheet. They create complaint records in CRM for items not already there. Then they check whether mandatory fields are present: customer ID, product, issue category, date of incident, and contact information.
+
+16
+00:11:40.000 --> 00:12:30.000
+Meera Iyer: What happens if information is missing?
+
+17
+00:12:30.000 --> 00:13:20.000
+Priya Nair: The analyst sends a template email asking for additional details. But the template is often edited manually, so the wording varies. Some analysts are more thorough than others.
+
+18
+00:13:20.000 --> 00:14:10.000
+Vivek Menon: That variation causes downstream problems because not all analysts request the same evidence, and we sometimes have to go back to the customer twice.
+
+19
+00:14:10.000 --> 00:15:00.000
+Daniel Brooks: That sounds like a standardization gap before we even reach triage.
+
+20
+00:15:00.000 --> 00:15:50.000
+Sanjay Patel: After the complaint is complete, how is it categorized?
+
+21
+00:15:50.000 --> 00:16:40.000
+Priya Nair: The analyst chooses a complaint type from a drop-down in CRM: billing, service quality, product defect, delivery issue, or regulatory. There is also an “other” category, which gets overused.
+
+22
+00:16:40.000 --> 00:17:30.000
+Meera Iyer: Is the categorization based on a documented decision tree?
+
+23
+00:17:30.000 --> 00:18:20.000
+Anita Rao: Not really. We have guidance in a training deck, but it is not a strict rulebook. Experienced analysts do it well, but newer team members often misclassify complaints.
+
+24
+00:18:20.000 --> 00:19:10.000
+Vivek Menon: Misclassification affects SLA handling. Regulatory complaints need response within 24 hours, while standard complaints allow 3 business days for acknowledgement.
+
+25
+00:19:10.000 --> 00:20:00.000
+Daniel Brooks: So classification accuracy is operationally important and also compliance-relevant.
+
+26
+00:20:00.000 --> 00:20:42.000
+Daniel Brooks: How is work assigned after categorization?
+
+27
+00:20:42.000 --> 00:21:24.000
+Priya Nair: Analysts manually assign the complaint to one of three resolution teams: billing operations, product support, or field service. Regulatory complaints are also copied to compliance.
+
+28
+00:21:24.000 --> 00:22:06.000
+Sanjay Patel: Based on what logic?
+
+29
+00:22:06.000 --> 00:22:48.000
+Priya Nair: Mainly complaint type, product line, region, and customer tier. But again, it depends on analyst judgment. There are exceptions for strategic customers and escalated accounts.
+
+30
+00:22:48.000 --> 00:23:30.000
+Meera Iyer: Are assignment rules written anywhere?
+
+31
+00:23:30.000 --> 00:24:12.000
+Anita Rao: Partly in SOPs, partly in people’s heads.
+
+32
+00:24:12.000 --> 00:25:00.000
+Daniel Brooks: That usually indicates a good opportunity to separate standard business rules from true exceptions.
+
+33
+00:25:00.000 --> 00:25:50.000
+Meera Iyer: What systems are involved end to end?
+
+34
+00:25:50.000 --> 00:26:40.000
+Priya Nair: Outlook shared mailbox, Excel phone log, CRM, a document repository for evidence, and sometimes ERP if the issue is billing-related.
+
+35
+00:26:40.000 --> 00:27:30.000
+Sanjay Patel: Do analysts copy information between systems?
+
+36
+00:27:30.000 --> 00:28:20.000
+Priya Nair: A lot. They copy complaint text from email to CRM, attach screenshots manually, rename files, and update a tracking spreadsheet that management uses for daily reporting.
+
+37
+00:28:20.000 --> 00:29:10.000
+Anita Rao: The tracking spreadsheet exists because CRM reporting is not trusted by the team. People feel it is not updated consistently.
+
+38
+00:29:10.000 --> 00:30:00.000
+Daniel Brooks: Duplicate data entry plus a shadow tracking process. That is a typical automation candidate if the upstream process can be cleaned up first.
+
+39
+00:30:00.000 --> 00:30:50.000
+Daniel Brooks: Where do delays happen most often?
+
+40
+00:30:50.000 --> 00:31:40.000
+Priya Nair: Intake validation and reassignment. Around 20 percent of complaints are assigned to the wrong team initially. Then they bounce around for a day or two.
+
+41
+00:31:40.000 --> 00:32:30.000
+Vivek Menon: Another delay is waiting for missing documents. Analysts don’t always send the same request, and there is no automatic reminder if the customer does not respond.
+
+42
+00:32:30.000 --> 00:33:20.000
+Meera Iyer: Do you track turnaround time by stage?
+
+43
+00:33:20.000 --> 00:34:10.000
+Anita Rao: Only partially. We have received, acknowledged, assigned, and closed dates, but not every interim step is captured reliably.
+
+44
+00:34:10.000 --> 00:35:00.000
+Sanjay Patel: That means process measurement is incomplete, which makes continuous improvement harder.
+
+45
+00:35:00.000 --> 00:35:50.000
+Daniel Brooks: Let’s talk about volumes and effort. How much manual work is involved?
+
+46
+00:35:50.000 --> 00:36:40.000
+Priya Nair: For a straightforward complaint, initial intake and setup takes 8 to 10 minutes. For incomplete or ambiguous complaints, it can take 15 minutes or more. Rework adds another 5 to 8 minutes in many cases.
+
+47
+00:36:40.000 --> 00:37:30.000
+Meera Iyer: How many people are involved in intake and triage?
+
+48
+00:37:30.000 --> 00:38:20.000
+Anita Rao: Five analysts rotate across the function, but only two focus heavily on intake each day.
+
+49
+00:38:20.000 --> 00:39:10.000
+Sanjay Patel: If average volume is 200 complaints a day and even 8 minutes is spent on setup, that is already significant labor for repeatable work.
+
+50
+00:39:10.000 --> 00:40:00.000
+Vivek Menon: And not all of that work requires human judgment.
+
+51
+00:40:00.000 --> 00:41:00.000
+Meera Iyer: Which parts absolutely require human review?
+
+52
+00:41:00.000 --> 00:42:00.000
+Priya Nair: Complex complaint interpretation, regulatory risk review, and final resolution decisions. But creating the case, checking mandatory fields, sending standard follow-up requests, and routing many complaints could be more rules-based.
+
+53
+00:42:00.000 --> 00:43:00.000
+Daniel Brooks: That split is helpful. We generally look for three buckets: manual judgment tasks, standardized human tasks, and automation-ready tasks.
+
+54
+00:43:00.000 --> 00:44:00.000
+Anita Rao: I would add acknowledgment emails. Those are largely standard and should not be typed manually.
+
+55
+00:44:00.000 --> 00:45:00.000
+Vivek Menon: As long as the audit trail is preserved and we can show what was sent and when.
+
+56
+00:45:00.000 --> 00:46:00.000
+Sanjay Patel: Let’s validate the biggest pain points. I have noted fragmented intake, inconsistent data validation, subjective categorization, manual assignment, duplicate updates, and weak stage-level tracking. Anything missing?
+
+57
+00:46:00.000 --> 00:47:00.000
+Priya Nair: Document handling. Attachments come in different formats and naming conventions, so analysts spend time organizing them.
+
+58
+00:47:00.000 --> 00:48:00.000
+Anita Rao: Also knowledge dependency. Two senior analysts know the routing nuances much better than everyone else.
+
+59
+00:48:00.000 --> 00:49:00.000
+Meera Iyer: That is important because it means process performance depends too much on tribal knowledge.
+
+60
+00:49:00.000 --> 00:50:00.000
+Daniel Brooks: Which also suggests the process is not sufficiently standardized today, but it likely can be standardized to a large extent.
+
+61
+00:50:00.000 --> 00:50:50.000
+Daniel Brooks: I want to test a possible future-state direction. Would it be acceptable to have all complaint sources normalized into a single intake queue, with mandatory-field validation, standardized acknowledgment templates, rules-based categorization suggestions, and assignment recommendations?
+
+62
+00:50:50.000 --> 00:51:40.000
+Anita Rao: Yes, that would solve a lot of the current chaos.
+
+63
+00:51:40.000 --> 00:52:30.000
+Vivek Menon: Provided regulatory complaints are flagged correctly and there is a manual override.
+
+64
+00:52:30.000 --> 00:53:20.000
+Priya Nair: Analysts would welcome it if the system reduces repetitive work without hiding the case details.
+
+65
+00:53:20.000 --> 00:54:10.000
+Meera Iyer: We would also recommend a decision matrix for categorization and assignment, plus SLA timers and automated reminders for pending customer information.
+
+66
+00:54:10.000 --> 00:55:00.000
+Sanjay Patel: And a common evidence checklist by complaint type so analysts request the right documents consistently.
+
+67
+00:55:00.000 --> 00:55:42.000
+Daniel Brooks: Let’s close with next steps. From today’s discussion, this process appears to be a good candidate for standardization and partial automation. The intake, validation, acknowledgment, document handling, routing, reminder management, and reporting steps are all repeatable enough to assess further.
+
+68
+00:55:42.000 --> 00:56:24.000
+Anita Rao: Agreed. The team needs consistency first, then automation layered on top.
+
+69
+00:56:24.000 --> 00:57:06.000
+Vivek Menon: Compliance will need to review any proposed rules for regulatory complaint handling and retention requirements.
+
+70
+00:57:06.000 --> 00:57:48.000
+Priya Nair: I can provide sample complaint emails, current templates, and the assignment spreadsheet after the meeting.
+
+71
+00:57:48.000 --> 00:58:30.000
+Meera Iyer: That will help us build the current-state map and quantify opportunity areas.
+
+72
+00:58:30.000 --> 00:59:12.000
+Sanjay Patel: We will document the as-is process, exceptions, systems, volumes, and candidate automation steps and come back with a recommended future-state workflow.
+
+73
+00:59:12.000 --> 01:00:00.000
+Daniel Brooks: Thanks, everyone. We will circulate session notes, an initial process map, and a list of data points needed for solution sizing.

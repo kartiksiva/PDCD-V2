@@ -138,6 +138,7 @@ class JobRepository:
             "phase_attempt": job.phase_attempt,
             "payload_hash": job.payload_hash,
             "active_agent_run_id": job.active_agent_run_id,
+            "pending_next_phase": job.pending_next_phase,
             "deleted_at": self._to_iso(job.deleted_at),
             "cleanup_pending": job.cleanup_pending,
             "ttl_expires_at": self._to_iso(job.ttl_expires_at),
@@ -237,6 +238,7 @@ class JobRepository:
                 job.phase_attempt = int(payload.get("phase_attempt", 0))
                 job.payload_hash = payload.get("payload_hash")
                 job.active_agent_run_id = payload.get("active_agent_run_id")
+                job.pending_next_phase = payload.get("pending_next_phase")
                 job.deleted_at = self._to_datetime(payload.get("deleted_at"))
                 job.cleanup_pending = bool(payload.get("cleanup_pending"))
                 job.ttl_expires_at = self._to_datetime(payload.get("ttl_expires_at"))
@@ -374,6 +376,21 @@ class JobRepository:
         with session_scope() as session:
             rows = session.execute(
                 select(Job.job_id).where(Job.cleanup_pending == True)  # noqa: E712
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    def find_pending_next_phase_jobs(self, stale_before: datetime) -> list[str]:
+        """Return job_ids where pending_next_phase is set and updated_at < stale_before.
+
+        Used by the cleanup sweeper to recover jobs whose enqueue call was lost
+        after the phase completed but before the Service Bus send succeeded.
+        """
+        with session_scope() as session:
+            rows = session.execute(
+                select(Job.job_id).where(
+                    Job.pending_next_phase != None,  # noqa: E711
+                    Job.updated_at < stale_before,
+                )
             ).fetchall()
         return [r[0] for r in rows]
 

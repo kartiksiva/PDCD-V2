@@ -35,6 +35,7 @@ class Job(Base):
     phase_attempt = Column(Integer, nullable=False, default=0)
     payload_hash = Column(String(128), nullable=True)
     active_agent_run_id = Column(String(64), nullable=True)
+    pending_next_phase = Column(String(32), nullable=True)
     deleted_at = Column(DateTime(timezone=True), nullable=True)
     cleanup_pending = Column(Boolean, nullable=False, default=False)
     ttl_expires_at = Column(DateTime(timezone=True), nullable=True)

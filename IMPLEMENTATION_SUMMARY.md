@@ -3564,3 +3564,40 @@ Completed the remaining Phase A checklist items in one combined branch: `codex/i
 ### Open Questions
 
 - None.
+
+---
+
+## Section 22: Issue #85 Phase B — Correctness & Reliability Fixes (2026-04-30)
+
+**Branch:** `codex/issue-85-phase-b`  **Tests:** 385 passed, 2 skipped
+
+### B1·H10 — SIPOC valid_anchor_count excludes invalid step refs
+- `sipoc_validator.py`: added `and not invalid_step_refs` to both the quality-gate counter and `SIPOCRowResult.valid`.
+- `tests/unit/test_sipoc_validator.py`: updated `test_multiple_step_anchors_partially_invalid` assertion from `valid_anchor_count == 1` to `== 0`.
+
+### B2·H11 — PDD empty-string fields get default placeholder
+- `processing.py`: replaced `pdd.setdefault("frequency", ...)` and `pdd.setdefault("sla", ...)` with `pdd["frequency"] = pdd.get("frequency") or "Needs Review"` and same for `sla`. `setdefault` silently left empty strings; `or` replaces them.
+
+### B3·H12 — Extraction preserves LLM-assigned per-item source_type
+- `extraction.py`: changed `item["source_type"] = resolved` → `item.setdefault("source_type", resolved)` in `_apply_source_type_defaults`.
+- `tests/unit/test_agents.py`: updated `test_extraction_sets_source_type_to_video_when_video_is_primary` to omit source_type from mock payload (tests default-fill path). Added `test_extraction_preserves_llm_assigned_source_type` to assert setdefault does not overwrite.
+
+### B4·H2 — Outbox pattern for phase atomicity
+- `backend/alembic/versions/20260430_0007_add_pending_next_phase.py`: new migration adding `pending_next_phase VARCHAR(32) NULLABLE` to `jobs`.
+- `models.py`: added `pending_next_phase = Column(String(32), nullable=True)`.
+- `repository.py`: added field to `_job_to_payload` and `upsert_job`; added `find_pending_next_phase_jobs(stale_before)`.
+- `runner.py` `_run_phase()`: before `orchestrator.enqueue` sets `pending_next_phase`; after enqueue clears it (two upserts).
+- `cleanup.py`: added `reenqueue_stale_phases()`; wires `ServiceBusOrchestrator` in `run()`; env `PFCD_STALE_PHASE_WINDOW_SECONDS` (default 120 s).
+
+### B5·H3 — upsert_job before retry enqueue
+- `runner.py` retry branch: added `job["updated_at"] = _utc_now(); self.repo.upsert_job(job_id, job)` before `orchestrator.enqueue` so failed AgentRun state survives a worker restart.
+
+### B6·H9 — threading.Lock for Service Bus sender
+- `servicebus.py`: added `import threading` and `self._sender_lock = threading.Lock()`; wrapped `_get_sender()` body with `with self._sender_lock:`.
+
+### B7·H14 — Migration 0006 wrapped in batch_alter_table (SQLite compat)
+- `20260420_0006_add_extracted_evidence.py`: wrapped `add_column` and `drop_column` in `with op.batch_alter_table("jobs") as batch_op:`.
+
+### B8·H15 — RFC 4122 v4 UUID polyfill
+- `frontend/src/api.js`: replaced `upload-${Date.now()}-${Math.random().toString(16).slice(2)}` fallback with RFC 4122 v4 bit-manipulation polyfill.
+- `streamlit_app/api_client.py`: replaced `f"upload-{os.urandom(8).hex()}"` with `str(uuid.uuid4())`.
