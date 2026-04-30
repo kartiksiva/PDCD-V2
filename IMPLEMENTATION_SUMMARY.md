@@ -3637,3 +3637,71 @@ Completed the remaining Phase A checklist items in one combined branch: `codex/i
 
 ### Test fix
 - `tests/unit/test_repository.py`: `_stale_session_scope` mock updated to accept `database_url=None` parameter to match the new `session_scope` signature.
+
+---
+
+## Section 24 — Phase D Hygiene Items (PR #96, 2026-04-30)
+
+Branch: `codex/issue-87-phase-d` → squash merged to main via PR #96  
+Tests: 385 passed, 2 skipped
+
+### M5 — storage.py migration fallback
+- `backend/app/storage.py`: when blob-mode `load_bytes()` cannot find a blob but the export metadata has a local path, falls back to local file read. Supports graceful migration for exports written before blob storage was configured.
+
+### M6 — load_transcript_text path traversal defence
+- `backend/app/job_logic.py`: `_is_safe_storage_key()` validates that `inp["storage_key"]` is within `_UPLOADS_DIR` (resolved via `os.path.abspath`). Absolute paths and `../` traversal sequences are rejected with a warning; returns `None` rather than opening arbitrary paths.
+
+### M7 — _format_date tz-aware strings
+- `backend/app/export_builder.py`: replaced manual strptime loop with `datetime.fromisoformat()` (Python 3.7+). Handles timezone-aware strings including `+05:30` offsets. Legacy `Z`-suffix handled separately for Python < 3.11.
+
+### M11 — api.js same-origin gate for SAS uploads
+- `frontend/src/api.js`: added `_isSameOrigin(url)` helper. `X-API-Key` header only sent to upload URLs that share the same origin as the API base. Prevents auth header leakage to external SAS blob URLs.
+
+### M12 — api.js dead exportUrl removed
+- `frontend/src/api.js`: deleted unauthenticated dead `exportUrl(jobId, fmt)` function. No callers remain; all downloads go through `downloadExport` which uses `_fetch`.
+
+### M13 — Streamlit lazy export cache
+- `streamlit_app/app.py`: export bytes cached in `st.session_state[f"_export_{job_id}_{fmt}"]`. `download_export()` only called once per job+format combination, not on every rerun.
+
+### M14 — requirements.txt pinned versions
+- `backend/requirements.txt`: `azure-ai-agents>=1.2.0b3` → `==1.2.0b6`; `pydantic>=2.11.0` → `==2.12.5` (installed versions at time of audit).
+
+### M15 — Reusable CI pg-smoke workflow
+- `.github/workflows/pg-smoke.yml`: new `workflow_call` workflow with Postgres 16 service, unit+integration tests, and PostgreSQL smoke test.
+- `deploy-backend.yml` and `deploy-workers.yml`: replaced duplicate 30-line `test:` job with a single `uses: ./.github/workflows/pg-smoke.yml` call.
+
+### M16 — reviewing.py exact Unknown speaker match
+- `backend/app/agents/reviewing.py`: `any("Unknown" in s ...)` → `any(s.strip() in {"Unknown", "Unknown Speaker"} ...)`. Prevents false positives for speakers whose names contain the word "Unknown" as a substring.
+
+### M17 — processing.py post-parse guard
+- `backend/app/agents/processing.py`: after `_parse_processing_json(raw)`, raises `RuntimeError` if both `pdd` and `sipoc` keys are absent. Surfaces unexpected LLM response shapes early instead of silently producing a stub draft.
+
+### L1 — auth.py per-request env read retained
+- `backend/app/auth.py`: kept per-request `os.environ.get("PFCD_API_KEY", "")` (original pattern). Startup caching was tested but broke `importlib.reload(main_mod)` in auth tests (lifespan not triggered by Starlette TestClient without context manager). Decision: per-request read is correct for this test pattern; overhead is negligible.
+
+### L2 — deploy-backend.yml Key Vault secretRef for PFCD_API_KEY
+- `.github/workflows/deploy-backend.yml`: `PFCD_API_KEY` now uses `secretRef: pfcd-api-key` (KV URL `https://{KV}.vault.azure.net/secrets/pfcd-api-key`). Removed plaintext `"${PFCD_API_KEY_VALUE}"` from manifest env and `PFCD_API_KEY_VALUE` from step env.
+
+### L3 — pytest.ini postgres marker
+- `pytest.ini`: added `postgres: PostgreSQL integration tests` marker to suppress `PytestUnknownMarkWarning`.
+
+### L4 — extraction.py brace escape
+- `backend/app/agents/extraction.py`: escapes `{` and `}` in `content_text` before `_USER_PROMPT_TEMPLATE.format(transcript_text=...)` to prevent `KeyError` if transcript contains Python format-string placeholders.
+
+### L6 — docker-compose.local.yml worker build contexts
+- `docker-compose.local.yml`: added `build: context: ./backend / dockerfile: Dockerfile / target: worker` to `worker-processing` and `worker-reviewing` services. Previously these relied on `image: pfcd-worker:local` already existing; now they build correctly from source.
+
+### L7 — SipocTable.jsx step_anchor column
+- `frontend/src/components/SipocTable.jsx`: added `Step Anchor` column (reads `row.step_anchor`). Now shows 7 columns matching the editable table in `DraftReview.jsx`.
+
+### L8 — Streamlit confirm_cost session state persistence
+- `streamlit_app/app.py`: pending job ID stored in `st.session_state["_pending_confirm_job_id"]` on cost-confirmation creation. Confirm button rendered outside the form submission block so it survives reruns.
+
+### L9 — kernel_factory.py rename
+- `backend/app/agents/kernel_factory.py`: `_cached_kernel_azure` → `_build_kernel_azure`; `_cached_kernel_openai` → `_build_kernel_openai`. Names were misleading (no caching). Tests updated.
+
+### L10 — media_preprocessor.py keep-in-sync comment
+- `backend/app/agents/media_preprocessor.py`: added keep-in-sync comment for `_MAX_TRANSCRIPTION_BYTES = 24 * 1024 * 1024`. True consolidation via import is blocked by a circular import (`transcription` imports `media_preprocessor` at module level).
+
+### Bug fix caught in review
+- `frontend/src/api.js`: `_resolveUploadUrl` function declaration was accidentally dropped when inserting `_isSameOrigin`. Fixed before merge.
