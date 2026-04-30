@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import time
 from typing import Any
 
 import httpx
@@ -15,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 _MAX_FRAMES_PER_CALL = int(os.environ.get("PFCD_VISION_FRAMES_PER_CALL", "4"))
 _MAX_FRAMES_TOTAL = int(os.environ.get("PFCD_VISION_MAX_FRAMES", "40"))
+_HTTP_RETRY_DELAYS_SEC = (1.0, 2.0, 4.0)
+_RETRYABLE_HTTP_STATUSES = {429, 500, 502, 503, 504}
 
 _SYSTEM_PROMPT = """You are a process documentation assistant. For each video frame shown, describe:
 1. What the user is doing (actions, clicks, navigation)
@@ -23,6 +26,10 @@ _SYSTEM_PROMPT = """You are a process documentation assistant. For each video fr
 
 Be concise. Focus on process-relevant actions, not aesthetics.
 Output one paragraph per frame, prefixed with the frame timestamp."""
+
+
+class VisionQuotaError(RuntimeError):
+    """Quota/rate-limit error raised after bounded retries."""
 
 
 def _max_completion_tokens() -> int:
@@ -70,18 +77,39 @@ def _call_vision_openai(messages: list[dict], *, model: str | None = None) -> st
     """POST to OpenAI chat completions with vision content."""
     api_key = os.environ["OPENAI_API_KEY"]
     resolved_model = model or os.environ.get("OPENAI_VISION_MODEL", "gpt-4o-mini")
-    response = httpx.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}"},
-        json={
-            "model": resolved_model,
-            "messages": messages,
-            "max_completion_tokens": _max_completion_tokens(),
-        },
-        timeout=60.0,
-    )
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"]
+    total_attempts = len(_HTTP_RETRY_DELAYS_SEC) + 1
+    for attempt in range(1, total_attempts + 1):
+        response = httpx.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": resolved_model,
+                "messages": messages,
+                "max_completion_tokens": _max_completion_tokens(),
+            },
+            timeout=60.0,
+        )
+        status = response.status_code
+        if status not in _RETRYABLE_HTTP_STATUSES:
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"]
+        if status == 429 and attempt >= total_attempts:
+            raise VisionQuotaError(
+                f"Vision quota/rate limit persisted after {attempt} attempts (HTTP 429)."
+            )
+        if attempt < total_attempts:
+            delay = _HTTP_RETRY_DELAYS_SEC[attempt - 1]
+            logger.warning(
+                "Vision OpenAI HTTP %d on attempt %d/%d; retrying in %.1fs",
+                status,
+                attempt,
+                total_attempts,
+                delay,
+            )
+            time.sleep(delay)
+            continue
+        response.raise_for_status()
+    raise RuntimeError("Unreachable vision retry state")
 
 
 def _call_vision_azure(messages: list[dict], *, deployment: str | None = None) -> str:
@@ -100,14 +128,35 @@ def _call_vision_azure(messages: list[dict], *, deployment: str | None = None) -
     )
     credential = DefaultAzureCredential()
     token = credential.get_token("https://cognitiveservices.azure.com/.default")
-    response = httpx.post(
-        url,
-        headers={"Authorization": f"Bearer {token.token}"},
-        json={"messages": messages, "max_completion_tokens": _max_completion_tokens()},
-        timeout=60.0,
-    )
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"]
+    total_attempts = len(_HTTP_RETRY_DELAYS_SEC) + 1
+    for attempt in range(1, total_attempts + 1):
+        response = httpx.post(
+            url,
+            headers={"Authorization": f"Bearer {token.token}"},
+            json={"messages": messages, "max_completion_tokens": _max_completion_tokens()},
+            timeout=60.0,
+        )
+        status = response.status_code
+        if status not in _RETRYABLE_HTTP_STATUSES:
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"]
+        if status == 429 and attempt >= total_attempts:
+            raise VisionQuotaError(
+                f"Vision quota/rate limit persisted after {attempt} attempts (HTTP 429)."
+            )
+        if attempt < total_attempts:
+            delay = _HTTP_RETRY_DELAYS_SEC[attempt - 1]
+            logger.warning(
+                "Vision Azure HTTP %d on attempt %d/%d; retrying in %.1fs",
+                status,
+                attempt,
+                total_attempts,
+                delay,
+            )
+            time.sleep(delay)
+            continue
+        response.raise_for_status()
+    raise RuntimeError("Unreachable vision retry state")
 
 
 def _resolve_profile(profile: str | None) -> Profile:
@@ -135,6 +184,9 @@ def analyze_frames(frames: list[tuple[str, float]], policy: dict, *, profile: st
                 responses.append(_call_vision_azure(messages, deployment=vision_model))
 
         return "\n\n".join(text for text in responses if text)
+    except VisionQuotaError as exc:
+        logger.warning("Frame analysis quota-limited: %s", exc)
+        return ""
     except Exception as exc:  # pragma: no cover - exercised by unit tests
         logger.warning("Frame analysis failed: %s", exc)
         return ""

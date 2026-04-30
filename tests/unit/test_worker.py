@@ -427,6 +427,18 @@ def test_run_uses_configured_receive_wait_and_idle_backoff(monkeypatch):
     monkeypatch.setattr(runner_mod.logging, "basicConfig", lambda **_: None)
     monkeypatch.setattr(runner_mod, "_maybe_start_health_server", lambda: None)
 
+    class _NoopRenewer:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def register(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(runner_mod, "AutoLockRenewer", lambda: _NoopRenewer())
+
     sleeps = []
     monkeypatch.setattr(runner_mod.time, "sleep", lambda seconds: sleeps.append(seconds))
 
@@ -538,6 +550,79 @@ def test_run_continues_when_complete_loses_message_lock(monkeypatch):
 
     assert fake_worker.handled == 1
     assert fake_orchestrator.receiver.completed == 1
+
+
+def test_run_registers_autolock_renewer_for_each_message(monkeypatch):
+    from app.workers import runner as runner_mod
+
+    monkeypatch.setenv("PFCD_WORKER_ROLE", "processing")
+    monkeypatch.setenv("PFCD_WORKER_LOCK_RENEWAL_SECONDS", "321")
+    monkeypatch.setattr(runner_mod.logging, "basicConfig", lambda **_: None)
+    monkeypatch.setattr(runner_mod, "_maybe_start_health_server", lambda: None)
+
+    registered = []
+
+    class _FakeRenewer:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def register(self, receiver, message, max_lock_renewal_duration):
+            registered.append((receiver, message, max_lock_renewal_duration))
+
+    monkeypatch.setattr(runner_mod, "AutoLockRenewer", lambda: _FakeRenewer())
+
+    class _FakeMessage:
+        body = [b"{}"]
+
+    class _FakeReceiver:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def receive_messages(self, **_: Any):
+            self.calls += 1
+            if self.calls == 1:
+                return [_FakeMessage()]
+            raise KeyboardInterrupt()
+
+        def complete_message(self, _message: Any) -> None:
+            return None
+
+        def dead_letter_message(self, _message: Any, **__: Any) -> None:
+            raise AssertionError("No message should be dead-lettered in this test")
+
+        def abandon_message(self, _message: Any) -> None:
+            raise AssertionError("No message should be abandoned in this test")
+
+    class _FakeOrchestrator:
+        def __init__(self) -> None:
+            self.enabled = True
+            self.receiver = _FakeReceiver()
+
+        @contextmanager
+        def receive(self, _phase: str, max_wait_time: int = 5):
+            del max_wait_time
+            yield self.receiver
+
+    fake_orchestrator = _FakeOrchestrator()
+
+    class _FakeWorker:
+        def __init__(self, _phase: str) -> None:
+            self.orchestrator = fake_orchestrator
+
+        def handle_message(self, _message: Any, _body: Any) -> None:
+            return None
+
+    monkeypatch.setattr(runner_mod, "Worker", _FakeWorker)
+
+    with pytest.raises(KeyboardInterrupt):
+        runner_mod.run()
+
+    assert len(registered) == 1
+    assert registered[0][0] is fake_orchestrator.receiver
+    assert registered[0][2] == 321
 
 
 def test_connection_backoff_seconds_is_bounded(monkeypatch):

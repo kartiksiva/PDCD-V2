@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import time
 
 import httpx
 
@@ -25,10 +26,55 @@ logger = logging.getLogger(__name__)
 _DEFAULT_AZURE_OPENAI_API_VERSION = "2024-10-21"
 _MAX_TRANSCRIPTION_BYTES = 24 * 1024 * 1024
 _CHUNK_DURATION_SEC = 600
+_HTTP_RETRY_DELAYS_SEC = (1.0, 2.0, 4.0)
+_RETRYABLE_HTTP_STATUSES = {429, 500, 502, 503, 504}
+
+
+class TranscriptionQuotaError(RuntimeError):
+    """Quota/rate-limit error raised after bounded retries."""
 
 
 def _too_large_stub() -> str:
     return "[transcription_skipped:file_too_large — chunked transcription pending MediaPreprocessor]"
+
+
+def _post_transcription_with_retry(
+    url: str,
+    *,
+    headers: dict[str, str],
+    storage_key: str,
+    data: dict[str, str],
+) -> httpx.Response:
+    total_attempts = len(_HTTP_RETRY_DELAYS_SEC) + 1
+    for attempt in range(1, total_attempts + 1):
+        with open(storage_key, "rb") as fh:
+            files = {"file": (os.path.basename(storage_key), fh, "application/octet-stream")}
+            response = httpx.post(url, headers=headers, files=files, data=data, timeout=120.0)
+        status = response.status_code
+        if status not in _RETRYABLE_HTTP_STATUSES:
+            response.raise_for_status()
+            return response
+
+        if status == 429 and attempt >= total_attempts:
+            raise TranscriptionQuotaError(
+                f"Transcription quota/rate limit persisted after {attempt} attempts (HTTP 429)."
+            )
+
+        if attempt < total_attempts:
+            delay = _HTTP_RETRY_DELAYS_SEC[attempt - 1]
+            logger.warning(
+                "Transcription HTTP %d on attempt %d/%d; retrying in %.1fs",
+                status,
+                attempt,
+                total_attempts,
+                delay,
+            )
+            time.sleep(delay)
+            continue
+
+        response.raise_for_status()
+
+    raise RuntimeError("Unreachable transcription retry state")
 
 
 def _transcribe_with_azure(storage_key: str, *, deployment: str) -> str:
@@ -44,31 +90,27 @@ def _transcribe_with_azure(storage_key: str, *, deployment: str) -> str:
     credential = DefaultAzureCredential()
     token = credential.get_token("https://cognitiveservices.azure.com/.default")
     headers = {"Authorization": f"Bearer {token.token}"}
-
-    with open(storage_key, "rb") as fh:
-        files = {"file": (os.path.basename(storage_key), fh, "application/octet-stream")}
-        data = {"response_format": "vtt"}
-        response = httpx.post(url, headers=headers, files=files, data=data, timeout=120.0)
-        response.raise_for_status()
-        return response.text
+    data = {"response_format": "vtt"}
+    response = _post_transcription_with_retry(
+        url,
+        headers=headers,
+        storage_key=storage_key,
+        data=data,
+    )
+    return response.text
 
 
 def _transcribe_with_openai(storage_key: str, *, model: str) -> str:
     api_key = os.environ["OPENAI_API_KEY"]
     headers = {"Authorization": f"Bearer {api_key}"}
-
-    with open(storage_key, "rb") as fh:
-        files = {"file": (os.path.basename(storage_key), fh, "application/octet-stream")}
-        data = {"model": model, "response_format": "vtt"}
-        response = httpx.post(
-            "https://api.openai.com/v1/audio/transcriptions",
-            headers=headers,
-            files=files,
-            data=data,
-            timeout=120.0,
-        )
-        response.raise_for_status()
-        return response.text
+    data = {"model": model, "response_format": "vtt"}
+    response = _post_transcription_with_retry(
+        "https://api.openai.com/v1/audio/transcriptions",
+        headers=headers,
+        storage_key=storage_key,
+        data=data,
+    )
+    return response.text
 
 
 def _resolve_profile(profile: str | None) -> Profile:

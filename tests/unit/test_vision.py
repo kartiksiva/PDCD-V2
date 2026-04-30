@@ -85,6 +85,8 @@ def test_call_vision_openai_uses_max_completion_tokens(monkeypatch):
     captured: dict = {}
 
     class _Resp:
+        status_code = 200
+
         def raise_for_status(self):
             return None
 
@@ -116,6 +118,8 @@ def test_call_vision_azure_uses_max_completion_tokens(monkeypatch):
     captured: dict = {}
 
     class _Resp:
+        status_code = 200
+
         def raise_for_status(self):
             return None
 
@@ -143,6 +147,71 @@ def test_call_vision_azure_uses_max_completion_tokens(monkeypatch):
     assert result == "ok"
     assert captured["json"]["max_completion_tokens"] == 444
     assert "max_tokens" not in captured["json"]
+
+
+def test_call_vision_openai_retries_then_succeeds(monkeypatch):
+    from app.agents import vision
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    sleeps = []
+    monkeypatch.setattr(vision.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    class _Resp:
+        def __init__(self, status_code: int):
+            self.status_code = status_code
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+                response = httpx.Response(self.status_code, request=request)
+                raise httpx.HTTPStatusError("boom", request=request, response=response)
+
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    statuses = iter([429, 500, 200])
+    monkeypatch.setattr(vision.httpx, "post", lambda *args, **kwargs: _Resp(next(statuses)))
+
+    result = vision._call_vision_openai([{"role": "user", "content": "x"}], model="gpt-4o-mini")
+
+    assert result == "ok"
+    assert sleeps == [1.0, 2.0]
+
+
+def test_call_vision_azure_raises_quota_after_bounded_retries(monkeypatch):
+    from app.agents import vision
+
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
+    monkeypatch.setenv("AZURE_OPENAI_VISION_DEPLOYMENT", "vision-deployment")
+    sleeps = []
+    monkeypatch.setattr(vision.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    class _Credential:
+        def get_token(self, _scope):
+            class _Token:
+                token = "fake-token"
+
+            return _Token()
+
+    class _Resp:
+        status_code = 429
+
+        def raise_for_status(self):
+            request = httpx.Request("POST", "https://example.openai.azure.com")
+            response = httpx.Response(self.status_code, request=request)
+            raise httpx.HTTPStatusError("boom", request=request, response=response)
+
+        def json(self):
+            return {"choices": [{"message": {"content": "ignored"}}]}
+
+    monkeypatch.setattr("azure.identity.DefaultAzureCredential", lambda: _Credential())
+    monkeypatch.setattr(vision.httpx, "post", lambda *args, **kwargs: _Resp())
+
+    with pytest.raises(vision.VisionQuotaError):
+        vision._call_vision_azure([{"role": "user", "content": "x"}], deployment="vision-deployment")
+
+    assert sleeps == [1.0, 2.0, 4.0]
 
 
 @pytest.mark.parametrize(
