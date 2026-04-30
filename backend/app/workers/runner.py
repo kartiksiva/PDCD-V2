@@ -20,6 +20,7 @@ from azure.servicebus.exceptions import (
 
 from app.agents.alignment import run_anchor_alignment
 from app.agents.extraction import run_extraction
+from app.agents.llm_reviewer import run_llm_semantic_review
 from app.agents.processing import run_processing
 from app.agents.reviewing import run_reviewing
 from app.job_logic import (
@@ -178,6 +179,10 @@ class Worker:
             if not job.get("draft"):
                 build_draft(job)
             cost = run_reviewing(job, profile_conf)
+            if job.get("agent_review", {}).get("decision") != "blocked":
+                cost += run_llm_semantic_review(job, profile_conf, self.storage)
+            else:
+                job.setdefault("review_notes", {}).setdefault("llm_semantic_flags", [])
             job["agent_review"]["decision_at"] = _utc_now()
             # All reviewing outcomes transition to NEEDS_REVIEW so a human can
             # inspect before finalizing.  The agent's decision is recorded in

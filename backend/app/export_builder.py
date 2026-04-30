@@ -159,6 +159,7 @@ def build_evidence_bundle(finalized_draft: Dict[str, Any], job: Dict[str, Any]) 
 
     return {
         "evidence_strength": (job.get("agent_signals") or {}).get("evidence_strength"),
+        "llm_semantic_flags": (job.get("review_notes") or {}).get("llm_semantic_flags") or [],
         "frame_policy": (
             (job.get("input_manifest") or {}).get("video", {}).get("frame_extraction_policy")
         ),
@@ -242,6 +243,7 @@ def build_export_markdown(draft: Dict[str, Any], evidence_bundle: Dict[str, Any]
     roles = _derive_roles(draft)
     approval_rows = draft.get("approval_matrix") or []
     controls = pdd.get("process_controls") or draft.get("process_controls") or []
+    llm_semantic_flags = evidence_bundle.get("llm_semantic_flags") or []
     exceptions = pdd.get("exceptions") or []
     automation = draft.get("automation_opportunities") or []
     faqs = draft.get("faqs") or []
@@ -275,7 +277,7 @@ def build_export_markdown(draft: Dict[str, Any], evidence_bundle: Dict[str, Any]
         "---",
         "",
         "## Index",
-        "1. Document Control  2. Introduction  3. Process Steps  4. Process Exceptions  5. Process Controls  6. Approval Matrix  7. Appendix",
+        "1. Document Control  2. Introduction  3. Process Steps  4. Process Exceptions  5. Process Controls  5A. AI Semantic Review Notes  6. Approval Matrix  7. Appendix",
         "",
         "---",
         "",
@@ -421,6 +423,29 @@ def build_export_markdown(draft: Dict[str, Any], evidence_bundle: Dict[str, Any]
                 parts.append(f"| control-{idx:02d} | Needs Review | {_needs_review(ctl)} | Needs Review | Needs Review |")
     else:
         parts.append("| control-01 | Needs Review | Needs Review | Needs Review | Needs Review |")
+
+    if llm_semantic_flags:
+        parts.extend(["", "## 5A. AI Semantic Review Notes"])
+        parts.extend(
+            [
+                "| Flag | Evidence ID | Step | Anchor | Snippet |",
+                "|------|-------------|------|--------|---------|",
+            ]
+        )
+        for flag in llm_semantic_flags:
+            parts.append(
+                "| "
+                + " | ".join(
+                    [
+                        _needs_review(flag.get("message") or flag.get("code")),
+                        _needs_review(flag.get("evidence_id")),
+                        _needs_review(flag.get("step_id")),
+                        _needs_review(flag.get("anchor")),
+                        _needs_review(flag.get("snippet"))[:120],
+                    ]
+                )
+                + " |"
+            )
 
     parts.extend(["", "## 6. Approval Matrix"])
     parts.extend(["| Role | Responsibility |", "|------|----------------|"])
@@ -647,6 +672,7 @@ def build_export_docx(
     roles = _derive_roles(draft)
     sipoc = draft.get("sipoc") or []
     controls = pdd.get("process_controls") or draft.get("process_controls") or []
+    llm_semantic_flags = evidence_bundle.get("llm_semantic_flags") or []
     exceptions = pdd.get("exceptions") or []
     approval_rows = draft.get("approval_matrix") or []
     automation = draft.get("automation_opportunities") or []
@@ -690,7 +716,10 @@ def build_export_docx(
     row[5].text = "Initial export"
 
     doc.add_heading("Index", level=1)
-    doc.add_paragraph("1. Document Control  2. Introduction  3. Process Steps  4. Process Exceptions  5. Process Controls  6. Approval Matrix  7. Appendix")
+    doc.add_paragraph(
+        "1. Document Control  2. Introduction  3. Process Steps  4. Process Exceptions  "
+        "5. Process Controls  5A. AI Semantic Review Notes  6. Approval Matrix  7. Appendix"
+    )
 
     doc.add_heading("2. Introduction", level=1)
     doc.add_heading("2.1 Process Overview", level=2)
@@ -821,6 +850,20 @@ def build_export_docx(
         row[2].text = "Needs Review"
         row[3].text = "Needs Review"
         row[4].text = "Needs Review"
+
+    if llm_semantic_flags:
+        doc.add_heading("5A. AI Semantic Review Notes", level=1)
+        sem_table = doc.add_table(rows=1, cols=5)
+        sem_table.style = "Table Grid"
+        for i, h in enumerate(["Flag", "Evidence ID", "Step", "Anchor", "Snippet"]):
+            sem_table.rows[0].cells[i].text = h
+        for flag in llm_semantic_flags:
+            row = sem_table.add_row().cells
+            row[0].text = _needs_review(flag.get("message") or flag.get("code"))
+            row[1].text = _needs_review(flag.get("evidence_id"))
+            row[2].text = _needs_review(flag.get("step_id"))
+            row[3].text = _needs_review(flag.get("anchor"))
+            row[4].text = _needs_review(flag.get("snippet"))[:180]
 
     doc.add_heading("6. Approval Matrix", level=1)
     appr_table = doc.add_table(rows=1, cols=2)
