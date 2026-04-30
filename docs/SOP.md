@@ -117,8 +117,8 @@ OPENAI_API_KEY=sk-...
 AZURE_SERVICE_BUS_CONNECTION_STRING=Endpoint=sb://...
 ```
 
-> **Shell env var warning:** If `OPENAI_API_KEY` is already exported in your shell, Docker Compose will use that value instead of the file.  
-> Unset it first: `unset OPENAI_API_KEY`
+> **Shell env var warning:** If `OPENAI_API_KEY` (or related provider/model vars) is already exported in your shell, Docker Compose can use that value instead of `.env.docker.local`.
+> Prefer the safe restart command in Step 5A so `.env.docker.local` is guaranteed to win.
 
 ### Step 3 — Create the local PostgreSQL database
 
@@ -150,6 +150,30 @@ Wait ~30 seconds for the API health check to pass, then verify:
 ```bash
 curl http://127.0.0.1:8000/health
 # Expected: {"status":"ok"} or {"status":"degraded",...}
+```
+
+### Step 5A — Force Docker to use `.env.docker.local` for OpenAI keys/models
+
+Use this when jobs fail with `429 insufficient_quota` and you suspect a stale shell-exported key:
+
+```bash
+env -u OPENAI_API_KEY \
+    -u PFCD_PROVIDER \
+    -u OPENAI_CHAT_MODEL_BALANCED \
+    -u OPENAI_CHAT_MODEL_QUALITY \
+    -u OPENAI_TRANSCRIPTION_MODEL \
+    -u OPENAI_VISION_MODEL \
+  docker compose --env-file .env.docker.local -f docker-compose.local.yml \
+  up -d --force-recreate api worker-extracting worker-processing worker-reviewing
+```
+
+Verify runtime provider/model values inside containers:
+
+```bash
+for s in api worker-extracting worker-processing worker-reviewing; do
+  docker compose --env-file .env.docker.local -f docker-compose.local.yml exec -T "$s" \
+    /bin/sh -lc 'echo "$PFCD_PROVIDER | $OPENAI_CHAT_MODEL_BALANCED | $OPENAI_CHAT_MODEL_QUALITY"'
+done
 ```
 
 ### Step 6 — (Optional) Start the Streamlit UI
