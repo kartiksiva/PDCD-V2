@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -16,6 +18,9 @@ logger = logging.getLogger(__name__)
 
 POLL_INTERVAL_SECONDS = int(os.environ.get("PFCD_CLEANUP_INTERVAL_SECONDS", "300"))
 STALE_PHASE_WINDOW_SECONDS = int(os.environ.get("PFCD_STALE_PHASE_WINDOW_SECONDS", "120"))
+MAX_PURGE_ATTEMPTS = int(os.environ.get("PFCD_MAX_PURGE_ATTEMPTS", "5"))
+
+_shutdown_event = threading.Event()
 
 
 def _utc_now() -> str:
@@ -83,14 +88,34 @@ class CleanupWorker:
                 self.repo.append_job_event(job_id, "cleanup_failed", {"phase": "expire", "message": str(exc)})
 
     def purge_pending_jobs(self) -> None:
-        """Phase B: delete export files and purge DB rows for cleanup_pending jobs."""
+        """Phase B: delete export files and purge DB rows for cleanup_pending jobs.
+
+        Tracks purge_attempt_count so jobs that repeatedly fail don't block indefinitely.
+        After MAX_PURGE_ATTEMPTS the job is logged as a GDPR retention warning and left
+        with cleanup_pending=True for manual remediation.
+        """
         job_ids = self.repo.find_cleanup_pending_jobs()
         for job_id in job_ids:
             try:
+                job = self.repo.get_job(job_id)
+                if not job:
+                    continue
+                attempt = int(job.get("purge_attempt_count") or 0) + 1
+                if attempt > MAX_PURGE_ATTEMPTS:
+                    logger.error(
+                        "GDPR retention warning: job %s exceeded %d purge attempts; "
+                        "manual intervention required",
+                        job_id,
+                        MAX_PURGE_ATTEMPTS,
+                    )
+                    continue
+                job["purge_attempt_count"] = attempt
+                job["updated_at"] = _utc_now()
+                self.repo.upsert_job(job_id, job)
                 self.storage.delete_job_exports(job_id)
                 self.repo.purge_job_data(job_id)
                 self.repo.append_job_event(job_id, "cleanup_completed", {"at": _utc_now()})
-                logger.info("Purged data for job %s", job_id)
+                logger.info("Purged data for job %s (attempt %d)", job_id, attempt)
             except Exception as exc:
                 logger.error("Failed to purge job %s: %s", job_id, exc, exc_info=True)
                 # Keep cleanup_pending=True so the next cleanup pass can retry the purge.
@@ -107,14 +132,23 @@ def run() -> None:
     storage = ExportStorage.from_env()
     orchestrator = ServiceBusOrchestrator()
     worker = CleanupWorker(repo=repo, storage=storage, orchestrator=orchestrator)
+
+    def _handle_sigterm(signum: int, frame: object) -> None:
+        logger.info("SIGTERM received; cleanup worker shutting down after current pass")
+        _shutdown_event.set()
+
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+
     logger.info("Cleanup worker starting (interval=%ds)", POLL_INTERVAL_SECONDS)
-    while True:
+    while not _shutdown_event.is_set():
         logger.info("Cleanup pass starting")
         worker.reenqueue_stale_phases()
         worker.expire_ttl_jobs()
         worker.purge_pending_jobs()
         logger.info("Cleanup pass complete; sleeping %ds", POLL_INTERVAL_SECONDS)
-        time.sleep(POLL_INTERVAL_SECONDS)
+        _shutdown_event.wait(POLL_INTERVAL_SECONDS)
+
+    logger.info("Cleanup worker stopped")
 
 
 if __name__ == "__main__":

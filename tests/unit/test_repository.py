@@ -133,7 +133,7 @@ def test_upsert_converts_staledataerror_to_concurrent_modification(monkeypatch):
     _, repo = _reload_modules()
 
     @contextmanager
-    def _stale_session_scope():
+    def _stale_session_scope(database_url=None):
         raise repo.StaleDataError("simulated stale row update")
         yield
 

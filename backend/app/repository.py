@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 from sqlalchemy import delete, select
 from sqlalchemy.orm.exc import StaleDataError
 
-from app.db import ENGINE, session_scope
+from app.db import get_engine, session_scope
 from app.job_logic import JobStatus, _utc_now
 from app.models import AgentRun, Draft, ExportPayload, InputManifest, Job, JobEvent, ReviewNotes
 
@@ -42,12 +42,21 @@ class ConcurrentModificationError(RuntimeError):
 
 
 class JobRepository:
-    def __init__(self) -> None:
-        self.engine = ENGINE
+    def __init__(self, database_url: str | None = None) -> None:
+        self._database_url = database_url
+
+    @property
+    def engine(self):
+        return get_engine(self._database_url)
 
     @classmethod
     def from_env(cls) -> "JobRepository":
         return cls()
+
+    @classmethod
+    def from_url(cls, database_url: str) -> "JobRepository":
+        """Create a repository bound to a specific database URL (for test isolation)."""
+        return cls(database_url=database_url)
 
     def init_db(self) -> None:
         from app.models import Base
@@ -162,7 +171,7 @@ class JobRepository:
         }
 
     def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
-        with session_scope() as session:
+        with session_scope(self._database_url) as session:
             job = session.get(Job, job_id)
             if not job:
                 return None
@@ -179,7 +188,7 @@ class JobRepository:
 
     def list_jobs(self, limit: int = 50) -> list[dict]:
         """Return lightweight job summaries, most recent first, excluding deleted."""
-        with session_scope() as session:
+        with session_scope(self._database_url) as session:
             rows = session.execute(
                 select(Job)
                 .where(Job.deleted_at.is_(None))
@@ -205,7 +214,7 @@ class JobRepository:
         logger.debug("Upserting job %s status=%s", job_id, payload.get("status"))
         persisted_version: int | None = None
         try:
-            with session_scope() as session:
+            with session_scope(self._database_url) as session:
                 job = session.get(Job, job_id)
                 if not job:
                     job = Job(job_id=job_id, version=int(payload.get("version") or 1))
@@ -342,7 +351,7 @@ class JobRepository:
             payload["version"] = persisted_version
 
     def append_job_event(self, job_id: str, event_type: str, payload: Dict[str, Any]) -> None:
-        with session_scope() as session:
+        with session_scope(self._database_url) as session:
             session.add(
                 JobEvent(
                     event_id=str(uuid4()),
@@ -361,7 +370,7 @@ class JobRepository:
             JobStatus.COMPLETED.value,
             JobStatus.FAILED.value,
         }
-        with session_scope() as session:
+        with session_scope(self._database_url) as session:
             rows = session.execute(
                 select(Job.job_id).where(
                     Job.ttl_expires_at != None,  # noqa: E711
@@ -373,7 +382,7 @@ class JobRepository:
 
     def find_cleanup_pending_jobs(self) -> list[str]:
         """Return job_ids where cleanup_pending=True."""
-        with session_scope() as session:
+        with session_scope(self._database_url) as session:
             rows = session.execute(
                 select(Job.job_id).where(Job.cleanup_pending == True)  # noqa: E712
             ).fetchall()
@@ -385,7 +394,7 @@ class JobRepository:
         Used by the cleanup sweeper to recover jobs whose enqueue call was lost
         after the phase completed but before the Service Bus send succeeded.
         """
-        with session_scope() as session:
+        with session_scope(self._database_url) as session:
             rows = session.execute(
                 select(Job.job_id).where(
                     Job.pending_next_phase != None,  # noqa: E711
@@ -396,7 +405,7 @@ class JobRepository:
 
     def purge_job_data(self, job_id: str) -> None:
         """Delete all related rows for a job; set cleanup_pending=False on the Job row."""
-        with session_scope() as session:
+        with session_scope(self._database_url) as session:
             for model in (InputManifest, ReviewNotes, Draft, AgentRun, ExportPayload, JobEvent):
                 session.execute(delete(model).where(model.job_id == job_id))
             job = session.get(Job, job_id)

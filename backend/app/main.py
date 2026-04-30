@@ -55,6 +55,9 @@ ORCHESTRATOR = ServiceBusOrchestrator()
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # Validate CORS config at startup so bad env vars produce a clear logged error
+    # rather than an opaque RuntimeError buried in the import chain.
+    _cors_origins()
     await anyio.to_thread.run_sync(JOB_REPO.init_db)
     logger.info("Database initialised")
     try:
@@ -87,6 +90,20 @@ def _cors_origins() -> list[str]:
     return validated
 
 
+def _cors_origins_safe() -> list[str]:
+    """Parse CORS origins without raising; invalid entries are skipped.
+
+    Used at module load time so a misconfigured env var does not prevent
+    the application from being imported.  The strict version ``_cors_origins()``
+    is called inside ``_lifespan`` where a failure produces a clear startup error.
+    """
+    try:
+        return _cors_origins()
+    except RuntimeError as exc:
+        logger.error("PFCD_CORS_ORIGINS misconfigured: %s — using empty allow-list", exc)
+        return []
+
+
 def _resolve_upload_path(upload_id: str, file_name: str | None) -> str:
     file_part = file_name or "upload"
     return os.path.join(UPLOADS_DIR, upload_id, file_part)
@@ -110,8 +127,14 @@ def _parse_iso8601(value: str | None) -> datetime | None:
 
 def _save_upload_manifest(upload_id: str, payload: Dict[str, Any]) -> None:
     os.makedirs(UPLOAD_META_DIR, exist_ok=True)
-    with open(_upload_manifest_path(upload_id), "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=True, separators=(",", ":"))
+    dest = _upload_manifest_path(upload_id)
+    # Write to a temp file then atomically rename so a crash mid-write never
+    # leaves a truncated JSON file that blocks subsequent upload-url resolution.
+    dir_ = os.path.dirname(dest)
+    with tempfile.NamedTemporaryFile("w", dir=dir_, suffix=".tmp", delete=False, encoding="utf-8") as tmp:
+        json.dump(payload, tmp, ensure_ascii=True, separators=(",", ":"))
+        tmp_path = tmp.name
+    os.replace(tmp_path, dest)
 
 
 def _load_upload_manifest(upload_id: str) -> Dict[str, Any] | None:
@@ -272,7 +295,7 @@ def _resolve_input_files(payload: JobCreateRequest) -> JobCreateRequest:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins(),
+    allow_origins=_cors_origins_safe(),
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
@@ -552,19 +575,37 @@ async def upload_content_via_api(upload_id: str, request: Request) -> Dict[str, 
 @api_router.post("/upload", status_code=201)
 async def upload_file(file: UploadFile = File(...)) -> Dict[str, Any]:
     upload_id = str(uuid4())
-    content = await file.read()
-    size_bytes = len(content)
-    if size_bytes > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail=f"File exceeds 500MB limit.")
-
     safe_name = _safe_upload_name(file.filename)
     dest_dir = os.path.join(UPLOADS_DIR, upload_id)
     await anyio.to_thread.run_sync(lambda: os.makedirs(dest_dir, exist_ok=True))
     dest_path = os.path.join(dest_dir, safe_name)
-    def _write():
+
+    # Stream from the SpooledTemporaryFile to disk in chunks so we never
+    # allocate the entire upload body as a single Python bytes object.
+    def _stream_to_disk() -> int:
+        written = 0
         with open(dest_path, "wb") as fh:
-            fh.write(content)
-    await anyio.to_thread.run_sync(_write)
+            while True:
+                chunk = file.file.read(65536)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > MAX_UPLOAD_BYTES:
+                    fh.close()
+                    try:
+                        os.remove(dest_path)
+                    except OSError:
+                        pass
+                    raise HTTPException(status_code=413, detail="File exceeds 500MB limit.")
+                fh.write(chunk)
+        return written
+
+    try:
+        size_bytes = await anyio.to_thread.run_sync(_stream_to_disk)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Upload write failed: {exc}") from exc
 
     source_type = MIME_TO_SOURCE_TYPE.get(file.content_type or "", "document")
     _save_upload_manifest(
@@ -738,7 +779,10 @@ async def update_draft(job_id: str, payload: DraftUpdateRequest) -> Dict[str, An
     job["user_saved_at"] = job["updated_at"]
     job["draft"]["user_reconciled_at"] = _utc_now()
     job["draft"]["version"] = current_draft_version + 1
-    await _repo_upsert_job(job_id, job)
+    try:
+        await _repo_upsert_job(job_id, job)
+    except ConcurrentModificationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     # Re-run the pure-Python reviewing gate so flags reflect the edited draft.
     from app.agents.reviewing import run_reviewing
 
@@ -761,7 +805,10 @@ async def update_draft(job_id: str, payload: DraftUpdateRequest) -> Dict[str, An
         and not str(flag.get("code", "")).startswith("sipoc_")
     ]
     run_reviewing(job, {})
-    await _repo_upsert_job(job_id, job)
+    try:
+        await _repo_upsert_job(job_id, job)
+    except ConcurrentModificationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     await anyio.to_thread.run_sync(
         JOB_REPO.append_job_event,
         job_id,
