@@ -1229,6 +1229,30 @@ def test_run_anchor_alignment_uses_text_similarity_when_video_transcript_present
     assert summary["similarity_score"] >= 0.99
 
 
+def test_run_anchor_alignment_marks_suspected_mismatch_for_divergent_texts():
+    """Divergent uploaded vs video transcript inline text must produce suspected_mismatch."""
+    from app.agents.alignment import run_anchor_alignment
+
+    job = _make_job()
+    job["_transcript_text_inline"] = "Approve vendor invoice in SAP and schedule payment."
+    job["_video_transcript_inline"] = "Troubleshoot warehouse barcode scanner and reset mobile device."
+    job["extracted_evidence"] = {
+        "evidence_items": [
+            {"id": "ev-01", "summary": "test", "anchor": "00:00:01-00:00:05", "confidence": 0.9}
+        ],
+        "speakers_detected": [],
+        "process_domain": "test",
+        "transcript_quality": "high",
+    }
+
+    run_anchor_alignment(job)
+
+    summary = job["agent_signals"]["anchor_alignment_summary"]
+    assert summary["consistency_method"] == "text_similarity"
+    assert summary["verdict"] == "suspected_mismatch"
+    assert job["transcript_media_consistency"]["verdict"] == "suspected_mismatch"
+
+
 def test_anchor_alignment_fallback_uses_configurable_inconclusive_threshold(monkeypatch):
     import app.agents.alignment as alignment
 
