@@ -149,6 +149,12 @@ Rules:
   "Needs Review" for action_required or owner when exception context and roles are available.
 - Approval matrix coverage rule: every role listed in extracted_facts.roles_detected must appear in
   approval_matrix with explicit responsibility value R/A/C/I.
+- Roles quality rule: pdd.roles[] must contain only distinct functional/organizational roles that
+  perform or govern steps in this process (e.g. "Intake Analyst", "Call Team", "Compliance").
+  Do NOT include session participation meta-labels such as "Service Provider" or "Customer".
+  Every entry must be a single discrete role name — no slash-separated composites.
+- Actor quality rule: steps[].actor must be a single discrete organizational role name.
+  Use the primary executing role only. Do not use composite strings such as "Analyst / Customer".
 - Control type definitions:
   - manual: human action or decision without system enforcement
   - system: enforced or logged by the software itself

@@ -205,16 +205,26 @@ def _format_date(value: Any) -> str:
     return s or "Needs Review"
 
 
+_SESSION_META_ROLES = {"service provider", "customer"}
+
+
 def _derive_roles(draft: Dict[str, Any]) -> List[str]:
     pdd = draft.get("pdd") or {}
     roles: List[str] = []
     for role in pdd.get("roles") or []:
         role_name = str(role).strip()
-        if role_name and role_name not in roles:
+        # Skip session meta-labels and slash-composite actor strings
+        if not role_name:
+            continue
+        if "/" in role_name:
+            continue
+        if role_name.lower() in _SESSION_META_ROLES:
+            continue
+        if role_name not in roles:
             roles.append(role_name)
     for step in pdd.get("steps") or []:
         actor = str((step or {}).get("actor") or "").strip()
-        if actor and actor not in roles:
+        if actor and "/" not in actor and actor.lower() not in _SESSION_META_ROLES and actor not in roles:
             roles.append(actor)
     return roles or ["Needs Review"]
 
@@ -547,9 +557,23 @@ def build_export_pdf(
     evidence_bundle: Dict[str, Any],
     frame_bytes_map: Optional[Dict[str, bytes]] = None,
 ) -> bytes:
-    """Build evidence-linked PDF export."""
+    """Build evidence-linked PDF export with full section parity to Markdown/DOCX."""
     from fpdf import FPDF
     from fpdf.enums import XPos, YPos
+
+    def _safe(text: str) -> str:
+        """Replace characters unsupported by core Helvetica font with ASCII equivalents."""
+        return (
+            str(text or "")
+            .replace("\u2014", "-")   # em dash
+            .replace("\u2013", "-")   # en dash
+            .replace("\u2019", "'")   # right single quotation
+            .replace("\u2018", "'")   # left single quotation
+            .replace("\u201c", '"')   # left double quotation
+            .replace("\u201d", '"')   # right double quotation
+            .encode("latin-1", errors="replace")
+            .decode("latin-1")
+        )
 
     pdf = FPDF()
     pdf.add_page()
@@ -559,43 +583,229 @@ def build_export_pdf(
         pdf.set_x(pdf.l_margin)
         style = "B" if bold else ""
         pdf.set_font("Helvetica", style=style, size=size)
-        pdf.cell(page_width, 10, text, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.set_font("Helvetica", size=11)
+        pdf.multi_cell(page_width, 8, _safe(text))
+        pdf.set_font("Helvetica", size=10)
 
     def _row(text: str) -> None:
         pdf.set_x(pdf.l_margin)
-        pdf.multi_cell(page_width, 7, text)
+        pdf.set_font("Helvetica", size=10)
+        pdf.multi_cell(page_width, 6, _safe(text))
 
-    pdf.set_font("Helvetica", size=11)
+    def _table_row(cells: list, col_widths: list) -> None:
+        """Render a single table row. Uses multi_cell with fixed column widths."""
+        x_start = pdf.l_margin
+        row_h = 6
+        y_before = pdf.get_y()
+        for cell, w in zip(cells, col_widths):
+            pdf.set_xy(x_start, y_before)
+            pdf.set_font("Helvetica", size=9)
+            pdf.multi_cell(w, row_h, _safe(str(cell or "")), border=1)
+            x_start += w
+        pdf.set_xy(pdf.l_margin, max(pdf.get_y(), y_before + row_h))
+
+    pdf.set_font("Helvetica", size=10)
     pdd = draft.get("pdd") or {}
+    steps = pdd.get("steps") or []
+    exceptions = pdd.get("exceptions") or []
+    controls = pdd.get("process_controls") or draft.get("process_controls") or []
+    sipoc_rows = draft.get("sipoc") or []
+    approval_rows = draft.get("approval_matrix") or []
+    automation = draft.get("automation_opportunities") or []
+    faqs = draft.get("faqs") or []
+    roles = _derive_roles(draft)
+    approval_lookup = {
+        str(e.get("role") or "").strip(): str(e.get("responsibility") or "—").strip() or "—"
+        for e in approval_rows
+        if isinstance(e, dict)
+    }
+    process_name = _needs_review(
+        pdd.get("process_name") or draft.get("subject_process") or pdd.get("purpose")
+    )
 
+    # Title block
     _heading("Process Definition Document", size=14, bold=True)
+    pdf.ln(1)
+    _heading(process_name, size=12, bold=True)
+    pdf.ln(1)
+    _row(f"Function: {_needs_review(pdd.get('function'))}")
+    _row(f"Sub-Function: {_needs_review(pdd.get('sub_function'))}")
+    _row("Document Version: v1.0  |  Status: Draft")
+    _row(f"Effective Date: {_format_date(draft.get('generated_at'))}")
+
+    # §1 Document Control
+    pdf.ln(3)
+    _heading("1. Document Control", size=11, bold=True)
+    _row("Key Stakeholders: Needs Review")
+    _row("Version History: v1.0 — Initial export — Needs Review")
+
+    # §2 Introduction
+    pdf.ln(3)
+    _heading("2. Introduction", size=11, bold=True)
+    _row(f"2.1 Process Overview: {_needs_review(pdd.get('process_overview'))}")
+    _row(f"2.2 Process Objective: {_needs_review(pdd.get('objective') or pdd.get('purpose'))}")
+    _row(f"2.3 Frequency: {_needs_review(pdd.get('frequency'))}")
+    _row(f"2.4 SLA: {_needs_review(pdd.get('sla'))}")
+
+    # §2.5 RACI matrix (compact: Task | Responsible | Accountable columns only to fit page)
     pdf.ln(2)
-    _row(f"Purpose: {pdd.get('purpose', '')}")
-    _row(f"Scope: {pdd.get('scope', '')}")
+    _heading("2.5 RACI (task × role matrix)", size=10, bold=True)
+    if steps and roles:
+        # Wide table — use narrow column widths
+        col0 = page_width * 0.38
+        role_w = (page_width - col0) / max(len(roles), 1)
+        role_w = min(role_w, 22.0)
+        used_w = col0 + role_w * len(roles)
+        # If too wide, truncate roles list to fit
+        max_role_cols = max(1, int((page_width - col0) / 14))
+        display_roles = roles[:max_role_cols]
+        role_w = (page_width - col0) / len(display_roles)
+        _table_row(["Task"] + display_roles, [col0] + [role_w] * len(display_roles))
+        for step in steps:
+            actor = str((step or {}).get("actor") or "").strip()
+            task = _needs_review((step or {}).get("summary") or (step or {}).get("id"))
+            row_cells = [task]
+            for role in display_roles:
+                if actor and role == actor:
+                    row_cells.append("R")
+                else:
+                    row_cells.append(approval_lookup.get(role, "—"))
+            _table_row(row_cells, [col0] + [role_w] * len(display_roles))
+    else:
+        _row("Needs Review")
 
+    # §2.6 SIPOC table
+    pdf.ln(2)
+    _heading("2.6 SIPOC", size=10, bold=True)
+    if sipoc_rows:
+        # 5 content cols + step + anchor
+        s_cols = [28, 30, 40, 30, 28, 14, 26]
+        total = sum(s_cols)
+        s_cols = [c * page_width / total for c in s_cols]
+        _table_row(["Supplier", "Input", "Process", "Output", "Customer", "Step", "Anchor"], s_cols)
+        for row in sipoc_rows:
+            step_anchor = ", ".join(row.get("step_anchor") or []) or "—"
+            _table_row([
+                _needs_review(row.get("supplier")),
+                _needs_review(row.get("input")),
+                _needs_review(row.get("process_step")),
+                _needs_review(row.get("output")),
+                _needs_review(row.get("customer")),
+                step_anchor,
+                _needs_review(row.get("source_anchor")),
+            ], s_cols)
+    else:
+        _row("No SIPOC data available.")
+
+    # §3 Process Steps (detailed)
     pdf.ln(3)
-    _heading("Steps", bold=True)
-    for step in pdd.get("steps") or []:
-        anchors = ", ".join(
-            sa.get("anchor", "")
-            for sa in (step.get("source_anchors") or [])
-            if sa.get("anchor")
-        )
-        anchor_part = f" [anchors: {anchors}]" if anchors else ""
-        _row(f"  {step.get('id')}: {step.get('summary')}{anchor_part}")
+    _heading("3. Process Steps", size=11, bold=True)
+    for step in steps:
+        sid = step.get("id", "")
+        summary = _needs_review(step.get("summary"))
+        tools = _needs_review(step.get("tools_systems") or step.get("system"))
+        inp = _needs_review(step.get("input"))
+        out = _needs_review(step.get("output"))
+        anchor = _step_source_anchor(step)
+        _heading(f"  {sid}: {summary}", size=10, bold=True)
+        _row(f"    Tools/Systems: {tools}")
+        _row(f"    Input: {inp}  →  Output: {out}")
+        _row(f"    Evidence anchor: {anchor}")
 
+    # §4 Process Exceptions
     pdf.ln(3)
-    _heading("SIPOC", bold=True)
-    for idx, row in enumerate(draft.get("sipoc") or [], start=1):
-        step_refs = ", ".join(row.get("step_anchor") or [])
-        step_ref_part = f" [steps: {step_refs}]" if step_refs else ""
-        _row(
-            f"  {idx}. {row.get('process_step')} "
-            f"[anchor: {row.get('source_anchor', 'N/A')}]{step_ref_part}"
-        )
+    _heading("4. Process Exceptions", size=11, bold=True)
+    if exceptions:
+        ex_cols = [page_width * r for r in [0.26, 0.26, 0.28, 0.20]]
+        _table_row(["Scenario", "Trigger", "Action Required", "Owner"], ex_cols)
+        for exc in exceptions:
+            if isinstance(exc, dict):
+                _table_row([
+                    _needs_review(exc.get("scenario")),
+                    _needs_review(exc.get("trigger")),
+                    _needs_review(exc.get("action_required")),
+                    _needs_review(exc.get("owner")),
+                ], ex_cols)
+    else:
+        _row("No exceptions recorded.")
 
-    # Evidence bundle section
+    # §5 Process Controls
+    pdf.ln(3)
+    _heading("5. Process Controls", size=11, bold=True)
+    if controls:
+        c_cols = [page_width * r for r in [0.12, 0.13, 0.40, 0.16, 0.19]]
+        _table_row(["Control #", "Step", "Description", "Manual/System", "Preventive/Detective"], c_cols)
+        for ctrl in controls:
+            if isinstance(ctrl, dict):
+                _table_row([
+                    _needs_review(ctrl.get("control_id")),
+                    _needs_review(ctrl.get("process_step_id")),
+                    _needs_review(ctrl.get("control_description")),
+                    _needs_review(ctrl.get("manual_or_system")),
+                    _needs_review(ctrl.get("preventive_or_detective")),
+                ], c_cols)
+    else:
+        _row("No process controls recorded.")
+
+    # §6 Approval Matrix
+    pdf.ln(3)
+    _heading("6. Approval Matrix", size=11, bold=True)
+    if approval_rows:
+        am_cols = [page_width * 0.65, page_width * 0.35]
+        _table_row(["Role", "Responsibility"], am_cols)
+        for entry in approval_rows:
+            if isinstance(entry, dict):
+                _table_row([
+                    _needs_review(entry.get("role")),
+                    _needs_review(entry.get("responsibility")),
+                ], am_cols)
+    else:
+        _row("No approval matrix data.")
+
+    # §7 Appendix — Automation Opportunities
+    pdf.ln(3)
+    _heading("7. Appendix", size=11, bold=True)
+    _heading("7.1 Automation Opportunities", size=10, bold=True)
+    if automation:
+        au_cols = [page_width * r for r in [0.08, 0.36, 0.36, 0.20]]
+        _table_row(["ID", "Description", "Quantification", "Signal"], au_cols)
+        for idx, item in enumerate(automation, start=1):
+            if isinstance(item, dict):
+                _table_row([
+                    item.get("id") or f"auto-{idx:02d}",
+                    _needs_review(item.get("description")),
+                    _needs_review(item.get("quantification")),
+                    _needs_review(item.get("automation_signal")),
+                ], au_cols)
+    else:
+        _row("No automation opportunities identified.")
+
+    # §7.2 FAQs
+    pdf.ln(2)
+    _heading("7.2 FAQs", size=10, bold=True)
+    if faqs:
+        for idx, faq in enumerate(faqs, start=1):
+            if isinstance(faq, dict):
+                _row(f"Q{idx}: {_needs_review(faq.get('question'))}")
+                _row(f"  A: {_needs_review(faq.get('answer'))}")
+            else:
+                _row(f"{idx}. {_needs_review(faq)}")
+    else:
+        _row("No FAQs recorded.")
+
+    # §7.3 LLM Semantic Flags (advisory only)
+    llm_flags = evidence_bundle.get("llm_semantic_flags") or []
+    if llm_flags:
+        pdf.ln(2)
+        _heading("7.3 AI Semantic Review Notes (advisory)", size=10, bold=True)
+        for flag in llm_flags:
+            if isinstance(flag, dict):
+                sev = flag.get("severity", "info").upper()
+                msg = flag.get("message", "")
+                anchor = flag.get("anchor", "")
+                step = flag.get("step_id", "")
+                _row(f"  [{sev}] {msg}  (step: {step}, anchor: {anchor})")
+
+    # Evidence Bundle
     pdf.ln(4)
     _heading("Evidence Bundle", bold=True)
     strength = evidence_bundle.get("evidence_strength") or "unknown"
@@ -625,7 +835,7 @@ def build_export_pdf(
         _row(f"Note: {note}")
 
     _MAX_FRAMES = 10
-    _MAX_FRAME_BYTES = 5 * 1024 * 1024  # 5 MB per frame
+    _MAX_FRAME_BYTES = 5 * 1024 * 1024
 
     frame_captures = evidence_bundle.get("frame_captures") or []
     if frame_captures:
@@ -642,8 +852,8 @@ def build_export_pdf(
                     try:
                         pdf.image(io.BytesIO(image_bytes), w=120)
                         pdf.set_font("Helvetica", size=8)
-                        pdf.cell(0, 5, f"Frame @ {timestamp_sec:.1f}s — {key}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                        pdf.set_font("Helvetica", size=11)
+                        pdf.cell(0, 5, _safe(f"Frame @ {timestamp_sec:.1f}s - {key}"), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                        pdf.set_font("Helvetica", size=10)
                     except Exception:
                         _row(f"Frame @ {timestamp_sec:.1f}s (image unreadable): {key}")
             else:
@@ -651,11 +861,11 @@ def build_export_pdf(
                 pdf.cell(
                     0,
                     5,
-                    f"Frame @ {timestamp_sec:.1f}s: {key} (not available)",
+                    _safe(f"Frame @ {timestamp_sec:.1f}s: {key} (not available)"),
                     new_x=XPos.LMARGIN,
                     new_y=YPos.NEXT,
                 )
-                pdf.set_font("Helvetica", size=11)
+                pdf.set_font("Helvetica", size=10)
 
     return bytes(pdf.output())
 
