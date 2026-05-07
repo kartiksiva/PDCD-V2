@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../backend"))
 import pytest
 from app.export_builder import (
     _classify_anchor_type,
+    _derive_roles,
     build_evidence_bundle,
     build_export_docx,
     build_export_markdown,
@@ -434,9 +435,128 @@ class TestBuildExportPdf:
         assert isinstance(result, bytes)
         assert result[:4] == b"%PDF"
 
+    def test_pdf_contains_section_headings(self):
+        """PDF should include major structural section headings."""
+        from pypdf import PdfReader
+        import io as _io
+
+        draft = {
+            "pdd": {
+                "purpose": "Test purpose",
+                "scope": "Test scope",
+                "steps": [_step("step-1", "First step", [])],
+                "exceptions": [{"scenario": "Timeout", "trigger": "No response", "action": "Escalate", "owner": "Team"}],
+                "process_controls": [{"control_id": "C-01", "description": "Log all events", "owner": "Ops", "frequency": "Always", "tool": "SIEM"}],
+            },
+            "sipoc": [_sipoc_row("Do something", "00:00:00", ["step-1"])],
+            "approval_matrix": [{"role": "Manager", "responsibility": "A"}],
+            "automation_opportunities": [{"description": "Automate X", "quantification": "1h", "automation_signal": "high"}],
+            "faqs": [{"question": "What is this?", "answer": "A process."}],
+        }
+        bundle = {"linked_anchors": [], "evidence_strength": "medium", "frame_captures_note": ""}
+        pdf_bytes = build_export_pdf(draft, bundle)
+        reader = PdfReader(_io.BytesIO(pdf_bytes))
+        full_text = "\n".join(page.extract_text() or "" for page in reader.pages)
+
+        assert "Process Steps" in full_text
+        assert "Process Exceptions" in full_text
+        assert "Approval Matrix" in full_text
+        assert "Automation" in full_text
+
+    def test_pdf_exceptions_uses_trigger_field(self):
+        """PDF should render the trigger field, not leave it as 'Needs Review'."""
+        from pypdf import PdfReader
+        import io as _io
+
+        draft = {
+            "pdd": {
+                "purpose": "P",
+                "scope": "S",
+                "steps": [],
+                "exceptions": [{"scenario": "Scenario A", "trigger": "User cancels", "action": "Stop", "owner": "Lead"}],
+            },
+            "sipoc": [],
+        }
+        bundle = {"linked_anchors": [], "evidence_strength": "low", "frame_captures_note": ""}
+        pdf_bytes = build_export_pdf(draft, bundle)
+        reader = PdfReader(_io.BytesIO(pdf_bytes))
+        full_text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        assert "User cancels" in full_text
+
+    def test_pdf_sipoc_renders_supplier_column(self):
+        """PDF should render SIPOC table with column headers."""
+        from pypdf import PdfReader
+        import io as _io
+
+        draft = {
+            "pdd": {"purpose": "P", "scope": "S", "steps": []},
+            "sipoc": [_sipoc_row("Step A", "00:00:00", [])],
+        }
+        bundle = {"linked_anchors": [], "evidence_strength": "low", "frame_captures_note": ""}
+        pdf_bytes = build_export_pdf(draft, bundle)
+        reader = PdfReader(_io.BytesIO(pdf_bytes))
+        full_text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        assert "Supplier" in full_text
+
+    def test_pdf_em_dash_does_not_raise(self):
+        """PDF builder must not crash when draft contains em dash characters."""
+        draft = {
+            "pdd": {
+                "purpose": "Purpose \u2014 with em dash",
+                "scope": "Scope",
+                "steps": [{"id": "s-1", "summary": "Step \u2014 detail", "actor": "Analyst", "source_anchors": []}],
+            },
+            "sipoc": [],
+        }
+        bundle = {"linked_anchors": [], "evidence_strength": "low", "frame_captures_note": ""}
+        result = build_export_pdf(draft, bundle)
+        assert result[:4] == b"%PDF"
+
 
 # ---------------------------------------------------------------------------
-# build_export_docx
+# _derive_roles
+# ---------------------------------------------------------------------------
+
+class TestDeriveRoles:
+    def _draft_with_roles(self, roles, step_actors=None):
+        steps = [{"id": "s-1", "summary": "Do it", "actor": a, "source_anchors": []} for a in (step_actors or [])]
+        return {"pdd": {"roles": roles, "steps": steps}}
+
+    def test_keeps_clean_roles(self):
+        draft = self._draft_with_roles(["Intake Analyst", "Call Team", "Management"])
+        result = _derive_roles(draft)
+        assert "Intake Analyst" in result
+        assert "Call Team" in result
+        assert "Management" in result
+
+    def test_excludes_slash_composites(self):
+        draft = self._draft_with_roles(["Analyst", "Customer / Call Agent", "System / Analyst"])
+        result = _derive_roles(draft)
+        assert "Analyst" in result
+        assert "Customer / Call Agent" not in result
+        assert "System / Analyst" not in result
+
+    def test_excludes_session_meta_labels_case_insensitive(self):
+        draft = self._draft_with_roles(["Analyst", "Service Provider", "customer", "CUSTOMER"])
+        result = _derive_roles(draft)
+        assert "Analyst" in result
+        assert "Service Provider" not in result
+        assert "customer" not in result
+        assert "CUSTOMER" not in result
+
+    def test_slash_composite_in_step_actor_excluded(self):
+        draft = self._draft_with_roles([], step_actors=["Analyst", "Customer / Agent"])
+        result = _derive_roles(draft)
+        assert "Analyst" in result
+        assert "Customer / Agent" not in result
+
+    def test_deduplicates_roles(self):
+        draft = self._draft_with_roles(["Analyst", "Analyst"], step_actors=["Analyst"])
+        result = _derive_roles(draft)
+        assert result.count("Analyst") == 1
+
+
+
 # ---------------------------------------------------------------------------
 
 class TestBuildExportDocx:
